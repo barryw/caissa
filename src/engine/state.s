@@ -101,10 +101,15 @@ FullmoveNumber:
 
 ; Position history for threefold repetition detection
 MAX_HISTORY = 200
+.segment "BSS"
+
 PositionHistoryLo:
-  .res MAX_HISTORY, $00
+  .res MAX_HISTORY
 PositionHistoryHi:
-  .res MAX_HISTORY, $00
+  .res MAX_HISTORY
+
+.segment "CODE"
+
 HistoryCount:
   .byte $00
 

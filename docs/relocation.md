@@ -12,7 +12,8 @@ place these segments with their own linker config instead of editing engine code
 Runtime RAM not emitted into the binary:
 
 - `BSS`: currently includes generated Zobrist random tables, move lists,
-  history scores, and per-depth move-list snapshots
+  history scores, repetition history, undo records, and per-depth move-list
+  snapshots
 - `ENGINE_TT_BASE`: base address for the 2KB transposition table (`TT_SIZE * TT_ENTRY_SIZE`)
 
 Zero page is the non-relocatable ABI surface in the current engine. The code uses

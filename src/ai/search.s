@@ -31,8 +31,12 @@ UNDO_FLAG_PROMOTION = %00000100
 MAX_UNDO_DEPTH = MAX_DEPTH + MAX_QUIESCE_DEPTH
 
 ; Undo stack storage covers both main search and quiescence captures.
+.segment "BSS"
+
 UndoStack:
-  .res MAX_UNDO_DEPTH * UNDO_ENTRY_SIZE, $00
+  .res MAX_UNDO_DEPTH * UNDO_ENTRY_SIZE
+
+.segment "CODE"
 
 ; Current search depth (0 = root)
 SearchDepth:
