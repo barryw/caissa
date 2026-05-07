@@ -9,7 +9,11 @@ original application UI.
 ```sh
 make engine-build
 make test
+make benchmark
+make size
 ```
+
+Performance tracking is documented in `docs/performance.md`.
 
 `make test` uses the latest Sim6502 Docker image by default:
 `ghcr.io/barryw/sim6502:latest` with `SIM6502_PULL=always`.

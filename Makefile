@@ -8,7 +8,7 @@ BUILD_DIR := build
 ENGINE_SOURCES := $(shell find src tests -name '*.s' -print)
 SIM6502_RUNNER = docker run --pull=$(SIM6502_PULL) --rm -v $(PWD):/code $(SIM6502_IMAGE) /app/Sim6502TestRunner
 
-.PHONY: all clean engine-build engine-test test
+.PHONY: all clean engine-build engine-test test benchmark benchmark-json size
 
 all: engine-build
 
@@ -26,6 +26,15 @@ engine-build: $(BUILD_DIR)/engine_harness.prg
 
 engine-test: engine-build
 	$(SIM6502_RUNNER) -s /code/tests/engine_core.6502
+
+benchmark: engine-build
+	$(PYTHON) tools/run_engine_benchmarks.py --measure-cycles
+
+benchmark-json: engine-build
+	$(PYTHON) tools/run_engine_benchmarks.py --measure-cycles --json build/engine_benchmark.json
+
+size: engine-build
+	$(PYTHON) tools/report_size.py build/engine_harness.dbg
 
 # Boundary tests pin the public Chess* API labels against the headless engine.
 test: engine-build

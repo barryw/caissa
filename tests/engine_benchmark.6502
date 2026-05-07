@@ -1,0 +1,245 @@
+; Headless engine benchmark/regression suite.
+;
+; These tests are intentionally higher-level than unit tests. They pin known
+; tactical expectations and cycle budgets so engine changes can be compared
+; over time without requiring an external chess engine.
+
+suites {
+  suite("Headless Engine Mate Benchmarks") {
+    symbols("/code/build/engine_harness.sym")
+    load("/code/build/engine_harness.prg", strip_header = true)
+
+    setup {
+      jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
+
+      [currentplayer] = $01
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [promotionsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+
+      ; Mate in one: black king a8, white king b6, white rook h2.
+      ; White Rh8# is the only benchmark move we accept.
+      memfill([Board88], 128, $30)
+      [Board88] + $00 = $36
+      [Board88] + $21 = $b6
+      [Board88] + $67 = $b4
+      [whitekingsq] = $21
+      [blackkingsq] = $00
+
+      memfill([WhitePieceList], 16, $ff)
+      memfill([BlackPieceList], 16, $ff)
+      [WhitePieceList] + $00 = $21
+      [WhitePieceList] + $01 = $67
+      [WhitePieceCount] = $02
+      [BlackPieceList] + $00 = $00
+      [BlackPieceCount] = $01
+    }
+
+    test("bench-easy-mate-in-one", "Easy finds Rh8 mate in one", tags = "benchmark,strength,performance,mate,easy", timeout = 5000000) {
+      [difficulty] = $00
+      [TTCurrentGeneration] = $10
+
+      jsr([FindBestMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $67, "Easy should move rook from h2")
+      assert(peekbyte([BestMoveTo]) == $07, "Easy should play Rh8#")
+      assert(peekbyte([SearchDepth]) == $00, "SearchDepth should return to zero")
+      assert(cycles < 2400000, "Easy mate benchmark under 2.4M cycles")
+    }
+
+    test("bench-medium-mate-in-one", "Medium finds Rh8 mate in one", tags = "benchmark,strength,performance,mate,medium", timeout = 5000000) {
+      [difficulty] = $01
+      [TTCurrentGeneration] = $20
+
+      jsr([FindBestMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $67, "Medium should move rook from h2")
+      assert(peekbyte([BestMoveTo]) == $07, "Medium should play Rh8#")
+      assert(peekbyte([SearchDepth]) == $00, "SearchDepth should return to zero")
+      assert(cycles < 2400000, "Medium mate benchmark under 2.4M cycles")
+    }
+
+    test("bench-hard-mate-in-one", "Hard finds Rh8 mate in one", tags = "benchmark,strength,performance,mate,hard", timeout = 5000000) {
+      [difficulty] = $02
+      [TTCurrentGeneration] = $30
+
+      jsr([FindBestMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $67, "Hard should move rook from h2")
+      assert(peekbyte([BestMoveTo]) == $07, "Hard should play Rh8#")
+      assert(peekbyte([SearchDepth]) == $00, "SearchDepth should return to zero")
+      assert(cycles < 2400000, "Hard mate benchmark under 2.4M cycles")
+    }
+  }
+
+  suite("Headless Engine Tactical Benchmarks") {
+    symbols("/code/build/engine_harness.sym")
+    load("/code/build/engine_harness.prg", strip_header = true)
+
+    setup {
+      jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
+
+      [currentplayer] = $01
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [promotionsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+    }
+
+    test("bench-search-hanging-queen", "Search captures a hanging queen", tags = "benchmark,strength,performance,tactic,search", timeout = 2000000) {
+      [TTCurrentGeneration] = $40
+      jsr([InitSearch], stop_on_rts = true, fail_on_brk = true)
+
+      ; White knight e4 can capture black queen on d6.
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $44 = $b2
+      [Board88] + $23 = $35
+      [Board88] + $04 = $36
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+
+      memfill([WhitePieceList], 16, $ff)
+      memfill([BlackPieceList], 16, $ff)
+      [WhitePieceList] + $00 = $74
+      [WhitePieceList] + $01 = $44
+      [WhitePieceCount] = $02
+      [BlackPieceList] + $00 = $04
+      [BlackPieceList] + $01 = $23
+      [BlackPieceCount] = $02
+
+      $e8 = $80
+      $e9 = $7f
+      a = $01
+      jsr([Negamax], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $44, "Search should move knight from e4")
+      assert(peekbyte([BestMoveTo]) == $23, "Search should capture queen on d6")
+      assert(peekbyte([SearchDepth]) == $00, "SearchDepth should return to zero")
+      assert(cycles < 950000, "Queen-capture search benchmark under 950k cycles")
+    }
+
+    test("bench-hard-hanging-queen", "Hard FindBestMove captures a hanging queen", tags = "benchmark,strength,performance,tactic,hard", timeout = 34000000) {
+      [difficulty] = $02
+      [TTCurrentGeneration] = $50
+
+      ; White knight e4 can capture black queen on d6.
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $44 = $b2
+      [Board88] + $23 = $35
+      [Board88] + $04 = $36
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+
+      memfill([WhitePieceList], 16, $ff)
+      memfill([BlackPieceList], 16, $ff)
+      [WhitePieceList] + $00 = $74
+      [WhitePieceList] + $01 = $44
+      [WhitePieceCount] = $02
+      [BlackPieceList] + $00 = $04
+      [BlackPieceList] + $01 = $23
+      [BlackPieceCount] = $02
+
+      jsr([FindBestMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $44, "Hard should move knight from e4")
+      assert(peekbyte([BestMoveTo]) == $23, "Hard should capture queen on d6")
+      assert(peekbyte([SearchDepth]) == $00, "SearchDepth should return to zero")
+      assert(cycles < 700000, "Hard queen-capture benchmark under 700k cycles")
+    }
+
+    test("bench-hard-promotes-queen", "Hard FindBestMove promotes to queen", tags = "benchmark,strength,performance,promotion,hard", timeout = 13000000) {
+      [difficulty] = $02
+      [TTCurrentGeneration] = $60
+
+      ; Immediate queen promotion should beat waiting with the king.
+      memfill([Board88], 128, $30)
+      [Board88] + $77 = $b6
+      [Board88] + $14 = $b1
+      [Board88] + $00 = $36
+      [whitekingsq] = $77
+      [blackkingsq] = $00
+
+      memfill([WhitePieceList], 16, $ff)
+      memfill([BlackPieceList], 16, $ff)
+      [WhitePieceList] + $00 = $77
+      [WhitePieceList] + $01 = $14
+      [WhitePieceCount] = $02
+      [BlackPieceList] + $00 = $00
+      [BlackPieceCount] = $01
+
+      jsr([FindBestMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $14, "Hard should move pawn from e7")
+      assert(peekbyte([BestMoveTo]) == $04, "Hard should promote to queen on e8")
+      assert(peekbyte([SearchDepth]) == $00, "SearchDepth should return to zero")
+      assert(cycles < 650000, "Hard promotion benchmark under 650k cycles")
+    }
+
+    test("bench-hard-black-promotes-queen", "Hard FindBestMove promotes black pawn to queen", tags = "benchmark,strength,performance,promotion,hard,black", timeout = 13000000) {
+      [difficulty] = $02
+      [TTCurrentGeneration] = $70
+
+      ; Black should promote immediately instead of wasting time with the king.
+      memfill([Board88], 128, $30)
+      [Board88] + $70 = $b6
+      [Board88] + $07 = $36
+      [Board88] + $64 = $31
+      [whitekingsq] = $70
+      [blackkingsq] = $07
+      [currentplayer] = $00
+
+      memfill([WhitePieceList], 16, $ff)
+      memfill([BlackPieceList], 16, $ff)
+      [WhitePieceList] + $00 = $70
+      [WhitePieceCount] = $01
+      [BlackPieceList] + $00 = $07
+      [BlackPieceList] + $01 = $64
+      [BlackPieceCount] = $02
+
+      jsr([FindBestMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $64, "Hard should move black pawn from e2")
+      assert(peekbyte([BestMoveTo]) == $74, "Hard should promote to queen on e1")
+      assert(peekbyte([SearchDepth]) == $00, "SearchDepth should return to zero")
+      assert(cycles < 650000, "Hard black promotion benchmark under 650k cycles")
+    }
+
+    test("bench-hard-rook-activates-behind-passer", "Hard FindBestMove activates rook in rook-pawn ending", tags = "benchmark,strength,performance,endgame,rook,hard", timeout = 65000000) {
+      [difficulty] = $02
+      [TTCurrentGeneration] = $80
+      [currentplayer] = $01
+
+      ; FEN: 6k1/8/8/8/8/8/P7/R5K1 w - - 0 1.
+      ; The weak move was Kg1-f2. Keep the rook active on e1/f1 instead.
+      memfill([Board88], 128, $30)
+      [Board88] + $76 = $b6
+      [Board88] + $06 = $36
+      [Board88] + $60 = $b1
+      [Board88] + $70 = $b4
+      [whitekingsq] = $76
+      [blackkingsq] = $06
+
+      memfill([WhitePieceList], 16, $ff)
+      memfill([BlackPieceList], 16, $ff)
+      [WhitePieceList] + $00 = $76
+      [WhitePieceList] + $01 = $60
+      [WhitePieceList] + $02 = $70
+      [WhitePieceCount] = $03
+      [BlackPieceList] + $00 = $06
+      [BlackPieceCount] = $01
+
+      jsr([FindBestMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $70, "Hard should activate the rook from a1")
+      assert(peekbyte([BestMoveTo]) >= $74, "Hard rook activation should reach e1 or f1")
+      assert(peekbyte([BestMoveTo]) <= $75, "Hard rook activation should stay near the king file")
+      assert(peekbyte([SearchDepth]) == $00, "SearchDepth should return to zero")
+      assert(cycles < 750000, "Hard rook activation benchmark under 750k cycles")
+    }
+  }
+}
