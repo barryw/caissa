@@ -107,6 +107,9 @@ LMR_MIN_DEPTH = 4
 LMR_FULL_MOVES = 4
 ASPIRATION_DELTA = 20
 PVS_MIN_DEPTH = 3
+NULL_MOVE_MIN_DEPTH = 4
+NULL_MOVE_REDUCTION = 2
+NULL_MOVE_MIN_PIECES = 8
 
 ; Last move returned by FindBestMove. This lets the engine avoid immediately
 ; undoing its own previous quiet move even on hosts that have not wired full
@@ -957,6 +960,8 @@ InitSearch:
   sta SearchAspirationRetries
   sta SearchPVSSearches
   sta SearchPVSResearches
+  sta SearchNullMoveAttempts
+  sta SearchNullMoveCutoffs
   sta LastMoveWasCaptureByDepth
   sta RecaptureExtensionUsedByDepth
   sta NextMoveUsedRecaptureExtension
@@ -1825,6 +1830,10 @@ SearchPVSSearches:
   .byte $00
 SearchPVSResearches:
   .byte $00
+SearchNullMoveAttempts:
+  .byte $00
+SearchNullMoveCutoffs:
+  .byte $00
 
 ;
 ; Search state variables for Negamax recursion
@@ -1917,6 +1926,125 @@ __ai_search_normal_negate_0:
   eor #$ff
   clc
   adc #$01
+  rts
+
+;
+; TryNullMovePrune
+; Fail-high test by letting the side to move pass. This is guarded away from
+; root, check, shallow nodes, and sparse material where zugzwang risk is high.
+; Input: Current NegamaxState entry has depth/alpha/beta initialized.
+; Output: Carry set = prune and A = beta, carry clear = continue full search.
+; Clobbers: A, X, Y, $e8, $e9 and recursive search temps.
+;
+TryNullMovePrune:
+  lda SearchDepth
+  beq __ai_search_null_skip_0
+  cmp #MAX_DEPTH - 1
+  bcs __ai_search_null_skip_0
+
+  asl
+  asl
+  asl
+  tax
+  lda NegamaxState + 5, x
+  cmp #NULL_MOVE_MIN_DEPTH
+  bcc __ai_search_null_skip_0
+
+  lda WhitePieceCount
+  clc
+  adc BlackPieceCount
+  cmp #NULL_MOVE_MIN_PIECES
+  bcc __ai_search_null_skip_0
+
+  jsr IsCurrentSideInCheck
+  bcc __ai_search_null_try_0
+
+__ai_search_null_skip_0:
+  clc
+  rts
+
+__ai_search_null_try_0:
+  inc SearchNullMoveAttempts
+
+  ldy SearchDepth
+  lda enpassantsq
+  sta NullSavedEnPassant, y
+  lda NextMoveUsedRecaptureExtension
+  sta NullSavedNextMoveExtension, y
+
+  inc SearchDepth
+
+  ldy SearchDepth
+  lda #NO_EN_PASSANT
+  sta enpassantsq
+  sta LastMoveToByDepth, y
+  lda #$00
+  sta LastMoveWasCaptureByDepth, y
+  sta RecaptureExtensionUsedByDepth, y
+  sta NextMoveUsedRecaptureExtension
+
+  lda SearchSide
+  eor #WHITE_COLOR
+  sta SearchSide
+
+; Child null-window search: -Negamax(depth - 1 - R, -beta, -beta + 1).
+  lda SearchDepth
+  sec
+  sbc #$01
+  asl
+  asl
+  asl
+  tax
+  lda NegamaxState + 7, x
+  jsr NegateSearchScore
+  sta $e8
+  clc
+  adc #$01
+  bvc __ai_search_null_beta_ready_0
+  lda #$7f
+__ai_search_null_beta_ready_0:
+  sta $e9
+
+  lda NegamaxState + 5, x
+  sec
+  sbc #NULL_MOVE_REDUCTION + 1
+  jsr Negamax
+  jsr NegateSearchScore
+  sta NullMoveScore
+
+  lda SearchSide
+  eor #WHITE_COLOR
+  sta SearchSide
+  dec SearchDepth
+
+  ldy SearchDepth
+  lda NullSavedEnPassant, y
+  sta enpassantsq
+  lda NullSavedNextMoveExtension, y
+  sta NextMoveUsedRecaptureExtension
+
+  lda SearchDepth
+  asl
+  asl
+  asl
+  tax
+  lda NullMoveScore
+  sec
+  sbc NegamaxState + 7, x
+  beq __ai_search_null_cutoff_0
+  bvc __ai_search_null_cmp_no_ov_0
+  eor #$80
+__ai_search_null_cmp_no_ov_0:
+  bmi __ai_search_null_no_cutoff_0
+
+__ai_search_null_cutoff_0:
+  inc SearchNullMoveCutoffs
+  lda NegamaxState + 7, x
+  sec
+  rts
+
+__ai_search_null_no_cutoff_0:
+  clc
   rts
 
 ;
@@ -3349,6 +3477,11 @@ __ai_search_tt_return_score_0:
   rts
 
 __ai_search_tt_miss_0:
+  jsr TryNullMovePrune
+  bcc __ai_search_generate_moves_0
+  rts
+
+__ai_search_generate_moves_0:
 ; Generate legal moves for current side
   jsr GenerateLegalMoves
   jsr PromoteTTMove
@@ -3938,6 +4071,12 @@ NegamaxChildDepth:
   .res MAX_DEPTH, $00
 NegamaxPVSUsed:
   .res MAX_DEPTH, $00
+NullSavedEnPassant:
+  .res MAX_DEPTH, $ff
+NullSavedNextMoveExtension:
+  .res MAX_DEPTH, $00
+NullMoveScore:
+  .byte $00
 
 ;
 ; TryApplyRecaptureExtension

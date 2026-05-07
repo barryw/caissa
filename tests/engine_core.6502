@@ -68,6 +68,119 @@ suites {
       assert(peekbyte([SearchPVSSearches]) > $00, "Depth-three search should use PVS probes")
     }
 
+    test("null-move-prunes-deep-safe-node", "Guarded null move can fail high and restore state", timeout = 13000000) {
+      jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
+      jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
+
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $70 = $b4
+      [Board88] + $77 = $b4
+      [Board88] + $63 = $b1
+      [Board88] + $64 = $b1
+      [Board88] + $65 = $b1
+      [Board88] + $04 = $36
+      [Board88] + $00 = $34
+      [Board88] + $07 = $34
+      [Board88] + $13 = $31
+      [Board88] + $14 = $31
+      [Board88] + $15 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [enpassantsq] = $ff
+
+      memfill([WhitePieceList], 16, $ff)
+      memfill([BlackPieceList], 16, $ff)
+      [WhitePieceList] + $00 = $74
+      [WhitePieceList] + $01 = $70
+      [WhitePieceList] + $02 = $77
+      [WhitePieceList] + $03 = $63
+      [WhitePieceList] + $04 = $64
+      [WhitePieceList] + $05 = $65
+      [WhitePieceCount] = $06
+      [BlackPieceList] + $00 = $04
+      [BlackPieceList] + $01 = $00
+      [BlackPieceList] + $02 = $07
+      [BlackPieceList] + $03 = $13
+      [BlackPieceList] + $04 = $14
+      [BlackPieceList] + $05 = $15
+      [BlackPieceCount] = $06
+
+      memfill([NegamaxState], 64, $00)
+      [SearchDepth] = $01
+      [SearchSide] = $80
+      [SearchNullMoveAttempts] = $00
+      [SearchNullMoveCutoffs] = $00
+      [NegamaxState] + $0d = $04
+      [NegamaxState] + $0e = $80
+      [NegamaxState] + $0f = $9c
+
+      jsr([TryNullMovePrune], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Low beta should allow null move to fail high")
+      assert(a == $9c, "Null cutoff should return beta")
+      assert(peekbyte([SearchDepth]) == $01, "Null move should restore SearchDepth")
+      assert(peekbyte([SearchSide]) == $80, "Null move should restore SearchSide")
+      assert(peekbyte([enpassantsq]) == $ff, "Null move should restore en passant state")
+      assert(peekbyte([SearchNullMoveAttempts]) == $01, "Null move attempt counter should increment")
+      assert(peekbyte([SearchNullMoveCutoffs]) == $01, "Null move cutoff counter should increment")
+    }
+
+    test("null-move-skips-sparse-material", "Null move avoids sparse endgames where zugzwang risk is high") {
+      memfill([Board88], 128, $30)
+      [Board88] + $44 = $b6
+      [Board88] + $00 = $36
+      [Board88] + $64 = $b4
+      [whitekingsq] = $44
+      [blackkingsq] = $00
+      [WhitePieceCount] = $02
+      [BlackPieceCount] = $01
+
+      memfill([NegamaxState], 64, $00)
+      [SearchDepth] = $01
+      [SearchSide] = $80
+      [SearchNullMoveAttempts] = $00
+      [NegamaxState] + $0d = $04
+      [NegamaxState] + $0f = $00
+
+      jsr([TryNullMovePrune], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == false, "Sparse material should disable null move pruning")
+      assert(peekbyte([SearchNullMoveAttempts]) == $00, "Sparse material should not count as a null move attempt")
+    }
+
+    test("null-move-skips-checked-side", "Null move is disabled while the side to move is in check") {
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $70 = $b4
+      [Board88] + $77 = $b4
+      [Board88] + $60 = $b1
+      [Board88] + $61 = $b1
+      [Board88] + $62 = $b1
+      [Board88] + $00 = $36
+      [Board88] + $04 = $34
+      [Board88] + $07 = $34
+      [Board88] + $10 = $31
+      [Board88] + $11 = $31
+      [Board88] + $12 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $00
+      [WhitePieceCount] = $06
+      [BlackPieceCount] = $06
+
+      memfill([NegamaxState], 64, $00)
+      [SearchDepth] = $01
+      [SearchSide] = $80
+      [SearchNullMoveAttempts] = $00
+      [NegamaxState] + $0d = $04
+      [NegamaxState] + $0f = $00
+
+      jsr([TryNullMovePrune], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == false, "Checked side should disable null move pruning")
+      assert(peekbyte([SearchNullMoveAttempts]) == $00, "Checked side should not count as a null move attempt")
+    }
+
     test("headless-engine-finds-promotion", "ChessFindBestMove handles a headless promotion shortcut", timeout = 13000000) {
       jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
       jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
