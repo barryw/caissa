@@ -119,6 +119,9 @@ ClearPositionHistory:
   lda #$00
   sta HistoryCount
   sta HalfmoveClock
+  lda #$ff
+  sta LastEngineMoveFrom
+  sta LastEngineMoveTo
   rts
 
 ;

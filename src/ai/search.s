@@ -99,9 +99,23 @@ ROOT_EARLY_QUEEN_MOVE_PENALTY = 45
 ROOT_MISSED_ADVANCED_PAWN_PENALTY = 75
 ROOT_EARLY_KING_MOVE_PENALTY = 85
 ROOT_EARLY_ROOK_MOVE_PENALTY = 70
+ROOT_REVERSE_MOVE_PENALTY = 45
+ROOT_HISTORY_SEEN_PENALTY = 35
+ROOT_REPETITION_PENALTY = 85
 FUTILITY_MARGIN = 30
 LMR_MIN_DEPTH = 4
 LMR_FULL_MOVES = 4
+
+; Last move returned by FindBestMove. This lets the engine avoid immediately
+; undoing its own previous quiet move even on hosts that have not wired full
+; repetition history yet.
+LastEngineMoveFrom:
+  .byte $ff
+LastEngineMoveTo:
+  .byte $ff
+
+RootRepeatSavedCurrentPlayer:
+  .byte $00
 
 ;
 ; MakeMove
@@ -2587,6 +2601,151 @@ __ai_search_done_4:
   rts
 
 ;
+; ApplyRootLoopPenalty
+; Penalize root candidates that keep the engine in a reversible loop. This has
+; two layers: direct quiet reversal of the engine's previous move, and a
+; stronger penalty when the resulting position already exists in recorded
+; history. Captures, pawn moves, and promotions are irreversible enough that we
+; leave them alone.
+; Input/Output: $eb = root move score from the mover's perspective.
+; Clobbers: A, X, Y, $f0-$fb, RepeatCount, ZobristHash
+;
+ApplyRootLoopPenalty:
+  lda SearchDepth
+  bne __ai_search_loop_done_0
+
+  lda NegamaxState + 4
+  bmi __ai_search_loop_done_0
+  and #$7f
+  tax
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  bne __ai_search_loop_done_0
+
+  ldx NegamaxState + 3
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_loop_done_0
+  and #$07
+  cmp #PAWN_TYPE
+  beq __ai_search_loop_done_0
+
+  jsr ApplyRootReverseMovePenalty
+  jsr ApplyRootHistoryPenalty
+
+__ai_search_loop_done_0:
+  rts
+
+;
+; ApplyRootReverseMovePenalty
+; Penalize moving the same piece back to the square it just left.
+; Input/Output: $eb = root move score.
+; Clobbers: A
+;
+ApplyRootReverseMovePenalty:
+  lda LastEngineMoveFrom
+  cmp #$ff
+  beq __ai_search_reverse_done_0
+
+  lda NegamaxState + 3
+  cmp LastEngineMoveTo
+  bne __ai_search_reverse_done_0
+  lda NegamaxState + 4
+  and #$7f
+  cmp LastEngineMoveFrom
+  bne __ai_search_reverse_done_0
+
+  lda #ROOT_REVERSE_MOVE_PENALTY
+  jsr ApplyRootPenaltyAmount
+
+__ai_search_reverse_done_0:
+  rts
+
+;
+; ApplyRootHistoryPenalty
+; Penalize candidate moves whose resulting position has already appeared in the
+; host-maintained position history. One previous occurrence gets a mild penalty;
+; two or more means the move is walking straight into repetition territory.
+; Input/Output: $eb = root move score.
+; Clobbers: A, X, Y, $f0-$fb, RepeatCount, ZobristHash
+;
+ApplyRootHistoryPenalty:
+  lda HistoryCount
+  beq __ai_search_history_done_0
+
+  jsr CountRootCandidateHistory
+  lda RepeatCount
+  beq __ai_search_history_done_0
+  cmp #$02
+  bcc __ai_search_history_seen_once_0
+
+  lda #ROOT_REPETITION_PENALTY
+  jsr ApplyRootPenaltyAmount
+  rts
+
+__ai_search_history_seen_once_0:
+  lda #ROOT_HISTORY_SEEN_PENALTY
+  jsr ApplyRootPenaltyAmount
+
+__ai_search_history_done_0:
+  rts
+
+;
+; CountRootCandidateHistory
+; Temporarily makes the root candidate, hashes the resulting side-to-move
+; position, and leaves RepeatCount holding the number of matching history
+; entries. The real board, currentplayer, SearchDepth, and SearchSide are
+; restored before return.
+; Clobbers: A, X, Y, $f0-$fb, RepeatCount, ZobristHash
+;
+CountRootCandidateHistory:
+  lda currentplayer
+  sta RootRepeatSavedCurrentPlayer
+
+  lda NegamaxState + 3
+  ldx NegamaxState + 4
+  jsr MakeMove
+
+  lda SearchSide
+  beq __ai_search_repeat_black_to_move_0
+  lda #WHITES_TURN
+  jmp __ai_search_repeat_side_ready_0
+__ai_search_repeat_black_to_move_0:
+  lda #BLACKS_TURN
+__ai_search_repeat_side_ready_0:
+  sta currentplayer
+
+  jsr ComputeZobristHash
+  jsr CheckRepetition
+
+  lda NegamaxState + 3
+  ldx NegamaxState + 4
+  jsr UnmakeMove
+
+  lda RootRepeatSavedCurrentPlayer
+  sta currentplayer
+  lda RepeatCount
+  rts
+
+;
+; ApplyRootPenaltyAmount
+; Subtract A from $eb and clamp underflow to NEG_INFINITY.
+; Input: A = unsigned penalty amount
+; Input/Output: $eb = signed root score
+; Clobbers: A, $f0
+;
+ApplyRootPenaltyAmount:
+  sta $f0
+  lda $eb
+  sec
+  sbc $f0
+  bvc __ai_search_penalty_store_0
+  lda #NEG_INFINITY
+__ai_search_penalty_store_0:
+  sta $eb
+  rts
+
+;
 ; ApplyRootHangingMinorPenalty
 ; Penalize root moves that ignore a minor/rook/queen currently attacked by an
 ; enemy pawn. Moving the piece or capturing the attacking pawn resolves it.
@@ -3428,6 +3587,7 @@ __ai_search_lmr_done_0:
   jsr ApplyRootEarlyRookPenalty
   jsr ApplyRootEarlyKingPenalty
   jsr ApplyRootHangingQueenPenalty
+  jsr ApplyRootLoopPenalty
 
 __ai_search_skip_root_pawn_safety_0:
 ; Recalculate state offset again
@@ -5490,44 +5650,37 @@ FindBestMove:
   bcc __ai_search_no_survival_move_1
   jsr RootBestMoveIsLegal
   bcc __ai_search_no_survival_move_1
-  lda #$00
-  rts
+  jmp FinishBestMoveZero
 __ai_search_no_survival_move_1:
 
   jsr TryImmediateQueenPromotionMove
   bcc __ai_search_no_immediate_promotion_0
-  lda #$00
-  rts
+  jmp FinishBestMoveZero
 __ai_search_no_immediate_promotion_0:
 
   jsr TrySparseQueenCaptureMove
   bcc __ai_search_no_sparse_queen_capture_0
-  lda #$00
-  rts
+  jmp FinishBestMoveZero
 __ai_search_no_sparse_queen_capture_0:
 
   jsr TrySparseWinningCaptureMove
   bcc __ai_search_no_sparse_winning_capture_0
-  lda #$00
-  rts
+  jmp FinishBestMoveZero
 __ai_search_no_sparse_winning_capture_0:
 
   jsr TrySimpleRookPawnEndgameMove
   bcc __ai_search_no_simple_endgame_move_0
-  lda #$00
-  rts
+  jmp FinishBestMoveZero
 __ai_search_no_simple_endgame_move_0:
 
   jsr TrySimpleKingPawnEndgameMove
   bcc __ai_search_no_simple_king_pawn_move_0
-  lda #$00
-  rts
+  jmp FinishBestMoveZero
 __ai_search_no_simple_king_pawn_move_0:
 
   jsr TryBoxedKingPawnStormMove
   bcc __ai_search_no_boxed_king_pawn_storm_0
-  lda #$00
-  rts
+  jmp FinishBestMoveZero
 __ai_search_no_boxed_king_pawn_storm_0:
 
 ; If a piece is already under direct pawn attack, trust search over the
@@ -5574,8 +5727,7 @@ __ai_search_book_move_ok_0:
   bcc __ai_search_no_book_move_0
   lda #$01
   sta SearchUsedBook
-  lda #$00; Return score 0 (book moves are pre-evaluated)
-  rts
+  jmp FinishBestMoveZero
 
 __ai_search_no_book_move_0:
 ; Not in book - do normal search
@@ -5656,6 +5808,7 @@ __ai_search_check_max_depth_0:
   jmp __ai_search_time_iter_loop_0
 
 __ai_search_time_done_0:
+  jsr RememberBestMove
   lda IterScore
   rts
 
@@ -5664,6 +5817,28 @@ __ai_search_no_moves_time_0:
   lda #$FF
   sta BestMoveFrom
   sta BestMoveTo
+  sta LastEngineMoveFrom
+  sta LastEngineMoveTo
+  rts
+
+FinishBestMoveZero:
+  jsr RememberBestMove
+  lda #$00
+  rts
+
+RememberBestMove:
+  lda BestMoveFrom
+  cmp #$ff
+  beq __ai_search_remember_clear_0
+  sta LastEngineMoveFrom
+  lda BestMoveTo
+  and #$7f
+  sta LastEngineMoveTo
+  rts
+
+__ai_search_remember_clear_0:
+  sta LastEngineMoveFrom
+  sta LastEngineMoveTo
   rts
 
 ; Iterative deepening state

@@ -12,27 +12,27 @@ make size
 Docker image and then reruns a temporary copy with cycle assertions forced to
 fail, which exposes exact cycle counts without weakening the checked-in gates.
 
-Current baseline from the first standalone benchmark run:
+Current standalone benchmark baseline:
 
 | Benchmark | Cycles | Gate |
 | --- | ---: | ---: |
-| easy mate in one | 1,799,660 | 2,400,000 |
-| medium mate in one | 1,799,694 | 2,400,000 |
-| hard mate in one | 1,799,694 | 2,400,000 |
-| depth-1 hanging queen search | 739,901 | 950,000 |
-| hard hanging queen | 446,191 | 700,000 |
-| hard white promotion | 428,150 | 650,000 |
-| hard black promotion | 431,709 | 650,000 |
-| hard rook activation | 478,844 | 750,000 |
+| easy mate in one | 1,803,713 | 2,400,000 |
+| medium mate in one | 1,803,747 | 2,400,000 |
+| hard mate in one | 1,803,747 | 2,400,000 |
+| depth-1 hanging queen search | 740,973 | 950,000 |
+| hard hanging queen | 446,218 | 700,000 |
+| hard white promotion | 428,180 | 650,000 |
+| hard black promotion | 431,745 | 650,000 |
+| hard rook activation | 478,867 | 750,000 |
 
-`make size` reports ld65 segment sizes from `build/engine_harness.dbg`. The first
-standalone ca65 baseline is:
+`make size` reports ld65 segment sizes from `build/engine_harness.dbg`. Current
+standalone ca65 size:
 
 | Segment | Range | Bytes |
 | --- | --- | ---: |
 | `LOADADDR` | `$0000-$0001` | 2 |
-| `CODE` | `$0801-$5e7d` | 22,141 |
-| total PRG payload | | 22,143 |
+| `CODE` | `$0801-$5f6f` | 22,383 |
+| total PRG payload | | 22,385 |
 
 Treat benchmark changes as suspicious until they have both a cycle explanation
 and a strength/correctness test result. The goal is to make every optimization

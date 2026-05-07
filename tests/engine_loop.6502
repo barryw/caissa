@@ -1,0 +1,83 @@
+; Loop-avoidance tests for the headless reusable engine.
+
+suites {
+  suite("Engine Loop Avoidance") {
+    symbols("/code/build/engine_harness.sym")
+    load("/code/build/engine_harness.prg", strip_header = true)
+
+    setup {
+      jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
+      jsr([ClearPositionHistory], stop_on_rts = true, fail_on_brk = true)
+
+      memfill([Board88], 128, $30)
+      [Board88] + $77 = $b6          ; WHITE_KING h1
+      [Board88] + $00 = $36          ; BLACK_KING a8
+      [Board88] + $61 = $b4          ; WHITE_ROOK b2
+      [whitekingsq] = $77
+      [blackkingsq] = $00
+
+      memfill([WhitePieceList], 16, $ff)
+      memfill([BlackPieceList], 16, $ff)
+      [WhitePieceList] + $00 = $77
+      [WhitePieceList] + $01 = $61
+      [WhitePieceCount] = $02
+      [BlackPieceList] + $00 = $00
+      [BlackPieceCount] = $01
+
+      [currentplayer] = $01
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [SearchDepth] = $00
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $61     ; candidate from b2
+      [NegamaxState] + $04 = $60     ; candidate to a2
+      $eb = $50
+    }
+
+    test("root-penalizes-direct-quiet-reversal", "Root scoring penalizes immediately undoing the engine's previous quiet move") {
+      [LastEngineMoveFrom] = $60
+      [LastEngineMoveTo] = $61
+
+      jsr([ApplyRootLoopPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $23, "Direct reversal should subtract the reverse-move penalty")
+    }
+
+    test("root-penalizes-recorded-position-repeat", "Root scoring penalizes moves that recreate a recorded position") {
+      [LastEngineMoveFrom] = $ff
+      [LastEngineMoveTo] = $ff
+
+      ; Record the position that would exist after candidate b2-a2 with black to move.
+      a = $61
+      x = $60
+      jsr([MakeMove], stop_on_rts = true, fail_on_brk = true)
+      [currentplayer] = $00
+      jsr([ComputeZobristHash], stop_on_rts = true, fail_on_brk = true)
+      jsr([RecordPosition], stop_on_rts = true, fail_on_brk = true)
+      a = $61
+      x = $60
+      jsr([UnmakeMove], stop_on_rts = true, fail_on_brk = true)
+      [currentplayer] = $01
+
+      jsr([ApplyRootLoopPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $2d, "Recorded repeated position should subtract the history penalty")
+      assert(peekbyte([SearchDepth]) == $00, "Loop check should restore SearchDepth")
+      assert(peekbyte([SearchSide]) == $80, "Loop check should restore SearchSide")
+      assert(peekbyte([currentplayer]) == $01, "Loop check should restore currentplayer")
+    }
+
+    test("public-api-records-position-history", "Host-facing history API records and clears positions") {
+      jsr([ChessClearPositionHistory], stop_on_rts = true, fail_on_brk = true)
+      jsr([ChessRecordPosition], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([HistoryCount]) == $01, "ChessRecordPosition should append one history entry")
+
+      jsr([ChessClearPositionHistory], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([HistoryCount]) == $00, "ChessClearPositionHistory should clear history")
+      assert(peekbyte([LastEngineMoveFrom]) == $ff, "Clearing history should reset loop memory")
+      assert(peekbyte([LastEngineMoveTo]) == $ff, "Clearing history should reset loop memory")
+    }
+  }
+}

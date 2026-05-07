@@ -81,9 +81,17 @@ External hosts should prefer these labels from `src/engine/api.s`:
 - `ChessUnmakeMove`
 - `ChessIsSquareAttacked`
 - `ChessCheckKingInCheck`
+- `ChessRecordPosition`
+- `ChessClearPositionHistory`
+- `ChessCheckRepetition`
 
 `src/engine/state.s` owns board and rule state such as `Board88`, `currentplayer`,
 `difficulty`, king squares, castling rights, en passant state, draw/repetition
 state, move indexes, promotion state, and piece lists. Renderers should read
 `Board88` and map piece IDs to their own graphics; display state should stay out
 of the engine.
+
+Hosts should call `ChessClearPositionHistory` at the start of a game, then call
+`ChessRecordPosition` for the initial position and after every committed move.
+The search also remembers the last returned engine move so it can avoid immediate
+quiet reversals even before a host wires full position history.

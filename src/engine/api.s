@@ -31,3 +31,14 @@ ChessIsSquareAttacked:
 
 ChessCheckKingInCheck:
   jmp CheckKingInCheck
+
+ChessRecordPosition:
+  jsr ComputeZobristHash
+  jmp RecordPosition
+
+ChessClearPositionHistory:
+  jmp ClearPositionHistory
+
+ChessCheckRepetition:
+  jsr ComputeZobristHash
+  jmp CheckRepetition
