@@ -111,6 +111,7 @@ suites {
       [SearchSide] = $80
       [SearchNullMoveAttempts] = $00
       [SearchNullMoveCutoffs] = $00
+      [SearchNullMoveEvalSkips] = $00
       [NegamaxState] + $0d = $04
       [NegamaxState] + $0e = $80
       [NegamaxState] + $0f = $9c
@@ -124,6 +125,49 @@ suites {
       assert(peekbyte([enpassantsq]) == $ff, "Null move should restore en passant state")
       assert(peekbyte([SearchNullMoveAttempts]) == $01, "Null move attempt counter should increment")
       assert(peekbyte([SearchNullMoveCutoffs]) == $01, "Null move cutoff counter should increment")
+      assert(peekbyte([SearchNullMoveEvalSkips]) == $00, "Passing static eval should not count as an eval skip")
+    }
+
+    test("null-move-skips-low-static-eval", "Null move avoids probes when static eval cannot reach beta") {
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $60 = $b1
+      [Board88] + $61 = $b1
+      [Board88] + $67 = $b1
+      [Board88] + $04 = $36
+      [Board88] + $00 = $34
+      [Board88] + $07 = $34
+      [Board88] + $23 = $35
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+
+      memfill([WhitePieceList], 16, $ff)
+      memfill([BlackPieceList], 16, $ff)
+      [WhitePieceList] + $00 = $74
+      [WhitePieceList] + $01 = $60
+      [WhitePieceList] + $02 = $61
+      [WhitePieceList] + $03 = $67
+      [WhitePieceCount] = $04
+      [BlackPieceList] + $00 = $04
+      [BlackPieceList] + $01 = $00
+      [BlackPieceList] + $02 = $07
+      [BlackPieceList] + $03 = $23
+      [BlackPieceCount] = $04
+
+      memfill([NegamaxState], 64, $00)
+      [SearchDepth] = $01
+      [SearchSide] = $80
+      [SearchNullMoveAttempts] = $00
+      [SearchNullMoveEvalSkips] = $00
+      [NegamaxState] + $0d = $04
+      [NegamaxState] + $0e = $80
+      [NegamaxState] + $0f = $20
+
+      jsr([TryNullMovePrune], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == false, "Low static eval should disable null move pruning")
+      assert(peekbyte([SearchNullMoveAttempts]) == $00, "Low static eval should not count as a null move attempt")
+      assert(peekbyte([SearchNullMoveEvalSkips]) == $01, "Low static eval should count as an eval-gated skip")
     }
 
     test("null-move-skips-sparse-material", "Null move avoids sparse endgames where zugzwang risk is high") {
@@ -140,6 +184,7 @@ suites {
       [SearchDepth] = $01
       [SearchSide] = $80
       [SearchNullMoveAttempts] = $00
+      [SearchNullMoveEvalSkips] = $00
       [NegamaxState] + $0d = $04
       [NegamaxState] + $0f = $00
 
@@ -147,6 +192,7 @@ suites {
 
       assert(c == false, "Sparse material should disable null move pruning")
       assert(peekbyte([SearchNullMoveAttempts]) == $00, "Sparse material should not count as a null move attempt")
+      assert(peekbyte([SearchNullMoveEvalSkips]) == $00, "Sparse material should skip before static eval")
     }
 
     test("null-move-skips-checked-side", "Null move is disabled while the side to move is in check") {
@@ -172,6 +218,7 @@ suites {
       [SearchDepth] = $01
       [SearchSide] = $80
       [SearchNullMoveAttempts] = $00
+      [SearchNullMoveEvalSkips] = $00
       [NegamaxState] + $0d = $04
       [NegamaxState] + $0f = $00
 
@@ -179,6 +226,7 @@ suites {
 
       assert(c == false, "Checked side should disable null move pruning")
       assert(peekbyte([SearchNullMoveAttempts]) == $00, "Checked side should not count as a null move attempt")
+      assert(peekbyte([SearchNullMoveEvalSkips]) == $00, "Checked side should skip before static eval")
     }
 
     test("headless-engine-finds-promotion", "ChessFindBestMove handles a headless promotion shortcut", timeout = 13000000) {

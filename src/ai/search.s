@@ -108,8 +108,9 @@ LMR_FULL_MOVES = 4
 ASPIRATION_DELTA = 20
 PVS_MIN_DEPTH = 3
 NULL_MOVE_MIN_DEPTH = 4
-NULL_MOVE_REDUCTION = 2
+NULL_MOVE_REDUCTION = 3
 NULL_MOVE_MIN_PIECES = 8
+NULL_MOVE_EVAL_MARGIN = 8
 
 ; Last move returned by FindBestMove. This lets the engine avoid immediately
 ; undoing its own previous quiet move even on hosts that have not wired full
@@ -962,6 +963,7 @@ InitSearch:
   sta SearchPVSResearches
   sta SearchNullMoveAttempts
   sta SearchNullMoveCutoffs
+  sta SearchNullMoveEvalSkips
   sta LastMoveWasCaptureByDepth
   sta RecaptureExtensionUsedByDepth
   sta NextMoveUsedRecaptureExtension
@@ -1834,6 +1836,8 @@ SearchNullMoveAttempts:
   .byte $00
 SearchNullMoveCutoffs:
   .byte $00
+SearchNullMoveEvalSkips:
+  .byte $00
 
 ;
 ; Search state variables for Negamax recursion
@@ -1964,6 +1968,44 @@ __ai_search_null_skip_0:
   rts
 
 __ai_search_null_try_0:
+; Low beta windows are already cheap fail-high candidates. Only pay for the
+; static eval gate when beta is positive enough that a weak position matters.
+  lda SearchDepth
+  asl
+  asl
+  asl
+  tax
+  lda NegamaxState + 7, x
+  beq __ai_search_null_eval_pass_0
+  bmi __ai_search_null_eval_pass_0
+
+  jsr Evaluate
+  clc
+  adc #NULL_MOVE_EVAL_MARGIN
+  bvc __ai_search_null_eval_ready_0
+  lda #$7f
+__ai_search_null_eval_ready_0:
+  sta NullStaticEval
+
+  lda SearchDepth
+  asl
+  asl
+  asl
+  tax
+  lda NullStaticEval
+  sec
+  sbc NegamaxState + 7, x
+  beq __ai_search_null_eval_pass_0
+  bvc __ai_search_null_eval_cmp_no_ov_0
+  eor #$80
+__ai_search_null_eval_cmp_no_ov_0:
+  bpl __ai_search_null_eval_pass_0
+
+  inc SearchNullMoveEvalSkips
+  clc
+  rts
+
+__ai_search_null_eval_pass_0:
   inc SearchNullMoveAttempts
 
   ldy SearchDepth
@@ -4076,6 +4118,8 @@ NullSavedEnPassant:
 NullSavedNextMoveExtension:
   .res MAX_DEPTH, $00
 NullMoveScore:
+  .byte $00
+NullStaticEval:
   .byte $00
 
 ;
