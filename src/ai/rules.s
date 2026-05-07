@@ -53,6 +53,23 @@ __ai_rules_fifty_draw_0:
 ;
 RecordPosition:
   ldx HistoryCount
+  beq __ai_rules_record_append_0
+
+; Ignore duplicate consecutive host calls for the same committed position.
+; Legal play cannot reach the same position without an intervening different
+; position, so this does not hide real repetitions.
+  dex
+  lda ZobristHash
+  cmp PositionHistoryLo, x
+  bne __ai_rules_record_reload_count_0
+  lda ZobristHash + 1
+  cmp PositionHistoryHi, x
+  beq __ai_rules_history_full_0
+
+__ai_rules_record_reload_count_0:
+  ldx HistoryCount
+
+__ai_rules_record_append_0:
   cpx #MAX_HISTORY
   bcs __ai_rules_history_full_0; Don't overflow
 
@@ -116,9 +133,12 @@ RepeatCount:
 ; Reset history for new game
 ;
 ClearPositionHistory:
+  jsr EnsureZobristTablesInitialized
   lda #$00
   sta HistoryCount
   sta HalfmoveClock
+  sta RepeatCount
+  sta EngineGameState
   lda #$ff
   sta LastEngineMoveFrom
   sta LastEngineMoveTo
@@ -365,17 +385,22 @@ IsCurrentKingAttacked:
   lda SearchSide
   bne __ai_rules_get_white_king_0
   lda blackkingsq
-  bne __ai_rules_got_king_0; BNE always taken (king never at $00)
+  jmp __ai_rules_got_king_0
 __ai_rules_get_white_king_0:
   lda whitekingsq
 __ai_rules_got_king_0:
   sta attack_sq
 
 ; Set attacker color (opposite of SearchSide)
-; If SearchSide=1 (white), attacker=black (0)
-; If SearchSide=0 (black), attacker=white (1)
+; If SearchSide=$80 (white), attacker=black (0)
+; If SearchSide=$00 (black), attacker=white (1)
   lda SearchSide
-  eor #$01; Flip: 0->1, 1->0
+  beq __ai_rules_white_attacks_current_0
+  lda #BLACKS_TURN
+  jmp __ai_rules_attack_color_ready_0
+__ai_rules_white_attacks_current_0:
+  lda #WHITES_TURN
+__ai_rules_attack_color_ready_0:
   sta attack_color
   jmp IsSquareAttacked; Tail call optimization: JMP instead of JSR+RTS
 
@@ -392,6 +417,12 @@ __ai_rules_got_king_0:
 ;   GAME_DRAW_INSUFFICIENT (6) = insufficient material
 ;
 AICheckGameState:
+  jsr EnsureZobristTablesInitialized
+
+; Always hash the live board before repetition checks. Search code may leave
+; ZobristHash holding a temporary candidate position.
+  jsr ComputeZobristHash
+
 ; First check draws (before expensive move generation)
   jsr CheckFiftyMoveRule
   bcc __ai_rules_not_fifty_0

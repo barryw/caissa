@@ -41,6 +41,8 @@ test: engine-build
 	$(SIM6502_RUNNER) -s /code/tests/engine_core.6502
 	$(SIM6502_RUNNER) -s /code/tests/engine_boundary.6502
 	$(SIM6502_RUNNER) -s /code/tests/engine_loop.6502
+	$(SIM6502_RUNNER) -s /code/tests/engine_repetition.6502
+	$(SIM6502_RUNNER) -s /code/tests/engine_state.6502
 
 clean:
 	rm -rf $(BUILD_DIR)

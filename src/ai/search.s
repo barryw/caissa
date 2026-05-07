@@ -5646,6 +5646,16 @@ FindBestMove:
 ; Initialize search
   jsr InitSearch
 
+  jsr AICheckGameState
+  sta EngineGameState
+  cmp #GAME_NORMAL
+  beq __ai_search_game_playable_0
+  cmp #GAME_CHECK
+  beq __ai_search_game_playable_0
+  jmp FinishBestMoveNoMove
+
+__ai_search_game_playable_0:
+
   jsr TryEngineOpeningSurvivalMove
   bcc __ai_search_no_survival_move_1
   jsr RootBestMoveIsLegal
@@ -5814,11 +5824,15 @@ __ai_search_time_done_0:
 
 __ai_search_no_moves_time_0:
 ; No legal moves - checkmate or stalemate
+  lda #GAME_STALEMATE
+  sta EngineGameState
+FinishBestMoveNoMove:
   lda #$FF
   sta BestMoveFrom
   sta BestMoveTo
   sta LastEngineMoveFrom
   sta LastEngineMoveTo
+  lda EngineGameState
   rts
 
 FinishBestMoveZero:

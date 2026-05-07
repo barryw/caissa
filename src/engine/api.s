@@ -33,6 +33,7 @@ ChessCheckKingInCheck:
   jmp CheckKingInCheck
 
 ChessRecordPosition:
+  jsr EnsureZobristTablesInitialized
   jsr ComputeZobristHash
   jmp RecordPosition
 
@@ -40,5 +41,12 @@ ChessClearPositionHistory:
   jmp ClearPositionHistory
 
 ChessCheckRepetition:
+  jsr EnsureZobristTablesInitialized
   jsr ComputeZobristHash
   jmp CheckRepetition
+
+ChessCheckGameState:
+  jsr InitSearch
+  jsr AICheckGameState
+  sta EngineGameState
+  rts

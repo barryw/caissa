@@ -25,6 +25,10 @@ difficulty:
 currentplayer:
   .byte WHITES_TURN
 
+; Last reported game state. See GAME_* constants in constants.s.
+EngineGameState:
+  .byte GAME_NORMAL
+
 ; Store the 0x88 offset in Board88 for the piece to move here.
 movefromindex:
   .byte BIT8

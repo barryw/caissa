@@ -124,6 +124,20 @@ __ai_zobrist_eploop_0:
   cpy #$10
   bne __ai_zobrist_eploop_0
 
+  lda #$01
+  sta ZobristTablesInitialized
+  rts
+
+;
+; EnsureZobristTablesInitialized
+; Public callers can use repetition, game-state, TT, or book hashing without
+; separately remembering to seed the hash tables first.
+;
+EnsureZobristTablesInitialized:
+  lda ZobristTablesInitialized
+  bne __ai_zobrist_tables_ready_0
+  jsr InitZobristTables
+__ai_zobrist_tables_ready_0:
   rts
 
 ;
@@ -156,6 +170,9 @@ ZobristEnPassant:
 ; Current position hash (2 bytes for better collision resistance)
 ZobristHash:
   .word $0000
+
+ZobristTablesInitialized:
+  .byte $00
 
 ;
 ; Compute full Zobrist hash from current board position

@@ -81,6 +81,7 @@ External hosts should prefer these labels from `src/engine/api.s`:
 - `ChessUnmakeMove`
 - `ChessIsSquareAttacked`
 - `ChessCheckKingInCheck`
+- `ChessCheckGameState`
 - `ChessRecordPosition`
 - `ChessClearPositionHistory`
 - `ChessCheckRepetition`
@@ -93,5 +94,13 @@ of the engine.
 
 Hosts should call `ChessClearPositionHistory` at the start of a game, then call
 `ChessRecordPosition` for the initial position and after every committed move.
-The search also remembers the last returned engine move so it can avoid immediate
-quiet reversals even before a host wires full position history.
+These APIs initialize the Zobrist tables on demand, so repetition detection does
+not depend on platform startup order. The search also remembers the last returned
+engine move so it can avoid immediate quiet reversals even before a host wires
+full position history.
+
+`ChessCheckGameState` returns one of the `GAME_*` constants and stores the same
+value in `EngineGameState`: normal, check, checkmate, stalemate, 50-move draw,
+repetition draw, or insufficient-material draw. `ChessFindBestMove` now updates
+`EngineGameState` before searching and returns no move (`$ff/$ff`) for terminal
+checkmate, stalemate, or draw states.

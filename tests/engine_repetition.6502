@@ -1,0 +1,76 @@
+; Repetition-draw regressions for host-facing engine APIs.
+
+suites {
+  suite("Engine Repetition Draw") {
+    symbols("/code/build/engine_harness.sym")
+    load("/code/build/engine_harness.prg", strip_header = true)
+
+    setup {
+      jsr([ChessClearPositionHistory], stop_on_rts = true, fail_on_brk = true)
+
+      memfill([Board88], 128, $30)
+      memfill([WhitePieceList], 16, $ff)
+      memfill([BlackPieceList], 16, $ff)
+
+      [Board88] + $74 = $b6          ; WHITE_KING e1
+      [Board88] + $64 = $b1          ; WHITE_PAWN e2
+      [Board88] + $04 = $36          ; BLACK_KING e8
+      [Board88] + $14 = $31          ; BLACK_PAWN e7
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [WhitePieceList] + $00 = $74
+      [WhitePieceList] + $01 = $64
+      [WhitePieceCount] = $02
+      [BlackPieceList] + $00 = $04
+      [BlackPieceList] + $01 = $14
+      [BlackPieceCount] = $02
+      [currentplayer] = $01
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [SearchDepth] = $00
+      [SearchSide] = $80
+      [EngineGameState] = $00
+    }
+
+    test("opening-two-plies-are-not-repetition", "Fresh host history does not report repetition after e4 e5") {
+      jsr([ChessRecordPosition], stop_on_rts = true, fail_on_brk = true)
+
+      ; 1. e4
+      [Board88] + $64 = $30
+      [Board88] + $44 = $b1
+      [WhitePieceList] + $01 = $44
+      [currentplayer] = $00
+      jsr([ChessRecordPosition], stop_on_rts = true, fail_on_brk = true)
+
+      ; ... e5
+      [Board88] + $14 = $30
+      [Board88] + $34 = $31
+      [BlackPieceList] + $01 = $34
+      [currentplayer] = $01
+      jsr([ChessRecordPosition], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([HistoryCount]) == $03, "Opening line should record three distinct positions")
+
+      jsr([ChessCheckRepetition], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == false, "Two plies from the initial position are not threefold repetition")
+
+      jsr([ChessCheckGameState], stop_on_rts = true, fail_on_brk = true)
+
+      assert(a != $05, "Opening line should not report GAME_DRAW_REPETITION")
+      assert(peekbyte([EngineGameState]) != $05, "EngineGameState should not report repetition")
+    }
+
+    test("duplicate-host-records-are-idempotent", "Repeated host calls for the same position do not create a draw") {
+      jsr([ChessRecordPosition], stop_on_rts = true, fail_on_brk = true)
+      jsr([ChessRecordPosition], stop_on_rts = true, fail_on_brk = true)
+      jsr([ChessRecordPosition], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([HistoryCount]) == $01, "Same committed position should only be recorded once consecutively")
+
+      jsr([ChessCheckRepetition], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == false, "Duplicate host records should not create repetition draw")
+    }
+  }
+}
