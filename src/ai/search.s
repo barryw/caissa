@@ -3380,8 +3380,8 @@ __ai_search_done_6:
 
 ;
 ; ApplyRootEarlyQueenPenalty
-; Penalize quiet queen moves when the queen is not currently attacked. Captures
-; and queen escapes are exempt.
+; Penalize quiet queen moves while home-rank minor pieces are still undeveloped.
+; Captures and queen escapes are exempt.
 ; Input/Output: $eb = root move score from the mover's perspective.
 ; Clobbers: A, X, Y, attack_sq, attack_color, $f0-$f3
 ;
@@ -3415,6 +3415,9 @@ __ai_search_attack_color_set_2:
   sta attack_color
   jsr IsSquareAttacked
   bcs __ai_search_done_7
+
+  jsr SideHasHomeMinor
+  bcc __ai_search_done_7
 
   lda $eb
   sec
@@ -3469,6 +3472,51 @@ __ai_search_done_8:
   rts
 
 ;
+; SideHasHomeMinor
+; Output: Carry set if the side to move still has a knight/bishop on its
+; starting back rank. Used to scope early major-piece development penalties.
+; Clobbers: A
+;
+SideHasHomeMinor:
+  lda SearchSide
+  beq __ai_search_black_home_minor_0
+
+  lda Board88 + $71
+  cmp #WHITE_KNIGHT
+  beq __ai_search_home_minor_found_0
+  lda Board88 + $72
+  cmp #WHITE_BISHOP
+  beq __ai_search_home_minor_found_0
+  lda Board88 + $75
+  cmp #WHITE_BISHOP
+  beq __ai_search_home_minor_found_0
+  lda Board88 + $76
+  cmp #WHITE_KNIGHT
+  beq __ai_search_home_minor_found_0
+  clc
+  rts
+
+__ai_search_black_home_minor_0:
+  lda Board88 + $01
+  cmp #BLACK_KNIGHT
+  beq __ai_search_home_minor_found_0
+  lda Board88 + $02
+  cmp #BLACK_BISHOP
+  beq __ai_search_home_minor_found_0
+  lda Board88 + $05
+  cmp #BLACK_BISHOP
+  beq __ai_search_home_minor_found_0
+  lda Board88 + $06
+  cmp #BLACK_KNIGHT
+  beq __ai_search_home_minor_found_0
+  clc
+  rts
+
+__ai_search_home_minor_found_0:
+  sec
+  rts
+
+;
 ; ApplyRootEarlyRookPenalty
 ; Penalize quiet rook moves while home-rank minor pieces are still undeveloped.
 ; Rook lifts are usually wasted tempi in the opening, but captures and rook
@@ -3496,36 +3544,8 @@ ApplyRootEarlyRookPenalty:
   jsr IsCurrentSideInCheck
   bcs __ai_search_done_9
 
-  lda SearchSide
-  beq __ai_search_black_side_2
-
-  lda Board88 + $71
-  cmp #WHITE_KNIGHT
-  beq __ai_search_penalize_1
-  lda Board88 + $72
-  cmp #WHITE_BISHOP
-  beq __ai_search_penalize_1
-  lda Board88 + $75
-  cmp #WHITE_BISHOP
-  beq __ai_search_penalize_1
-  lda Board88 + $76
-  cmp #WHITE_KNIGHT
-  beq __ai_search_penalize_1
-  rts
-
-__ai_search_black_side_2:
-  lda Board88 + $01
-  cmp #BLACK_KNIGHT
-  beq __ai_search_penalize_1
-  lda Board88 + $02
-  cmp #BLACK_BISHOP
-  beq __ai_search_penalize_1
-  lda Board88 + $05
-  cmp #BLACK_BISHOP
-  beq __ai_search_penalize_1
-  lda Board88 + $06
-  cmp #BLACK_KNIGHT
-  bne __ai_search_done_9
+  jsr SideHasHomeMinor
+  bcc __ai_search_done_9
 
 __ai_search_penalize_1:
   lda $eb

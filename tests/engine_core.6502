@@ -111,6 +111,88 @@ suites {
       assert(peekbyte([MoveListTo]) == $44, "Promoted history move should keep its destination")
     }
 
+    test("eval-rewards-bishop-pair", "Evaluation counts bishops and applies the bishop-pair bonus") {
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      [EvalWhiteBishopCount] = $02
+      [EvalBlackBishopCount] = $01
+
+      jsr([ApplyBishopPairBonus], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $14, "White bishop pair should add the bishop-pair bonus")
+      assert(peekbyte([EvalScore] + $01) == $00, "White bishop-pair bonus should keep score positive")
+
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      [EvalWhiteBishopCount] = $01
+      [EvalBlackBishopCount] = $02
+
+      jsr([ApplyBishopPairBonus], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $ec, "Black bishop pair should subtract the bishop-pair bonus")
+      assert(peekbyte([EvalScore] + $01) == $ff, "Black bishop-pair bonus should keep score negative")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $04 = $36
+      [Board88] + $42 = $b3
+      [Board88] + $45 = $b3
+      [Board88] + $22 = $33
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+
+      jsr([EvaluatePosition], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalWhiteBishopCount]) == $02, "EvaluatePosition should count both white bishops")
+      assert(peekbyte([EvalBlackBishopCount]) == $01, "EvaluatePosition should count the single black bishop")
+    }
+
+    test("root-early-major-penalties-track-development", "Early queen and rook penalties require undeveloped home minors") {
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $73 = $b5
+      [Board88] + $00 = $36
+      [whitekingsq] = $74
+      [blackkingsq] = $00
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $73
+      [NegamaxState] + $04 = $64
+      $eb = $50
+
+      jsr([ApplyRootEarlyQueenPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Developed positions should allow quiet queen moves")
+
+      [Board88] + $71 = $b2
+      $eb = $50
+
+      jsr([ApplyRootEarlyQueenPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $23, "Home minors should keep the early queen penalty active")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $70 = $b4
+      [Board88] + $00 = $36
+      [whitekingsq] = $74
+      [blackkingsq] = $00
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $70
+      [NegamaxState] + $04 = $60
+      $eb = $50
+
+      jsr([ApplyRootEarlyRookPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Developed positions should allow quiet rook moves")
+
+      [Board88] + $71 = $b2
+      $eb = $50
+
+      jsr([ApplyRootEarlyRookPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $0a, "Home minors should keep the early rook penalty active")
+    }
+
     test("root-penalizes-ignored-sliding-queen-attack", "Root scoring handles rook attacks on either queen color") {
       memfill([Board88], 128, $30)
       [Board88] + $77 = $b6

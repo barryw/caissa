@@ -16,15 +16,15 @@ Current standalone benchmark baseline:
 
 | Benchmark | Cycles | Gate |
 | --- | ---: | ---: |
-| easy mate in one | 1,965,465 | 2,400,000 |
-| medium mate in one | 1,965,499 | 2,400,000 |
-| hard mate in one | 1,965,499 | 2,400,000 |
-| depth-1 hanging queen search | 783,368 | 950,000 |
-| hard hanging queen | 481,942 | 700,000 |
-| depth-5 middlegame search | 4,044,692 | 5,000,000 |
-| hard white promotion | 447,483 | 650,000 |
-| hard black promotion | 451,118 | 650,000 |
-| hard rook activation | 513,873 | 750,000 |
+| easy mate in one | 1,964,729 | 2,400,000 |
+| medium mate in one | 1,964,761 | 2,400,000 |
+| hard mate in one | 1,964,761 | 2,400,000 |
+| depth-1 hanging queen search | 783,836 | 950,000 |
+| hard hanging queen | 481,985 | 700,000 |
+| depth-5 middlegame search | 4,046,808 | 5,000,000 |
+| hard white promotion | 447,494 | 650,000 |
+| hard black promotion | 451,121 | 650,000 |
+| hard rook activation | 513,893 | 750,000 |
 
 `make size` reports ld65 segment sizes from `build/engine_harness.dbg`. `FILE`
 is the emitted PRG payload; `RUNTIME` includes `BSS` RAM reserved by the linker.
@@ -33,10 +33,10 @@ Current standalone ca65 size:
 | Segment | Range | Bytes |
 | --- | --- | ---: |
 | `LOADADDR` | `$0000-$0001` | 2 |
-| `CODE` | `$0801-$51fe` | 18,942 |
-| `BSS` | `$51ff-$657d` | 4,991 |
-| PRG payload | | 18,944 |
-| runtime footprint | | 23,935 |
+| `CODE` | `$0801-$5242` | 19,010 |
+| `BSS` | `$5243-$65c3` | 4,993 |
+| PRG payload | | 19,012 |
+| runtime footprint | | 24,005 |
 
 Treat benchmark changes as suspicious until they have both a cycle explanation
 and a strength/correctness test result. The goal is to make every optimization

@@ -42,6 +42,7 @@ DOUBLED_PAWN_PENALTY = 15
 ISOLATED_PAWN_PENALTY = 20
 PASSED_PAWN_BONUS_BASE = 20
 ROOK_BEHIND_PASSER_BONUS = 20
+BISHOP_PAIR_BONUS = 20
 ENDGAME_NONPAWN_LIMIT = 1; K+P and single-piece endings
 ENDGAME_KING_ACTIVITY_BONUS = 30
 ENDGAME_ROOK_OPEN_FILE_BONUS = 60
@@ -105,6 +106,10 @@ EvalNonPawnCount:
 EvalPawnCount:
   .res 1
 EvalQueenCount:
+  .res 1
+EvalWhiteBishopCount:
+  .res 1
+EvalBlackBishopCount:
   .res 1
 EvalEndgameFlag:
   .res 1
@@ -206,6 +211,8 @@ EvaluatePosition:
   sta EvalNonPawnCount
   sta EvalPawnCount
   sta EvalQueenCount
+  sta EvalWhiteBishopCount
+  sta EvalBlackBishopCount
   sta EvalEndgameFlag
 
   ldx #$00; Board index
@@ -237,6 +244,17 @@ __ai_eval_piece_phase_not_pawn_0:
   cmp #KING_TYPE
   beq __ai_eval_piece_phase_done_0
   inc EvalNonPawnCount
+  cmp #BISHOP_TYPE
+  bne __ai_eval_piece_phase_not_bishop_0
+  lda $f1
+  beq __ai_eval_black_bishop_count_0
+  inc EvalWhiteBishopCount
+  jmp __ai_eval_piece_phase_after_bishop_0
+__ai_eval_black_bishop_count_0:
+  inc EvalBlackBishopCount
+__ai_eval_piece_phase_after_bishop_0:
+  lda $f2
+__ai_eval_piece_phase_not_bishop_0:
   cmp #QUEEN_TYPE
   bne __ai_eval_piece_phase_not_queen_0
   inc EvalQueenCount
@@ -340,6 +358,8 @@ __ai_eval_set_endgame_0:
   sta EvalEndgameFlag
 
 __ai_eval_phase_done_0:
+  jsr ApplyBishopPairBonus
+
 ; Evaluate pawn structure only when pawns exist. Sparse tactical and
 ; checkmate searches otherwise pay several board scans for a zero score.
   lda EvalPawnCount
@@ -449,6 +469,29 @@ __ai_eval_black_attacked_0:
   jmp AddEvalUnsigned
 
 __ai_eval_done_1:
+  rts
+
+;
+; ApplyBishopPairBonus
+; Two bishops are a durable strategic asset in open positions. Track the pair
+; during the main board pass and apply this compact bonus once per side.
+; Clobbers: A, $f3
+;
+ApplyBishopPairBonus:
+  lda EvalWhiteBishopCount
+  cmp #$02
+  bcc __ai_eval_check_black_bishop_pair_0
+  lda #BISHOP_PAIR_BONUS
+  jsr AddEvalUnsigned
+
+__ai_eval_check_black_bishop_pair_0:
+  lda EvalBlackBishopCount
+  cmp #$02
+  bcc __ai_eval_bishop_pair_done_0
+  lda #BISHOP_PAIR_BONUS
+  jmp SubtractEvalUnsigned
+
+__ai_eval_bishop_pair_done_0:
   rts
 
 ;
