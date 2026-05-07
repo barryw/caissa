@@ -2784,9 +2784,10 @@ __ai_search_captures_attacker_1:
 ;
 ; ApplyRootHangingQueenPenalty
 ; Penalize root moves that ignore a queen currently attacked by an enemy
-; knight. Moving the queen, or capturing the attacking knight, resolves it.
+; piece. Moving the queen resolves it; capturing an attacking knight keeps the
+; old cheap tactical escape path.
 ; Input/Output: $eb = root move score from the mover's perspective.
-; Clobbers: A, X, Y, $f0-$f7
+; Clobbers: A, X, Y, attack_sq, attack_color, $f0-$f7
 ;
 ApplyRootHangingQueenPenalty:
   lda SearchSide
@@ -2809,16 +2810,27 @@ __ai_search_scan_loop_0:
   bne __ai_search_next_square_0
 
   stx $f0
-  jsr IsPieceKnightAttacked
+  stx attack_sq
+  lda #BLACKS_TURN
+  ldx $f1
+  bne __ai_search_queen_attack_color_set_0
+  lda #WHITES_TURN
+__ai_search_queen_attack_color_set_0:
+  sta attack_color
+  jsr IsSquareAttacked
   bcc __ai_search_next_square_0
 
   lda NegamaxState + 3; Moving the queen addresses the threat.
   cmp $f0
   beq __ai_search_done_4
 
+  jsr IsPieceKnightAttacked
+  bcc __ai_search_apply_hanging_queen_penalty_0
+
   jsr RootMoveCapturesQueenAttacker
   bcs __ai_search_done_4
 
+__ai_search_apply_hanging_queen_penalty_0:
   lda $eb
   sec
   sbc #ROOT_HANGING_QUEEN_PENALTY

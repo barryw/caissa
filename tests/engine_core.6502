@@ -111,6 +111,58 @@ suites {
       assert(peekbyte([MoveListTo]) == $44, "Promoted history move should keep its destination")
     }
 
+    test("root-penalizes-ignored-sliding-queen-attack", "Root scoring handles rook attacks on either queen color") {
+      memfill([Board88], 128, $30)
+      [Board88] + $77 = $b6
+      [Board88] + $44 = $b5
+      [Board88] + $70 = $b4
+      [Board88] + $00 = $36
+      [Board88] + $04 = $34
+      [whitekingsq] = $77
+      [blackkingsq] = $00
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $70
+      [NegamaxState] + $04 = $71
+      $eb = $50
+
+      jsr([ApplyRootHangingQueenPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $0a, "White ignoring a rook attack on the queen should be penalized")
+
+      [NegamaxState] + $03 = $44
+      [NegamaxState] + $04 = $43
+      $eb = $50
+
+      jsr([ApplyRootHangingQueenPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Moving the white queen should escape the hanging-queen penalty")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $77 = $b6
+      [Board88] + $00 = $36
+      [Board88] + $34 = $35
+      [Board88] + $74 = $b4
+      [Board88] + $01 = $34
+      [whitekingsq] = $77
+      [blackkingsq] = $00
+      [SearchSide] = $00
+      [NegamaxState] + $03 = $01
+      [NegamaxState] + $04 = $02
+      $eb = $50
+
+      jsr([ApplyRootHangingQueenPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $0a, "Black ignoring a rook attack on the queen should be penalized")
+
+      [NegamaxState] + $03 = $34
+      [NegamaxState] + $04 = $33
+      $eb = $50
+
+      jsr([ApplyRootHangingQueenPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Moving the black queen should escape the hanging-queen penalty")
+    }
+
     test("null-move-prunes-deep-safe-node", "Guarded null move can fail high and restore state", timeout = 13000000) {
       jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
       jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
