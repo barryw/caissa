@@ -34,6 +34,7 @@ PAWN_ATTACK_ROOK_PENALTY = 60
 PAWN_ATTACK_QUEEN_PENALTY = 85
 QUEEN_ATTACK_MINOR_PENALTY = 75
 KNIGHT_ATTACK_QUEEN_PENALTY = 35
+KNIGHT_OUTPOST_BONUS = 25
 
 ;
 ; Pawn Structure Evaluation Constants
@@ -43,6 +44,8 @@ ISOLATED_PAWN_PENALTY = 20
 PASSED_PAWN_BONUS_BASE = 20
 ROOK_BEHIND_PASSER_BONUS = 20
 BISHOP_PAIR_BONUS = 20
+ROOK_OPEN_FILE_BONUS = 25
+ROOK_SEMI_OPEN_FILE_BONUS = 12
 ENDGAME_NONPAWN_LIMIT = 1; K+P and single-piece endings
 ENDGAME_KING_ACTIVITY_BONUS = 30
 ENDGAME_ROOK_OPEN_FILE_BONUS = 60
@@ -262,6 +265,7 @@ __ai_eval_piece_phase_not_queen_0:
   jsr EvaluatePawnPressure
   jsr EvaluateQueenPressure
   jsr EvaluateMinorPressure
+  jsr EvaluateKnightOutpost
   jsr EvaluateMobility
 __ai_eval_piece_phase_done_0:
 
@@ -546,6 +550,82 @@ __ai_eval_black_attacked_2:
   jmp AddEvalUnsigned
 
 __ai_eval_done_3:
+  rts
+
+;
+; EvaluateKnightOutpost
+; Reward central advanced knights that are protected by a friendly pawn and
+; cannot be chased by an enemy pawn. This is deliberately compact: it captures
+; the common "strong square" idea without full pawn-frontier analysis.
+; Inputs: $f0=square, $f1=color, $f2=piece type.
+; Clobbers: A, Y, $f3
+;
+EvaluateKnightOutpost:
+  lda $f2
+  cmp #KNIGHT_TYPE
+  bne __ai_eval_done_6
+
+  lda $f0
+  and #$07
+  cmp #$02
+  bcc __ai_eval_done_6
+  cmp #$06
+  bcs __ai_eval_done_6
+
+  jsr IsPiecePawnAttacked
+  bcs __ai_eval_done_6
+
+  lda $f1
+  beq __ai_eval_black_knight_outpost_0
+
+; White outposts: central files on rows 2-4, protected from behind.
+  lda $f0
+  and #$70
+  cmp #$20
+  bcc __ai_eval_done_6
+  cmp #$50
+  bcs __ai_eval_done_6
+
+  lda $f0
+  clc
+  adc #$0f
+  jsr CheckWhitePawnAt
+  bcs __ai_eval_white_outpost_found_0
+  lda $f0
+  clc
+  adc #$11
+  jsr CheckWhitePawnAt
+  bcc __ai_eval_done_6
+
+__ai_eval_white_outpost_found_0:
+  lda #KNIGHT_OUTPOST_BONUS
+  jmp AddEvalUnsigned
+
+__ai_eval_black_knight_outpost_0:
+; Black outposts: central files on rows 3-5, protected from behind.
+  lda $f0
+  and #$70
+  cmp #$30
+  bcc __ai_eval_done_6
+  cmp #$60
+  bcs __ai_eval_done_6
+
+  lda $f0
+  sec
+  sbc #$0f
+  jsr CheckBlackPawnAt
+  bcs __ai_eval_black_outpost_found_0
+  lda $f0
+  sec
+  sbc #$11
+  jsr CheckBlackPawnAt
+  bcc __ai_eval_done_6
+
+__ai_eval_black_outpost_found_0:
+  lda #KNIGHT_OUTPOST_BONUS
+  jmp SubtractEvalUnsigned
+
+__ai_eval_done_6:
   rts
 
 ;
@@ -1238,10 +1318,79 @@ __ai_eval_passed_next_0:
   tax
 __ai_eval_passed_check_done_0:
   cpx #BOARD_SIZE
-  beq __ai_eval_passed_done_0
+  beq __ai_eval_after_passed_pawns_0
   jmp __ai_eval_passed_loop_0
 
+__ai_eval_after_passed_pawns_0:
+  lda EvalEndgameFlag
+  bne __ai_eval_passed_done_0
+  jsr EvaluateRookFileActivity
 __ai_eval_passed_done_0:
+  rts
+
+;
+; EvaluateRookFileActivity
+; In middlegames, rooks belong on files without friendly pawns. Open files get
+; the full bonus; semi-open files still pressure enemy pawn structure.
+; Pawn file counts must already be populated by EvaluatePawnStructure.
+; Clobbers: A, X, Y, $f3-$f4
+;
+EvaluateRookFileActivity:
+  ldx #$00
+
+__ai_eval_rook_file_scan_loop_0:
+  lda Board88, x
+  cmp #WHITE_ROOK
+  beq __ai_eval_white_rook_file_0
+  cmp #BLACK_ROOK
+  beq __ai_eval_black_rook_file_0
+  jmp __ai_eval_rook_file_next_square_0
+
+__ai_eval_white_rook_file_0:
+  txa
+  and #$07
+  tay
+  lda WhitePawnsPerFile, y
+  bne __ai_eval_rook_file_next_square_0
+  lda BlackPawnsPerFile, y
+  bne __ai_eval_white_semi_open_file_0
+  lda #ROOK_OPEN_FILE_BONUS
+  jsr AddEvalUnsigned
+  jmp __ai_eval_rook_file_next_square_0
+
+__ai_eval_white_semi_open_file_0:
+  lda #ROOK_SEMI_OPEN_FILE_BONUS
+  jsr AddEvalUnsigned
+  jmp __ai_eval_rook_file_next_square_0
+
+__ai_eval_black_rook_file_0:
+  txa
+  and #$07
+  tay
+  lda BlackPawnsPerFile, y
+  bne __ai_eval_rook_file_next_square_0
+  lda WhitePawnsPerFile, y
+  bne __ai_eval_black_semi_open_file_0
+  lda #ROOK_OPEN_FILE_BONUS
+  jsr SubtractEvalUnsigned
+  jmp __ai_eval_rook_file_next_square_0
+
+__ai_eval_black_semi_open_file_0:
+  lda #ROOK_SEMI_OPEN_FILE_BONUS
+  jsr SubtractEvalUnsigned
+
+__ai_eval_rook_file_next_square_0:
+  inx
+  txa
+  and #$08
+  beq __ai_eval_rook_file_check_done_0
+  txa
+  clc
+  adc #$08
+  tax
+__ai_eval_rook_file_check_done_0:
+  cpx #BOARD_SIZE
+  bne __ai_eval_rook_file_scan_loop_0
   rts
 
 ;

@@ -147,6 +147,102 @@ suites {
       assert(peekbyte([EvalBlackBishopCount]) == $01, "EvaluatePosition should count the single black bishop")
     }
 
+    test("eval-rewards-rooks-on-open-files", "Rook file activity scores open and semi-open files") {
+      memfill([Board88], 128, $30)
+      memfill([WhitePawnsPerFile], 8, $00)
+      memfill([BlackPawnsPerFile], 8, $00)
+      [Board88] + $70 = $b4
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+
+      jsr([EvaluateRookFileActivity], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $19, "White rook on an open file should get the full rook-file bonus")
+      assert(peekbyte([EvalScore] + $01) == $00, "White open-file bonus should keep score positive")
+
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      [BlackPawnsPerFile] = $01
+
+      jsr([EvaluateRookFileActivity], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $0c, "White rook on a semi-open file should get the smaller bonus")
+
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      [WhitePawnsPerFile] = $01
+
+      jsr([EvaluateRookFileActivity], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $00, "Friendly pawns should block the white rook-file bonus")
+
+      memfill([Board88], 128, $30)
+      memfill([WhitePawnsPerFile], 8, $00)
+      memfill([BlackPawnsPerFile], 8, $00)
+      [Board88] + $07 = $34
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+
+      jsr([EvaluateRookFileActivity], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $e7, "Black rook on an open file should subtract the full rook-file bonus")
+      assert(peekbyte([EvalScore] + $01) == $ff, "Black open-file bonus should keep score negative")
+
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      [WhitePawnsPerFile] + $07 = $01
+
+      jsr([EvaluateRookFileActivity], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $f4, "Black rook on a semi-open file should subtract the smaller bonus")
+    }
+
+    test("eval-rewards-knight-outposts", "Knight outposts require central support and no pawn chase") {
+      memfill([Board88], 128, $30)
+      [Board88] + $42 = $b1
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      $f0 = $33
+      $f1 = $80
+      $f2 = $02
+
+      jsr([EvaluateKnightOutpost], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $19, "Protected white knight outpost should get the outpost bonus")
+      assert(peekbyte([EvalScore] + $01) == $00, "White outpost bonus should keep score positive")
+
+      [Board88] + $24 = $31
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+
+      jsr([EvaluateKnightOutpost], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $00, "Enemy pawn attacks should cancel the white outpost bonus")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $33 = $31
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      $f0 = $44
+      $f1 = $00
+      $f2 = $02
+
+      jsr([EvaluateKnightOutpost], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $e7, "Protected black knight outpost should subtract the outpost bonus")
+      assert(peekbyte([EvalScore] + $01) == $ff, "Black outpost bonus should keep score negative")
+
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      $f0 = $41
+      $f1 = $00
+      $f2 = $02
+
+      jsr([EvaluateKnightOutpost], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $00, "Rim knights should not get the outpost bonus")
+    }
+
     test("root-early-major-penalties-track-development", "Early queen and rook penalties require undeveloped home minors") {
       memfill([Board88], 128, $30)
       [Board88] + $74 = $b6
