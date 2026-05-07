@@ -139,6 +139,40 @@ suites {
 
       memfill([Board88], 128, $30)
       [Board88] + $77 = $b6
+      [Board88] + $44 = $b5
+      [Board88] + $43 = $b3
+      [Board88] + $00 = $36
+      [Board88] + $04 = $34
+      [whitekingsq] = $77
+      [blackkingsq] = $00
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $43
+      [NegamaxState] + $04 = $34
+      $eb = $50
+
+      jsr([ApplyRootHangingQueenPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Blocking a rook line to the queen should escape the hanging-queen penalty")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $77 = $b6
+      [Board88] + $44 = $b5
+      [Board88] + $25 = $b2
+      [Board88] + $00 = $36
+      [Board88] + $04 = $34
+      [whitekingsq] = $77
+      [blackkingsq] = $00
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $25
+      [NegamaxState] + $04 = $04
+      $eb = $50
+
+      jsr([ApplyRootHangingQueenPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Capturing the rook attacking the queen should escape the hanging-queen penalty")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $77 = $b6
       [Board88] + $00 = $36
       [Board88] + $34 = $35
       [Board88] + $74 = $b4

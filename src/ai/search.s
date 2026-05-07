@@ -2675,50 +2675,64 @@ __ai_search_done_3:
   rts
 
 ;
-; RootMoveCapturesQueenAttacker
+; RootMoveResolvesQueenAttack
 ; Input: $f0 = queen square, $f1 = queen color/SearchSide.
-; Output: Carry set if the root move captures an enemy knight attacking $f0.
-; Clobbers: A, X, Y, $f2-$f5
+; Output: Carry set if the root candidate leaves the queen unattacked.
+; Clobbers: A, X, Y, attack_sq, attack_color, $f2-$f5
 ;
-RootMoveCapturesQueenAttacker:
-  lda NegamaxState + 4; Root move to square
-  and #$7f
-  sta $f5
-  ldx $f5
-  lda Board88, x
+RootMoveResolvesQueenAttack:
+  lda NegamaxState + 3; Moving the queen addresses the threat.
+  cmp $f0
+  beq __ai_search_resolves_queen_attack_0
   sta $f2
 
-  lda $f1
-  beq __ai_search_black_side_0
-  lda #BLACK_KNIGHT
-  jmp __ai_search_enemy_set_0
-__ai_search_black_side_0:
-  lda #WHITE_KNIGHT
-
-__ai_search_enemy_set_0:
-  cmp $f2
-  bne __ai_search_not_attacker_0
-
-  lda #$00
+  lda NegamaxState + 4; Root move to square
+  and #$7f
   sta $f3
-__ai_search_attacker_loop_0:
-  ldy $f3
+
+  ldx $f2
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_not_resolved_0
+  sta $f4
+
+  ldx $f3
+  lda Board88, x
+  sta $f5
+
+  ldx $f2
+  lda #EMPTY_PIECE
+  sta Board88, x
+  ldx $f3
+  lda $f4
+  sta Board88, x
+
   lda $f0
-  clc
-  adc KnightOffsets, y
-  cmp $f5
-  beq __ai_search_captures_attacker_0
+  sta attack_sq
+  lda #BLACKS_TURN
+  ldx $f1
+  bne __ai_search_resolve_attack_color_set_0
+  lda #WHITES_TURN
+__ai_search_resolve_attack_color_set_0:
+  sta attack_color
+  jsr IsSquareAttacked
+  php
 
-  inc $f3
-  lda $f3
-  cmp #KnightOffsetsEnd - KnightOffsets
-  bne __ai_search_attacker_loop_0
+  ldx $f2
+  lda $f4
+  sta Board88, x
+  ldx $f3
+  lda $f5
+  sta Board88, x
 
-__ai_search_not_attacker_0:
+  plp
+  bcc __ai_search_resolves_queen_attack_0
+
+__ai_search_not_resolved_0:
   clc
   rts
 
-__ai_search_captures_attacker_0:
+__ai_search_resolves_queen_attack_0:
   sec
   rts
 
@@ -2784,8 +2798,8 @@ __ai_search_captures_attacker_1:
 ;
 ; ApplyRootHangingQueenPenalty
 ; Penalize root moves that ignore a queen currently attacked by an enemy
-; piece. Moving the queen resolves it; capturing an attacking knight keeps the
-; old cheap tactical escape path.
+; piece. Moving the queen, blocking the attack, or capturing the attacker
+; resolves it.
 ; Input/Output: $eb = root move score from the mover's perspective.
 ; Clobbers: A, X, Y, attack_sq, attack_color, $f0-$f7
 ;
@@ -2820,17 +2834,9 @@ __ai_search_queen_attack_color_set_0:
   jsr IsSquareAttacked
   bcc __ai_search_next_square_0
 
-  lda NegamaxState + 3; Moving the queen addresses the threat.
-  cmp $f0
-  beq __ai_search_done_4
-
-  jsr IsPieceKnightAttacked
-  bcc __ai_search_apply_hanging_queen_penalty_0
-
-  jsr RootMoveCapturesQueenAttacker
+  jsr RootMoveResolvesQueenAttack
   bcs __ai_search_done_4
 
-__ai_search_apply_hanging_queen_penalty_0:
   lda $eb
   sec
   sbc #ROOT_HANGING_QUEEN_PENALTY
