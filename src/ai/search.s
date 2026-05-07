@@ -2675,15 +2675,15 @@ __ai_search_done_3:
   rts
 
 ;
-; RootMoveResolvesQueenAttack
-; Input: $f0 = queen square, $f1 = queen color/SearchSide.
-; Output: Carry set if the root candidate leaves the queen unattacked.
+; RootMoveResolvesPieceAttack
+; Input: $f0 = piece square, $f1 = piece color/SearchSide.
+; Output: Carry set if the root candidate leaves the piece unattacked.
 ; Clobbers: A, X, Y, attack_sq, attack_color, $f2-$f5
 ;
-RootMoveResolvesQueenAttack:
-  lda NegamaxState + 3; Moving the queen addresses the threat.
+RootMoveResolvesPieceAttack:
+  lda NegamaxState + 3; Moving the piece addresses the threat.
   cmp $f0
-  beq __ai_search_resolves_queen_attack_0
+  beq __ai_search_resolves_piece_attack_0
   sta $f2
 
   lda NegamaxState + 4; Root move to square
@@ -2726,13 +2726,13 @@ __ai_search_resolve_attack_color_set_0:
   sta Board88, x
 
   plp
-  bcc __ai_search_resolves_queen_attack_0
+  bcc __ai_search_resolves_piece_attack_0
 
 __ai_search_not_resolved_0:
   clc
   rts
 
-__ai_search_resolves_queen_attack_0:
+__ai_search_resolves_piece_attack_0:
   sec
   rts
 
@@ -2834,7 +2834,7 @@ __ai_search_queen_attack_color_set_0:
   jsr IsSquareAttacked
   bcc __ai_search_next_square_0
 
-  jsr RootMoveResolvesQueenAttack
+  jsr RootMoveResolvesPieceAttack
   bcs __ai_search_done_4
 
   lda $eb
@@ -3074,6 +3074,108 @@ __ai_search_check_done_1:
   bne __ai_search_scan_loop_1
 
 __ai_search_done_5:
+  rts
+
+;
+; ApplyRootLooseRookPenalty
+; Penalize root moves that ignore an undefended rook under non-pawn attack.
+; Defended rooks and moves that move/block/capture the attacker are exempt.
+; Input/Output: $eb = root move score from the mover's perspective.
+; Clobbers: A, X, Y, attack_sq, attack_color, $f0-$f7
+;
+ApplyRootLooseRookPenalty:
+  lda NegamaxState + 4
+  bmi __ai_search_loose_rook_skip_0
+  and #$7f
+  tax
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  bne __ai_search_loose_rook_skip_0
+
+  ldx NegamaxState + 3
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_loose_rook_skip_0
+  and #$07
+  cmp #ROOK_TYPE
+  bne __ai_search_loose_rook_scan_0
+__ai_search_loose_rook_skip_0:
+  rts
+
+__ai_search_loose_rook_scan_0:
+  lda SearchSide
+  sta $f6
+  lda #$00
+  sta $f7
+
+__ai_search_rook_scan_loop_1:
+  ldx $f7
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_rook_next_square_1
+  sta $f3
+  and #WHITE_COLOR
+  cmp $f6
+  bne __ai_search_rook_next_square_1
+  sta $f1
+  lda $f3
+  and #$07
+  cmp #ROOK_TYPE
+  bne __ai_search_rook_next_square_1
+
+  stx $f0
+  jsr IsPiecePawnAttacked
+  bcs __ai_search_rook_next_square_1
+
+  lda $f0
+  sta attack_sq
+  lda #BLACKS_TURN
+  ldx $f1
+  bne __ai_search_rook_enemy_color_set_0
+  lda #WHITES_TURN
+__ai_search_rook_enemy_color_set_0:
+  sta attack_color
+  jsr IsSquareAttacked
+  bcc __ai_search_rook_next_square_1
+
+  lda $f0
+  sta attack_sq
+  lda #WHITES_TURN
+  ldx $f1
+  bne __ai_search_rook_own_color_set_0
+  lda #BLACKS_TURN
+__ai_search_rook_own_color_set_0:
+  sta attack_color
+  jsr IsSquareAttacked
+  bcs __ai_search_rook_next_square_1
+
+  jsr RootMoveResolvesPieceAttack
+  bcs __ai_search_done_14
+
+  lda $eb
+  sec
+  sbc #ROOT_HANGING_MINOR_PENALTY
+  bvc __ai_search_store_rook_score_0
+  lda #NEG_INFINITY
+__ai_search_store_rook_score_0:
+  sta $eb
+  rts
+
+__ai_search_rook_next_square_1:
+  inc $f7
+  lda $f7
+  and #$08
+  beq __ai_search_rook_check_done_1
+  lda $f7
+  clc
+  adc #$08
+  sta $f7
+__ai_search_rook_check_done_1:
+  lda $f7
+  cmp #BOARD_SIZE
+  bne __ai_search_rook_scan_loop_1
+
+__ai_search_done_14:
   rts
 
 ;
@@ -3972,6 +4074,7 @@ __ai_search_pvs_research_done_0:
   bne __ai_search_skip_root_pawn_safety_0
   jsr ApplyRootPawnSafetyPenalty
   jsr ApplyRootHangingMinorPenalty
+  jsr ApplyRootLooseRookPenalty
   jsr ApplyRootMissedPawnWinPenalty
   jsr ApplyRootMissedAdvancedPawnPenalty
   jsr ApplyRootMinorSafetyPenalty

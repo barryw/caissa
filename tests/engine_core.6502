@@ -233,6 +233,68 @@ suites {
       assert(c == false, "Book safety should reject a rook move onto a rook attack")
     }
 
+    test("root-penalizes-loose-rook-attack", "Root scoring protects undefended rooks from non-pawn attacks") {
+      memfill([Board88], 128, $30)
+      [Board88] + $77 = $b6
+      [Board88] + $44 = $b4
+      [Board88] + $60 = $b1
+      [Board88] + $00 = $36
+      [Board88] + $17 = $33
+      [whitekingsq] = $77
+      [blackkingsq] = $00
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $60
+      [NegamaxState] + $04 = $50
+      $eb = $50
+
+      jsr([ApplyRootLooseRookPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $0f, "Ignoring an undefended rook attacked by a bishop should be penalized")
+
+      [NegamaxState] + $03 = $44
+      [NegamaxState] + $04 = $45
+      $eb = $50
+
+      jsr([ApplyRootLooseRookPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Moving the attacked rook should avoid the loose-rook penalty")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $77 = $b6
+      [Board88] + $44 = $b4
+      [Board88] + $25 = $b2
+      [Board88] + $00 = $36
+      [Board88] + $17 = $33
+      [whitekingsq] = $77
+      [blackkingsq] = $00
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $25
+      [NegamaxState] + $04 = $17
+      $eb = $50
+
+      jsr([ApplyRootLooseRookPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Capturing the piece attacking the rook should avoid the loose-rook penalty")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $77 = $b6
+      [Board88] + $44 = $b4
+      [Board88] + $62 = $b3
+      [Board88] + $60 = $b1
+      [Board88] + $00 = $36
+      [Board88] + $17 = $33
+      [whitekingsq] = $77
+      [blackkingsq] = $00
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $60
+      [NegamaxState] + $04 = $50
+      $eb = $50
+
+      jsr([ApplyRootLooseRookPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Defended rooks should not trigger the loose-rook penalty")
+    }
+
     test("null-move-prunes-deep-safe-node", "Guarded null move can fail high and restore state", timeout = 13000000) {
       jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
       jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
