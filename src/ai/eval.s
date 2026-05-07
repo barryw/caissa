@@ -39,6 +39,7 @@ PINNED_PAWN_PENALTY = 12
 PINNED_MINOR_PENALTY = 25
 PINNED_ROOK_PENALTY = 35
 PINNED_QUEEN_PENALTY = 45
+PINNED_ATTACKED_PENALTY = 20
 
 ;
 ; Pawn Structure Evaluation Constants
@@ -1065,7 +1066,7 @@ SubtractEvalUnsigned:
 ; Penalize pieces pinned to their king by enemy bishops, rooks, or queens.
 ; A pinned defender is a tactical hostage: it cannot move freely and often
 ; becomes the lever for a winning attack.
-; Clobbers: A, X, Y, $f0-$f6
+; Clobbers: A, X, Y, $f0-$f7
 ;
 EvaluateKingPins:
   lda whitekingsq
@@ -1079,7 +1080,7 @@ EvaluateKingPins:
 ;
 ; EvaluatePinsFromKing
 ; Input: A=king square, X=king color. Adds score against pinned side.
-; Clobbers: A, X, Y, $f0-$f6
+; Clobbers: A, X, Y, $f0-$f7
 ;
 EvaluatePinsFromKing:
   sta $f0; $f0 = king square
@@ -1102,8 +1103,10 @@ __ai_eval_pin_ray_loop_0:
   adc $f3
   sta $f4
   and #OFFBOARD_MASK
-  bne __ai_eval_pin_next_dir_0
+  beq __ai_eval_pin_onboard_0
+  jmp __ai_eval_pin_next_dir_0
 
+__ai_eval_pin_onboard_0:
   ldx $f4
   lda Board88, x
   cmp #EMPTY_PIECE
@@ -1117,6 +1120,7 @@ __ai_eval_pin_ray_loop_0:
   and #WHITE_COLOR
   cmp $f1
   bne __ai_eval_pin_next_dir_0
+  stx $f6; $f6 = pinned piece square
   lda Board88, x
   and #$07
   cmp #KING_TYPE
@@ -1135,10 +1139,10 @@ __ai_eval_pin_have_candidate_0:
   and #$07
   cmp #QUEEN_TYPE
   beq __ai_eval_pin_apply_0
-  sta $f6
+  sta $f7
   ldy $f2
   lda PinSliderTypes, y
-  cmp $f6
+  cmp $f7
   bne __ai_eval_pin_next_dir_0
 
 __ai_eval_pin_apply_0:
@@ -1148,16 +1152,53 @@ __ai_eval_pin_apply_0:
   ldx $f1
   beq __ai_eval_pin_black_piece_0
   jsr SubtractEvalUnsigned
-  jmp __ai_eval_pin_next_dir_0
+  jmp ApplyPinnedAttackPressure
 
 __ai_eval_pin_black_piece_0:
   jsr AddEvalUnsigned
+  jmp ApplyPinnedAttackPressure
+
+;
+; ApplyPinnedAttackPressure
+; A pinned piece already has limited choices. If a pawn or knight is also
+; attacking it, add pressure for the side doing the attacking.
+; Inputs: $f1=pinned color, $f2=direction index, $f5=piece type, $f6=square.
+; Clobbers: A, X, Y, $f0, $f2-$f5, $f7
+;
+ApplyPinnedAttackPressure:
+  lda $f2
+  sta $f7; Save direction index across attack probes.
+  lda $f6
+  sta $f0
+  lda $f5
+  sta $f2
+
+  jsr IsPiecePawnAttacked
+  bcs __ai_eval_pinned_extra_pressure_0
+  jsr IsPieceKnightAttacked
+  bcc __ai_eval_restore_pin_dir_0
+
+__ai_eval_pinned_extra_pressure_0:
+  lda #PINNED_ATTACKED_PENALTY
+  ldx $f1
+  beq __ai_eval_black_pinned_extra_0
+  jsr SubtractEvalUnsigned
+  jmp __ai_eval_restore_pin_dir_0
+
+__ai_eval_black_pinned_extra_0:
+  jsr AddEvalUnsigned
+
+__ai_eval_restore_pin_dir_0:
+  lda $f7
+  sta $f2
 
 __ai_eval_pin_next_dir_0:
   inc $f2
   lda $f2
   cmp #$08
-  bne __ai_eval_pin_dir_loop_0
+  beq __ai_eval_pin_done_0
+  jmp __ai_eval_pin_dir_loop_0
+__ai_eval_pin_done_0:
   rts
 
 ;

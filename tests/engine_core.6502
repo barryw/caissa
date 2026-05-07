@@ -319,6 +319,15 @@ suites {
       assert(peekbyte([EvalScore]) == $e7, "White knight pinned to its king by a rook should be penalized")
       assert(peekbyte([EvalScore] + $01) == $ff, "White pin penalty should keep score negative")
 
+      [Board88] + $53 = $31
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+
+      jsr([EvaluateKingPins], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $d3, "A white pinned knight attacked by a pawn should be punished harder")
+      assert(peekbyte([EvalScore] + $01) == $ff, "Extra white pin pressure should keep score negative")
+
       memfill([Board88], 128, $30)
       [Board88] + $70 = $b6
       [Board88] + $74 = $b4
@@ -333,6 +342,15 @@ suites {
 
       assert(peekbyte([EvalScore]) == $19, "Black bishop pinned to its king by a rook should help white")
       assert(peekbyte([EvalScore] + $01) == $00, "Black pin penalty should keep score positive")
+
+      [Board88] + $23 = $b1
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+
+      jsr([EvaluateKingPins], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $2d, "A black pinned bishop attacked by a pawn should be punished harder")
+      assert(peekbyte([EvalScore] + $01) == $00, "Extra black pin pressure should keep score positive")
 
       memfill([Board88], 128, $30)
       [Board88] + $74 = $b6
