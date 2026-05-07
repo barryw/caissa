@@ -152,6 +152,51 @@ suites {
       assert(cycles < 700000, "Hard queen-capture benchmark under 700k cycles")
     }
 
+    test("bench-depth5-middlegame-nullmove", "Depth-five middlegame search captures a queen and exercises null move", tags = "benchmark,strength,performance,tactic,middlegame,nullmove,hard", timeout = 80000000) {
+      [TTCurrentGeneration] = $55
+      jsr([InitSearch], stop_on_rts = true, fail_on_brk = true)
+
+      ; Low-mobility middlegame fragment: white knight e4 can take the black
+      ; queen on d6. Eight total pieces keeps guarded null-move pruning active
+      ; without making the regression benchmark painfully slow.
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $44 = $b2
+      [Board88] + $60 = $b1
+      [Board88] + $67 = $b1
+      [Board88] + $04 = $36
+      [Board88] + $23 = $35
+      [Board88] + $10 = $31
+      [Board88] + $17 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+
+      memfill([WhitePieceList], 16, $ff)
+      memfill([BlackPieceList], 16, $ff)
+      [WhitePieceList] + $00 = $74
+      [WhitePieceList] + $01 = $44
+      [WhitePieceList] + $02 = $60
+      [WhitePieceList] + $03 = $67
+      [WhitePieceCount] = $04
+      [BlackPieceList] + $00 = $04
+      [BlackPieceList] + $01 = $23
+      [BlackPieceList] + $02 = $10
+      [BlackPieceList] + $03 = $17
+      [BlackPieceCount] = $04
+
+      $e8 = $80
+      $e9 = $7f
+      a = $05
+      jsr([Negamax], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $44, "Depth-five middlegame search should move knight from e4")
+      assert(peekbyte([BestMoveTo]) == $23, "Depth-five middlegame search should capture queen on d6")
+      assert(peekbyte([SearchDepth]) == $00, "SearchDepth should return to zero")
+      assert(peekbyte([SearchNullMoveAttempts]) > $00, "Middlegame search should attempt null-move pruning")
+      assert(peekbyte([SearchNullMoveCutoffs]) > $00, "Middlegame search should get null-move cutoffs")
+      assert(cycles < 65000000, "Depth-five middlegame null-move benchmark under 65M cycles")
+    }
+
     test("bench-hard-promotes-queen", "Hard FindBestMove promotes to queen", tags = "benchmark,strength,performance,promotion,hard", timeout = 13000000) {
       [difficulty] = $02
       [TTCurrentGeneration] = $60

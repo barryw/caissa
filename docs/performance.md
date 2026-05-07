@@ -21,6 +21,7 @@ Current standalone benchmark baseline:
 | hard mate in one | 1,865,287 | 2,400,000 |
 | depth-1 hanging queen search | 741,782 | 950,000 |
 | hard hanging queen | 482,112 | 700,000 |
+| depth-5 middlegame null move | 59,688,702 | 65,000,000 |
 | hard white promotion | 447,644 | 650,000 |
 | hard black promotion | 451,333 | 650,000 |
 | hard rook activation | 513,987 | 750,000 |
