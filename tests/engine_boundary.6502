@@ -1,0 +1,66 @@
+; Reusable engine boundary tests.
+; These pin the public Chess* API labels that external hosts such as Nova can use.
+
+suites {
+  suite("Reusable Engine Boundary") {
+    symbols("/code/build/engine_harness.sym")
+    load("/code/build/engine_harness.prg", strip_header = true)
+
+    setup {
+      memfill([Board88], 128, $30)
+      [currentplayer] = $01
+      [whitekingsq] = $44
+      [blackkingsq] = $00
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [SearchDepth] = $00
+      [SearchSide] = $80
+    }
+
+    test("chess-api-generates-legal-moves", "ChessGenerateLegalMoves uses currentplayer and engine state") {
+      [Board88] + $44 = $b6          ; WHITE_KING at e4
+      [Board88] + $00 = $36          ; BLACK_KING at a8
+
+      jsr([ChessGenerateLegalMoves], stop_on_rts = true, fail_on_brk = true)
+
+      assert(a == $08, "White king in the center should have 8 legal moves")
+      assert(peekbyte([MoveCount]) == $08, "MoveCount should match API return")
+    }
+
+    test("chess-api-attack-detection", "ChessIsSquareAttacked exposes attack rules without UI code") {
+      [Board88] + $40 = $34          ; BLACK_ROOK at a4
+      [Board88] + $47 = $b6          ; WHITE_KING at h4
+
+      $26 = $47                       ; attack_sq = h4
+      $27 = $00                       ; attack_color = black
+
+      jsr([ChessIsSquareAttacked], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Black rook should attack h4")
+    }
+
+    test("chess-api-make-unmake", "ChessMakeMove and ChessUnmakeMove preserve engine board state") {
+      [Board88] + $74 = $b6          ; WHITE_KING at e1
+      [Board88] + $04 = $36          ; BLACK_KING at e8
+      [Board88] + $64 = $b1          ; WHITE_PAWN at e2
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+
+      a = $64
+      x = $44
+      jsr([ChessMakeMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([Board88] + $64) == $30, "e2 should be empty after make")
+      assert(peekbyte([Board88] + $44) == $b1, "e4 should contain the pawn after make")
+      assert(peekbyte([enpassantsq]) == $54, "Double push should set e3 en passant square")
+
+      a = $64
+      x = $44
+      jsr([ChessUnmakeMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([Board88] + $64) == $b1, "e2 should be restored after unmake")
+      assert(peekbyte([Board88] + $44) == $30, "e4 should be empty after unmake")
+      assert(peekbyte([enpassantsq]) == $ff, "en passant state should be restored")
+    }
+  }
+}

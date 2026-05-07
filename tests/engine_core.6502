@@ -1,0 +1,99 @@
+; Headless reusable engine tests.
+; These load tests/engine_harness.prg instead of the full C64 chess program.
+
+suites {
+  suite("Headless Engine Core") {
+    symbols("/code/build/engine_harness.sym")
+    load("/code/build/engine_harness.prg", strip_header = true)
+
+    setup {
+      memfill([Board88], 128, $30)
+      [currentplayer] = $01
+      [whitekingsq] = $44
+      [blackkingsq] = $00
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [SearchDepth] = $00
+      [SearchSide] = $80
+    }
+
+    test("headless-engine-generates-legal-moves", "ChessGenerateLegalMoves works without the app shell") {
+      [Board88] + $44 = $b6
+      [Board88] + $00 = $36
+
+      jsr([ChessGenerateLegalMoves], stop_on_rts = true, fail_on_brk = true)
+
+      assert(a == $08, "White king in the center should have 8 legal moves")
+      assert(peekbyte([MoveCount]) == $08, "MoveCount should match API return")
+    }
+
+    test("headless-engine-finds-promotion", "ChessFindBestMove handles a headless promotion shortcut", timeout = 13000000) {
+      jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
+      jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
+
+      [difficulty] = $02
+      [currentplayer] = $00
+      [castlerights] = $00
+      [enpassantsq] = $ff
+
+      memfill([Board88], 128, $30)
+      [Board88] + $70 = $b6
+      [Board88] + $07 = $36
+      [Board88] + $64 = $31
+      [whitekingsq] = $70
+      [blackkingsq] = $07
+
+      memfill([WhitePieceList], 16, $ff)
+      memfill([BlackPieceList], 16, $ff)
+      [WhitePieceList] + $00 = $70
+      [WhitePieceCount] = $01
+      [BlackPieceList] + $00 = $07
+      [BlackPieceList] + $01 = $64
+      [BlackPieceCount] = $02
+
+      jsr([ChessFindBestMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $64, "Headless engine should move black pawn from e2")
+      assert(peekbyte([BestMoveTo]) == $74, "Headless engine should promote to queen on e1")
+      assert(peekbyte([SearchDepth]) == $00, "SearchDepth should return to zero")
+      assert(peekbyte([SearchCompletedDepth]) == $00, "Promotion shortcut should not claim iterative depth")
+      assert(peekbyte([SearchRootMoveCount]) == $00, "Promotion shortcut should not claim searched root moves")
+      assert(peekbyte([SearchUsedBook]) == $00, "Headless test platform should not use a book")
+    }
+
+    test("headless-engine-search-reports-counters", "ChessFindBestMove reports search counters when no shortcut fires", timeout = 13000000) {
+      jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
+      jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
+
+      [difficulty] = $00
+      [currentplayer] = $01
+      [castlerights] = $00
+      [enpassantsq] = $ff
+
+      memfill([Board88], 128, $30)
+      [Board88] + $44 = $b6
+      [Board88] + $00 = $36
+      [Board88] + $64 = $b1
+      [Board88] + $10 = $31
+      [whitekingsq] = $44
+      [blackkingsq] = $00
+
+      memfill([WhitePieceList], 16, $ff)
+      memfill([BlackPieceList], 16, $ff)
+      [WhitePieceList] + $00 = $44
+      [WhitePieceList] + $01 = $64
+      [WhitePieceCount] = $02
+      [BlackPieceList] + $00 = $00
+      [BlackPieceList] + $01 = $10
+      [BlackPieceCount] = $02
+
+      jsr([ChessFindBestMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) != $ff, "Headless search should find a move")
+      assert(peekbyte([SearchDepth]) == $00, "SearchDepth should return to zero")
+      assert(peekbyte([SearchCompletedDepth]) > $00, "Headless search should report completed depth")
+      assert(peekbyte([SearchRootMoveCount]) > $00, "Headless search should report root moves")
+      assert(peekbyte([SearchUsedBook]) == $00, "Headless test platform should not use a book")
+    }
+  }
+}
