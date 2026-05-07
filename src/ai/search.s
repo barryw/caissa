@@ -4257,12 +4257,16 @@ __ai_search_done_11:
 ; Saving the ordered list once per node is much cheaper than regenerating all
 ; legal moves after each child returns.
 ;
+.segment "BSS"
+
 MoveListSnapshotCount:
-  .res MAX_DEPTH, $00
+  .res MAX_DEPTH
 MoveListSnapshotFrom:
-  .res MAX_DEPTH * MAX_MOVES, $00
+  .res MAX_DEPTH * MAX_MOVES
 MoveListSnapshotTo:
-  .res MAX_DEPTH * MAX_MOVES, $00
+  .res MAX_DEPTH * MAX_MOVES
+
+.segment "CODE"
 
 SetMoveListSnapshotFromPtr:
   lda SearchDepth

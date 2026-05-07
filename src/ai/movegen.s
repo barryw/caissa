@@ -23,11 +23,15 @@ MoveCount:
 
 ; Move list: pairs of (from, to) squares
 ; Index by: MoveListFrom[i], MoveListTo[i]
+.segment "BSS"
+
 MoveListFrom:
-  .res MAX_MOVES, $00
+  .res MAX_MOVES
 
 MoveListTo:
-  .res MAX_MOVES, $00
+  .res MAX_MOVES
+
+.segment "CODE"
 
 ; MVV-LVA piece values matching the material scale used by evaluation tests.
 MVV_LVA_Values:
@@ -51,13 +55,17 @@ MVV_LVA_ScoreValues:
   .byte 0; 6: king
 
 ; Score storage for MVV-LVA sorting (one per move)
+.segment "BSS"
+
 MoveScores:
-  .res MAX_MOVES, $00
+  .res MAX_MOVES
 
 ; Compact quiet-move history table. Index is (from << 1) xor to, masked to
 ; 7 bits, so it is move-shaped without paying for a full from/to matrix.
 HistoryScores:
-  .res 128, $00
+  .res 128
+
+.segment "CODE"
 
 ;
 ; Clear move list
