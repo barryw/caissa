@@ -78,6 +78,8 @@ External hosts should prefer these labels from `src/engine/api.s`:
 - `ChessGenerateLegalMoves`
 - `ChessFindBestMove`
 - `ChessMakeMove`
+- `ChessBeginGame`
+- `ChessCommitMove`
 - `ChessUnmakeMove`
 - `ChessIsSquareAttacked`
 - `ChessCheckKingInCheck`
@@ -92,15 +94,26 @@ state, move indexes, promotion state, and piece lists. Renderers should read
 `Board88` and map piece IDs to their own graphics; display state should stay out
 of the engine.
 
-Hosts should call `ChessClearPositionHistory` at the start of a game, then call
-`ChessRecordPosition` for the initial position and after every committed move.
-These APIs initialize the Zobrist tables on demand, so repetition detection does
-not depend on platform startup order. The search also remembers the last returned
-engine move so it can avoid immediate quiet reversals even before a host wires
-full position history.
+Hosts should call `ChessBeginGame` after setting up `Board88`, `currentplayer`,
+castling rights, en passant state, and king squares for a new game. It initializes
+the piece lists, clears draw clocks/history, resets the fullmove number, and
+records the initial position. Hosts should then use `ChessCommitMove` for real
+game moves. It applies the move, advances `currentplayer`, updates the halfmove
+clock and fullmove number, records the new position, and returns the latest
+`EngineGameState`.
+
+`ChessMakeMove` and `ChessUnmakeMove` remain low-level board/search primitives.
+They do not update committed-game draw clocks or repetition history.
+`ChessRecordPosition`, `ChessClearPositionHistory`, and `ChessCheckRepetition`
+are exposed for low-level harnesses and unusual host workflows, but normal
+clients should not need them. These APIs initialize the Zobrist tables on demand,
+so repetition detection does not depend on platform startup order. The search
+also remembers the last returned engine move so it can avoid immediate quiet
+reversals even before a host wires full position history.
 
 `ChessCheckGameState` returns one of the `GAME_*` constants and stores the same
-value in `EngineGameState`: normal, check, checkmate, stalemate, 50-move draw,
-repetition draw, or insufficient-material draw. `ChessFindBestMove` now updates
-`EngineGameState` before searching and returns no move (`$ff/$ff`) for terminal
-checkmate, stalemate, or draw states.
+value in `EngineGameState`: normal, check, checkmate, stalemate, 50-move claim
+available, threefold-repetition claim available, insufficient-material draw,
+75-move automatic draw, or fivefold-repetition automatic draw. `ChessFindBestMove`
+updates `EngineGameState` before searching and returns no move (`$ff/$ff`) for
+terminal checkmate, stalemate, or draw states.

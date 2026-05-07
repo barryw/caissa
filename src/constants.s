@@ -197,9 +197,11 @@ GAME_NORMAL = $00; Not in check, has moves
 GAME_CHECK = $01; In check, has moves
 GAME_CHECKMATE = $02; In check, no moves
 GAME_STALEMATE = $03; Not in check, no moves
-GAME_DRAW_50_MOVE = $04; 50-move rule draw
-GAME_DRAW_REPETITION = $05; Threefold repetition draw
+GAME_DRAW_50_MOVE = $04; Claimable 50-move rule draw
+GAME_DRAW_REPETITION = $05; Claimable threefold repetition draw
 GAME_DRAW_INSUFFICIENT = $06; Insufficient material draw
+GAME_DRAW_75_MOVE = $07; Automatic 75-move no-progress draw
+GAME_DRAW_REPETITION_AUTO = $08; Automatic fivefold repetition draw
 
 ;
 ; Menu Constants

@@ -31,17 +31,26 @@ __ai_rules_reset_clock_0:
 
 ;
 ; CheckFiftyMoveRule
-; Check if 50-move rule draw has been reached
-; Output: Carry set = draw by 50-move rule
+; Check if a no-progress draw threshold has been reached.
+; Output: Carry set = draw threshold reached
 ;         Carry clear = not a draw
+;         A = GAME_DRAW_50_MOVE or GAME_DRAW_75_MOVE when carry is set
 ;
 CheckFiftyMoveRule:
+  lda HalfmoveClock
+  cmp #150; 75 moves = 150 half-moves, automatic under FIDE rules
+  bcs __ai_rules_seventyfive_draw_0
   lda HalfmoveClock
   cmp #100; 50 moves = 100 half-moves
   bcs __ai_rules_fifty_draw_0
   clc
   rts
+__ai_rules_seventyfive_draw_0:
+  lda #GAME_DRAW_75_MOVE
+  sec
+  rts
 __ai_rules_fifty_draw_0:
+  lda #GAME_DRAW_50_MOVE
   sec
   rts
 
@@ -84,9 +93,10 @@ __ai_rules_history_full_0:
 
 ;
 ; CheckRepetition
-; Check if current position has occurred 3 times (threefold repetition)
+; Check if current position has occurred 3 or 5 times.
 ; Output: Carry set = draw by repetition
 ;         Carry clear = not a draw
+;         A = GAME_DRAW_REPETITION or GAME_DRAW_REPETITION_AUTO when carry set
 ; Clobbers: A, X, Y
 ; Optimized: Loop check at bottom saves 1 cycle/iteration (up to 200 cycles)
 ;
@@ -109,19 +119,29 @@ __ai_rules_check_rep_loop_0:
 ; Match found
   inc RepeatCount
   lda RepeatCount
-  cmp #$03; 3 occurrences?
-  bcs __ai_rules_repetition_draw_0
+  cmp #$05; 5 occurrences is automatic under FIDE rules
+  bcs __ai_rules_repetition_auto_draw_0
 
 __ai_rules_rep_next_0:
   inx
   cpx HistoryCount; Check at bottom: BNE saves 1 cycle vs JMP
   bne __ai_rules_check_rep_loop_0
 
+  lda RepeatCount
+  cmp #$03; 3 occurrences is claimable under FIDE rules
+  bcs __ai_rules_repetition_draw_0
+
 __ai_rules_check_rep_done_0:
   clc; No repetition draw
   rts
 
+__ai_rules_repetition_auto_draw_0:
+  lda #GAME_DRAW_REPETITION_AUTO
+  sec; Draw by automatic fivefold repetition
+  rts
+
 __ai_rules_repetition_draw_0:
+  lda #GAME_DRAW_REPETITION
   sec; Draw by repetition
   rts
 
@@ -412,9 +432,11 @@ __ai_rules_attack_color_ready_0:
 ;   GAME_CHECK (1) = king in check, has moves
 ;   GAME_CHECKMATE (2) = checkmate
 ;   GAME_STALEMATE (3) = stalemate
-;   GAME_DRAW_50_MOVE (4) = 50-move rule
-;   GAME_DRAW_REPETITION (5) = threefold repetition
+;   GAME_DRAW_50_MOVE (4) = 50-move rule claim available
+;   GAME_DRAW_REPETITION (5) = threefold repetition claim available
 ;   GAME_DRAW_INSUFFICIENT (6) = insufficient material
+;   GAME_DRAW_75_MOVE (7) = automatic 75-move no-progress draw
+;   GAME_DRAW_REPETITION_AUTO (8) = automatic fivefold repetition draw
 ;
 AICheckGameState:
   jsr EnsureZobristTablesInitialized
@@ -426,13 +448,11 @@ AICheckGameState:
 ; First check draws (before expensive move generation)
   jsr CheckFiftyMoveRule
   bcc __ai_rules_not_fifty_0
-  lda #GAME_DRAW_50_MOVE
   rts
 
 __ai_rules_not_fifty_0:
   jsr CheckRepetition
   bcc __ai_rules_not_repetition_0
-  lda #GAME_DRAW_REPETITION
   rts
 
 __ai_rules_not_repetition_0:
