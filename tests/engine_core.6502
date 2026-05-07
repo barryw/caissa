@@ -73,16 +73,17 @@ suites {
 
       $f0 = $64
       $f1 = $44
-      a = $05
+      a = $04
       jsr([StoreHistory], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte([SearchHistoryActive]) == $01, "StoreHistory should activate history ordering")
       assert(peekbyte([SearchHistoryUpdates]) == $01, "StoreHistory should report one update")
-      assert(peekbyte([HistoryScores] + $0c) == $05, "History score should use the compact from/to index")
+      assert(peekbyte([HistoryScores] + $0c) == $10, "History score should use depth-weighted compact from/to index")
 
+      [HistoryScores] + $0c = $f0
       $f0 = $64
       $f1 = $44
-      a = $ff
+      a = $07
       jsr([StoreHistory], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte([HistoryScores] + $0c) == $ff, "History scores should saturate at 255")

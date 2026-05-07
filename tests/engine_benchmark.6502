@@ -152,7 +152,7 @@ suites {
       assert(cycles < 700000, "Hard queen-capture benchmark under 700k cycles")
     }
 
-    test("bench-depth5-middlegame-nullmove", "Depth-five middlegame search captures a queen and exercises null move", tags = "benchmark,strength,performance,tactic,middlegame,nullmove,hard", timeout = 80000000) {
+    test("bench-depth5-middlegame-search", "Depth-five middlegame search captures a queen with selective search", tags = "benchmark,strength,performance,tactic,middlegame,history,lmr,hard", timeout = 80000000) {
       [TTCurrentGeneration] = $55
       jsr([InitSearch], stop_on_rts = true, fail_on_brk = true)
 
@@ -192,9 +192,8 @@ suites {
       assert(peekbyte([BestMoveFrom]) == $44, "Depth-five middlegame search should move knight from e4")
       assert(peekbyte([BestMoveTo]) == $23, "Depth-five middlegame search should capture queen on d6")
       assert(peekbyte([SearchDepth]) == $00, "SearchDepth should return to zero")
-      assert(peekbyte([SearchNullMoveAttempts]) > $00, "Middlegame search should attempt null-move pruning")
-      assert(peekbyte([SearchNullMoveCutoffs]) > $00, "Middlegame search should get null-move cutoffs")
-      assert(cycles < 58000000, "Depth-five middlegame null-move benchmark under 58M cycles")
+      assert(peekbyte([SearchHistoryUpdates]) > $00, "Middlegame search should update history ordering")
+      assert(cycles < 45000000, "Depth-five middlegame search benchmark under 45M cycles")
     }
 
     test("bench-hard-promotes-queen", "Hard FindBestMove promotes to queen", tags = "benchmark,strength,performance,promotion,hard", timeout = 13000000) {

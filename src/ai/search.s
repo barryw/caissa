@@ -104,7 +104,7 @@ ROOT_HISTORY_SEEN_PENALTY = 35
 ROOT_REPETITION_PENALTY = 85
 FUTILITY_MARGIN = 30
 LMR_MIN_DEPTH = 4
-LMR_FULL_MOVES = 4
+LMR_FULL_MOVES = 2
 ASPIRATION_DELTA = 20
 PVS_MIN_DEPTH = 3
 NULL_MOVE_MIN_DEPTH = 4
@@ -1055,13 +1055,18 @@ __ai_search_clear_history_loop_0:
   sta SearchHistoryUpdates
   rts
 
+HistoryBonusByDepth:
+  .byte 0, 1, 4, 9, 16, 25, 36, 49
+
 ;
 ; StoreHistory
 ; Reward a quiet beta-cutoff move for future ordering.
-; Input: $f0 = from, $f1 = cleaned to, A = bonus
+; Input: $f0 = from, $f1 = cleaned to, A = depth remaining
 ; Clobbers: A, Y, $f2
 ;
 StoreHistory:
+  tay
+  lda HistoryBonusByDepth, y
   sta $f2
   lda $f0
   asl

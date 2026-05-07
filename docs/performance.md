@@ -16,15 +16,15 @@ Current standalone benchmark baseline:
 
 | Benchmark | Cycles | Gate |
 | --- | ---: | ---: |
-| easy mate in one | 1,865,950 | 2,400,000 |
-| medium mate in one | 1,865,984 | 2,400,000 |
-| hard mate in one | 1,865,984 | 2,400,000 |
-| depth-1 hanging queen search | 740,996 | 950,000 |
-| hard hanging queen | 481,980 | 700,000 |
-| depth-5 middlegame null move | 54,786,737 | 58,000,000 |
-| hard white promotion | 447,376 | 650,000 |
-| hard black promotion | 450,996 | 650,000 |
-| hard rook activation | 513,733 | 750,000 |
+| easy mate in one | 1,864,389 | 2,400,000 |
+| medium mate in one | 1,864,423 | 2,400,000 |
+| hard mate in one | 1,864,423 | 2,400,000 |
+| depth-1 hanging queen search | 740,381 | 950,000 |
+| hard hanging queen | 481,976 | 700,000 |
+| depth-5 middlegame search | 41,722,751 | 45,000,000 |
+| hard white promotion | 447,372 | 650,000 |
+| hard black promotion | 451,004 | 650,000 |
+| hard rook activation | 513,739 | 750,000 |
 
 `make size` reports ld65 segment sizes from `build/engine_harness.dbg`. Current
 standalone ca65 size:
@@ -32,8 +32,8 @@ standalone ca65 size:
 | Segment | Range | Bytes |
 | --- | --- | ---: |
 | `LOADADDR` | `$0000-$0001` | 2 |
-| `CODE` | `$0801-$645b` | 23,643 |
-| total PRG payload | | 23,645 |
+| `CODE` | `$0801-$6467` | 23,655 |
+| total PRG payload | | 23,657 |
 
 Treat benchmark changes as suspicious until they have both a cycle explanation
 and a strength/correctness test result. The goal is to make every optimization
