@@ -338,6 +338,38 @@ suites {
       assert(peekbyte($eb) == $50, "Defended bishops should not trigger the loose-piece penalty")
     }
 
+    test("root-penalizes-rook-landing-on-attack", "Root scoring rejects rook moves onto cheap attacks") {
+      memfill([Board88], 128, $30)
+      [Board88] + $77 = $b6
+      [Board88] + $44 = $b4
+      [Board88] + $00 = $36
+      [Board88] + $07 = $33
+      [whitekingsq] = $77
+      [blackkingsq] = $00
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $44
+      [NegamaxState] + $04 = $34
+      $eb = $50
+
+      jsr([ApplyRootRookSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $00, "A rook moving onto a bishop attack should be penalized")
+
+      [Board88] + $34 = $35
+      $eb = $50
+
+      jsr([ApplyRootRookSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "A rook capturing a queen should not take the rook-destination penalty")
+
+      [Board88] + $34 = $31
+      $eb = $50
+
+      jsr([ApplyRootRookSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $00, "A rook winning only a pawn while landing attacked should be penalized")
+    }
+
     test("null-move-prunes-deep-safe-node", "Guarded null move can fail high and restore state", timeout = 13000000) {
       jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
       jsr([TTClear], stop_on_rts = true, fail_on_brk = true)

@@ -98,6 +98,7 @@ MaxDepthTable:
 STATIC_EVAL_LIMIT = MATE_SCORE - 11
 ROOT_ATTACKED_QUEEN_DEST_PENALTY = 120
 ROOT_HANGING_QUEEN_PENALTY = 70
+ROOT_ATTACKED_ROOK_DEST_PENALTY = 80
 ROOT_MINOR_QUEEN_RAY_PENALTY = 90
 ROOT_MINOR_KNIGHT_DEST_PENALTY = 45
 ROOT_MINOR_ATTACKED_DEST_PENALTY = 80
@@ -2584,6 +2585,66 @@ __ai_search_done_2:
   rts
 
 ;
+; ApplyRootRookSafetyPenalty
+; Penalize root rook moves that land on a non-pawn enemy attack while winning
+; less than a rook. Pawn attacks are handled by ApplyRootPawnSafetyPenalty.
+; Input/Output: $eb = root move score from the mover's perspective.
+; Clobbers: A, X, Y, attack_sq, attack_color, $f0-$f3
+;
+ApplyRootRookSafetyPenalty:
+  ldx NegamaxState + 3
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_done_15
+  sta $f3
+  and #$07
+  cmp #ROOK_TYPE
+  bne __ai_search_done_15
+
+  lda $f3
+  and #WHITE_COLOR
+  sta $f1
+  lda NegamaxState + 4
+  and #$7f
+  sta $f0
+
+  ldx $f0
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_check_rook_dest_attack_0
+  and #$07
+  cmp #ROOK_TYPE
+  bcs __ai_search_done_15
+
+__ai_search_check_rook_dest_attack_0:
+  jsr IsPiecePawnAttacked
+  bcs __ai_search_done_15
+
+  lda $f0
+  sta attack_sq
+  lda $f1
+  beq __ai_search_black_rook_1
+  lda #BLACKS_TURN
+  jmp __ai_search_rook_attack_color_set_0
+__ai_search_black_rook_1:
+  lda #WHITES_TURN
+__ai_search_rook_attack_color_set_0:
+  sta attack_color
+  jsr IsSquareAttacked
+  bcc __ai_search_done_15
+
+  lda $eb
+  sec
+  sbc #ROOT_ATTACKED_ROOK_DEST_PENALTY
+  bvc __ai_search_store_rook_dest_score_0
+  lda #NEG_INFINITY
+__ai_search_store_rook_dest_score_0:
+  sta $eb
+
+__ai_search_done_15:
+  rts
+
+;
 ; ApplyRootMinorSafetyPenalty
 ; Penalize root minor-piece moves that land on cheap tactical attacks. This is
 ; deliberately narrow: quiet moves and pawn grabs by knights/bishops should
@@ -4081,6 +4142,7 @@ __ai_search_pvs_research_done_0:
   jsr ApplyRootMissedPawnWinPenalty
   jsr ApplyRootMissedAdvancedPawnPenalty
   jsr ApplyRootMinorSafetyPenalty
+  jsr ApplyRootRookSafetyPenalty
   jsr ApplyRootQueenSafetyPenalty
   jsr ApplyRootEarlyQueenPenalty
   jsr ApplyRootEarlyRookPenalty
