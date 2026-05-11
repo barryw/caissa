@@ -33,17 +33,7 @@ MoveListTo:
 
 .segment "CODE"
 
-; MVV-LVA piece values matching the material scale used by evaluation tests.
-MVV_LVA_Values:
-  .byte 0; 0: empty
-  .byte 10; 1: pawn
-  .byte 32; 2: knight
-  .byte 33; 3: bishop
-  .byte 50; 4: rook
-  .byte 90; 5: queen
-  .byte 0; 6: king
-
-; Compact ranks for 8-bit MVV-LVA move ordering. The evaluation values above
+; Compact ranks for 8-bit MVV-LVA move ordering. Full evaluation values
 ; overflow when multiplied inside a byte, so ordering uses bounded ranks.
 MVV_LVA_ScoreValues:
   .byte 0; 0: empty
@@ -54,6 +44,8 @@ MVV_LVA_ScoreValues:
   .byte 9; 5: queen
   .byte 0; 6: king
 
+RECAPTURE_ORDER_BONUS = 32
+
 ; Score storage for MVV-LVA sorting (one per move)
 .segment "BSS"
 
@@ -63,6 +55,14 @@ MoveScores:
 ; Compact quiet-move history table. Index is (from << 1) xor to, masked to
 ; 7 bits, so it is move-shaped without paying for a full from/to matrix.
 HistoryScores:
+  .res 128
+
+; Countermove table keyed by the previous move's destination square. This is a
+; compact continuation-history hint: if a quiet move refutes replies after a
+; given destination, try it early the next time that destination appears.
+CounterMoveFrom:
+  .res 128
+CounterMoveTo:
   .res 128
 
 .segment "CODE"
@@ -90,17 +90,6 @@ AddMove:
   txa; A = to square
   sta MoveListTo, y; Store 'to' square
   inc MoveCount; Increment count
-  rts
-
-;
-; Get move from list
-; Input: X = move index (0 to MoveCount-1)
-; Output: A = from square, Y = to square
-; Clobbers: none beyond return values
-;
-GetMove:
-  lda MoveListFrom, x; A = from square
-  ldy MoveListTo, x; Y = to square
   rts
 
 ;
@@ -320,7 +309,6 @@ __ai_movegen_king_next_0:
   bne __ai_movegen_king_loop_0
 
 ; Fall through to castling generation
-  jmp GenerateCastlingMoves
 
 ;
 ; Generate castling moves (called from GenerateKingMoves)
@@ -630,16 +618,43 @@ __ai_movegen_normal_pawn_move_0:
 GenerateAllMoves:
   stx $f0; $f0 = side to move color
 
-; Loop through the 64 valid 0x88 squares, skipping each offboard gap.
+; Loop through the active piece list for the side instead of scanning all 64
+; squares. MakeMove/UnmakeMove keep the lists compact during search.
   lda #$00
-  sta $f1; $f1 = current square index
+  sta $f1; $f1 = piece-list index
+  lda $f0
+  beq __ai_movegen_black_list_count_0
+  lda WhitePieceCount
+  jmp __ai_movegen_list_count_ready_0
+__ai_movegen_black_list_count_0:
+  lda BlackPieceCount
+__ai_movegen_list_count_ready_0:
+  sta $f6; $f6 = piece-list count
 
 __ai_movegen_gen_loop_0:
-; Get piece at this square
-  ldx $f1
+  lda $f1
+  cmp $f6
+  bcc __ai_movegen_get_list_square_0
+  jmp __ai_movegen_gen_done_0
+
+__ai_movegen_get_list_square_0:
+  lda $f0
+  beq __ai_movegen_get_black_square_0
+  ldy $f1
+  lda WhitePieceList, y
+  jmp __ai_movegen_have_list_square_0
+__ai_movegen_get_black_square_0:
+  ldy $f1
+  lda BlackPieceList, y
+
+__ai_movegen_have_list_square_0:
+  cmp #$ff
+  beq __ai_movegen_gen_next_square_0
+  sta $f5; $f5 = from square
+  tax
   lda Board88, x
   cmp #EMPTY_PIECE
-  beq __ai_movegen_gen_next_square_0; Empty square, skip
+  beq __ai_movegen_gen_next_square_0; Stale list slot, skip
 
 ; Check if piece belongs to side to move
   sta $f2; Save piece value without stack traffic
@@ -665,54 +680,45 @@ __ai_movegen_gen_loop_0:
   jmp __ai_movegen_gen_next_square_0; Unknown piece type
 
 __ai_movegen_gen_pawn_0:
-  lda $f1; From square
+  lda $f5; From square
   ldx $f0; Side color
   jsr GeneratePawnMoves
   jmp __ai_movegen_gen_next_square_0
 
 __ai_movegen_gen_knight_0:
-  lda $f1; From square
+  lda $f5; From square
   ldx $f0; Side color
   jsr GenerateKnightMoves
   jmp __ai_movegen_gen_next_square_0
 
 __ai_movegen_gen_bishop_0:
-  lda $f1; From square
+  lda $f5; From square
   ldx $f0; Side color
   jsr GenerateBishopMoves
   jmp __ai_movegen_gen_next_square_0
 
 __ai_movegen_gen_rook_0:
-  lda $f1; From square
+  lda $f5; From square
   ldx $f0; Side color
   jsr GenerateRookMoves
   jmp __ai_movegen_gen_next_square_0
 
 __ai_movegen_gen_queen_0:
-  lda $f1; From square
+  lda $f5; From square
   ldx $f0; Side color
   jsr GenerateQueenMoves
   jmp __ai_movegen_gen_next_square_0
 
 __ai_movegen_gen_king_0:
-  lda $f1; From square
+  lda $f5; From square
   ldx $f0; Side color
   jsr GenerateKingMoves
 
 __ai_movegen_gen_next_square_0:
-  inc $f1; Next file
-  lda $f1
-  and #$08; Past file h in 0x88 layout?
-  beq __ai_movegen_gen_check_done_0
-  lda $f1
-  clc
-  adc #$08; Skip offboard gap to next rank
-  sta $f1
-__ai_movegen_gen_check_done_0:
-  lda $f1
-  cmp #BOARD_SIZE; Done all 128 bytes?
-  bne __ai_movegen_gen_loop_0
+  inc $f1
+  jmp __ai_movegen_gen_loop_0
 
+__ai_movegen_gen_done_0:
   lda MoveCount; Return move count in A
   rts
 
@@ -745,8 +751,7 @@ __ai_movegen_score_move_mvv_0:
   tay
   lda Board88, y; Piece on target
   cmp #EMPTY_PIECE
-  bne __ai_movegen_capture_mvv_0
-  jmp __ai_movegen_not_capture_mvv_0
+  beq __ai_movegen_not_capture_mvv_0
 
 __ai_movegen_capture_mvv_0:
 ; It's a capture - calculate MVV-LVA score
@@ -776,6 +781,7 @@ __ai_movegen_capture_mvv_0:
   sbc $e3
   ldx $e1
   sta MoveScores, x; Store score for this move
+  jsr ApplyRecaptureOrderingBonus
 
 ; Swap-off gate: lower-value captures only stay tactical if the destination
 ; is not defended after the move is made.
@@ -920,6 +926,10 @@ __ai_movegen_killer_reorder_loop_0:
   lda MoveListTo, x
   and #$7f; Clear promotion flag
   sta $e3
+  tay
+  lda Board88, y
+  cmp #EMPTY_PIECE
+  bne __ai_movegen_next_killer_check_0; Stale killers must not promote captures.
 
 ; Check if it's a killer
   lda $e2; from
@@ -958,6 +968,75 @@ __ai_movegen_next_killer_check_0:
   jmp __ai_movegen_killer_reorder_loop_0
 
 __ai_movegen_killer_done_reorder_0:
+; Countermove ordering: after killers, try the quiet reply that most recently
+; refuted the current node's previous move destination.
+  lda SearchCounterMoveActive
+  beq __ai_movegen_counter_done_0
+  lda SearchDepth
+  beq __ai_movegen_counter_done_0
+  tay
+  lda LastMoveToByDepth, y
+  cmp #$ff
+  beq __ai_movegen_counter_done_0
+  and #$7f
+  tay
+  lda CounterMoveFrom, y
+  cmp #$ff
+  beq __ai_movegen_counter_done_0
+  sta $e2
+  lda CounterMoveTo, y
+  sta $e3
+
+  lda $e6
+  sta $e1
+
+__ai_movegen_counter_scan_loop_0:
+  lda $e1
+  cmp MoveCount
+  bcs __ai_movegen_counter_done_0
+
+  ldx $e1
+  lda MoveListTo, x
+  bmi __ai_movegen_counter_next_0
+  and #$7f
+  cmp $e3
+  bne __ai_movegen_counter_next_0
+  tay
+  lda Board88, y
+  cmp #EMPTY_PIECE
+  bne __ai_movegen_counter_next_0
+  lda MoveListFrom, x
+  cmp $e2
+  bne __ai_movegen_counter_next_0
+
+  ldx $e1
+  ldy $e6
+  cpx $e6
+  beq __ai_movegen_counter_advance_0
+
+  lda MoveListFrom, x
+  pha
+  lda MoveListFrom, y
+  sta MoveListFrom, x
+  pla
+  sta MoveListFrom, y
+
+  lda MoveListTo, x
+  pha
+  lda MoveListTo, y
+  sta MoveListTo, x
+  pla
+  sta MoveListTo, y
+
+__ai_movegen_counter_advance_0:
+  inc $e6
+  jmp __ai_movegen_counter_done_0
+
+__ai_movegen_counter_next_0:
+  inc $e1
+  jmp __ai_movegen_counter_scan_loop_0
+
+__ai_movegen_counter_done_0:
   lda SearchHistoryActive
   bne __ai_movegen_history_start_0
   rts
@@ -1036,6 +1115,40 @@ __ai_movegen_history_do_swap_0:
   rts
 
 ;
+; ApplyRecaptureOrderingBonus
+; Captures back on the previous capture square are often forced. Give them a
+; bounded score bump inside MVV-LVA without blindly outranking huge wins.
+; Input: X = move index, MoveScores[x] already populated.
+; Clobbers: A, Y, $e2
+;
+ApplyRecaptureOrderingBonus:
+  lda SearchDepth
+  beq __ai_movegen_recapture_bonus_done_0
+  tay
+  lda LastMoveWasCaptureByDepth, y
+  beq __ai_movegen_recapture_bonus_done_0
+  lda LastMoveToByDepth, y
+  cmp #$ff
+  beq __ai_movegen_recapture_bonus_done_0
+  and #$7f
+  sta $e2
+  lda MoveListTo, x
+  and #$7f
+  cmp $e2
+  bne __ai_movegen_recapture_bonus_done_0
+
+  lda MoveScores, x
+  clc
+  adc #RECAPTURE_ORDER_BONUS
+  bcc __ai_movegen_recapture_bonus_store_0
+  lda #$ff
+__ai_movegen_recapture_bonus_store_0:
+  sta MoveScores, x
+
+__ai_movegen_recapture_bonus_done_0:
+  rts
+
+;
 ; PromoteForcingQuietMoves
 ; Within the quiet move band, move promotions and checks before ordinary
 ; quiets so alpha-beta sees forcing moves before positional shuffling.
@@ -1058,7 +1171,7 @@ __ai_movegen_forcing_check_0:
   bcs __ai_movegen_promote_forcing_0
 
   ldx $e1
-  jsr IsQuietMoveChecking
+  jsr IsQuietMoveSearchForcing
   bcc __ai_movegen_forcing_next_0
 
 __ai_movegen_promote_forcing_0:
@@ -1134,6 +1247,26 @@ __ai_movegen_not_quiet_promotion_0:
   rts
 
 __ai_movegen_is_quiet_promotion_0:
+  sec
+  rts
+
+;
+; IsQuietMoveSearchForcing
+; Input: X = move index. Output: carry set if this quiet move gives check or
+; creates a new attack on an enemy rook/queen.
+; Clobbers: A, X, Y, $e2, $f0-$f7, attack_sq, attack_color
+;
+IsQuietMoveSearchForcing:
+  stx $e2
+  jsr IsQuietMoveChecking
+  bcs __ai_movegen_quiet_forcing_0
+  ldx $e2
+  jsr IsQuietMoveMajorThreat
+  bcs __ai_movegen_quiet_forcing_0
+  clc
+  rts
+
+__ai_movegen_quiet_forcing_0:
   sec
   rts
 
@@ -1219,6 +1352,141 @@ __ai_movegen_not_checking_quiet_0:
   rts
 
 ;
+; IsQuietMoveMajorThreat
+; Input: X = move index. Output: carry set if the quiet move newly attacks an
+; enemy rook or queen. This catches quiet tactics such as discovered attacks
+; and knight forks without treating already-attacked majors as new threats.
+; Clobbers: A, X, Y, $f0-$f7, attack_sq, attack_color
+;
+IsQuietMoveMajorThreat:
+  lda MoveListTo, x
+  bmi __ai_movegen_major_reject_0
+  and #$7f
+  sta $f1; destination
+  tay
+  lda Board88, y
+  cmp #EMPTY_PIECE
+  bne __ai_movegen_major_reject_0
+
+  lda MoveListFrom, x
+  sta $f0; source
+  tay
+  lda Board88, y
+  cmp #EMPTY_PIECE
+  beq __ai_movegen_major_reject_0
+  sta $f2; moving piece
+  and #WHITE_COLOR
+  sta $f4; moving color
+
+; Skip castling; the temporary move below does not move the rook.
+  lda $f2
+  and #$07
+  cmp #KING_TYPE
+  bne __ai_movegen_major_scan_start_0
+  lda $f1
+  sec
+  sbc $f0
+  cmp #$02
+  beq __ai_movegen_major_reject_0
+  cmp #$fe
+  beq __ai_movegen_major_reject_0
+  bne __ai_movegen_major_scan_start_0
+
+__ai_movegen_major_reject_0:
+  jmp __ai_movegen_not_major_threat_0
+
+__ai_movegen_major_scan_start_0:
+  lda #$00
+  sta $f5; scan square
+
+__ai_movegen_major_scan_loop_0:
+  ldx $f5
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_movegen_major_next_square_0
+  sta $f7; target piece
+  and #WHITE_COLOR
+  cmp $f4
+  beq __ai_movegen_major_next_square_0
+  lda $f7
+  and #$07
+  cmp #ROOK_TYPE
+  beq __ai_movegen_major_candidate_0
+  cmp #QUEEN_TYPE
+  bne __ai_movegen_major_next_square_0
+
+__ai_movegen_major_candidate_0:
+  ldx $f5
+  stx $f6; target square
+  stx attack_sq
+  lda $f4
+  beq __ai_movegen_major_before_black_0
+  lda #WHITES_TURN
+  jmp __ai_movegen_major_before_ready_0
+__ai_movegen_major_before_black_0:
+  lda #BLACKS_TURN
+__ai_movegen_major_before_ready_0:
+  sta attack_color
+  jsr IsSquareAttacked
+  bcs __ai_movegen_major_next_square_0; Already attacked before this move.
+
+; Temporarily apply the quiet move and see if the major piece becomes attacked.
+  ldx $f0
+  lda #EMPTY_PIECE
+  sta Board88, x
+  ldx $f1
+  lda $f2
+  sta Board88, x
+
+  lda $f6
+  sta attack_sq
+  lda $f4
+  beq __ai_movegen_major_after_black_0
+  lda #WHITES_TURN
+  jmp __ai_movegen_major_after_ready_0
+__ai_movegen_major_after_black_0:
+  lda #BLACKS_TURN
+__ai_movegen_major_after_ready_0:
+  sta attack_color
+  jsr IsSquareAttacked
+  lda #$00
+  rol
+  sta $f7
+
+  ldx $f0
+  lda $f2
+  sta Board88, x
+  ldx $f1
+  lda #EMPTY_PIECE
+  sta Board88, x
+
+  lda $f7
+  bne __ai_movegen_is_major_threat_0
+
+__ai_movegen_major_next_square_0:
+  inc $f5
+  lda $f5
+  and #$08
+  beq __ai_movegen_major_check_done_0
+  lda $f5
+  clc
+  adc #$08
+  sta $f5
+__ai_movegen_major_check_done_0:
+  lda $f5
+  cmp #BOARD_SIZE
+  beq __ai_movegen_not_major_threat_0
+  jmp __ai_movegen_major_scan_loop_0
+
+__ai_movegen_not_major_threat_0:
+  clc
+  rts
+
+__ai_movegen_is_major_threat_0:
+  sec
+  rts
+
+;
 ; CapturePassesSwapOff
 ; Classify a capture using a cheap static exchange test. Winning/equal captures
 ; always pass. Losing captures pass only when the destination is not attacked
@@ -1259,7 +1527,13 @@ CapturePassesSwapOff:
   tay
   lda MVV_LVA_ScoreValues, y
   sta $f3; $f3 = attacker rank
+  tya
+  cmp #KING_TYPE
+  bne __ai_movegen_swapoff_compare_values_0
+  lda #$0a
+  sta $f3; Treat king captures as expensive if a raw list reaches SEE.
 
+__ai_movegen_swapoff_compare_values_0:
   lda $f2
   cmp $f3
   bcs __ai_movegen_safe_0; Victim >= attacker: non-losing exchange.
@@ -1320,10 +1594,37 @@ GenerateCaptures:
   jsr ClearMoveList
 
   lda #$00
-  sta $f1; $f1 = current square index
+  sta $f1; $f1 = piece-list index
+  lda $f0
+  beq __ai_movegen_cap_black_list_count_0
+  lda WhitePieceCount
+  jmp __ai_movegen_cap_list_count_ready_0
+__ai_movegen_cap_black_list_count_0:
+  lda BlackPieceCount
+__ai_movegen_cap_list_count_ready_0:
+  sta $f6; $f6 = piece-list count
 
 __ai_movegen_cap_gen_loop_0:
-  ldx $f1
+  lda $f1
+  cmp $f6
+  bcc __ai_movegen_cap_get_list_square_0
+  jmp __ai_movegen_cap_done_0
+
+__ai_movegen_cap_get_list_square_0:
+  lda $f0
+  beq __ai_movegen_cap_get_black_square_0
+  ldy $f1
+  lda WhitePieceList, y
+  jmp __ai_movegen_cap_have_list_square_0
+__ai_movegen_cap_get_black_square_0:
+  ldy $f1
+  lda BlackPieceList, y
+
+__ai_movegen_cap_have_list_square_0:
+  cmp #$ff
+  beq __ai_movegen_cap_next_square_0
+  sta $f5; $f5 = from square
+  tax
   lda Board88, x
   cmp #EMPTY_PIECE
   beq __ai_movegen_cap_next_square_0
@@ -1350,54 +1651,45 @@ __ai_movegen_cap_gen_loop_0:
   jmp __ai_movegen_cap_next_square_0
 
 __ai_movegen_cap_pawn_0:
-  lda $f1
+  lda $f5
   ldx $f0
   jsr GeneratePawnCaptures
   jmp __ai_movegen_cap_next_square_0
 
 __ai_movegen_cap_knight_0:
-  lda $f1
+  lda $f5
   ldx $f0
   jsr GenerateKnightCaptures
   jmp __ai_movegen_cap_next_square_0
 
 __ai_movegen_cap_bishop_0:
-  lda $f1
+  lda $f5
   ldx $f0
   jsr GenerateBishopCaptures
   jmp __ai_movegen_cap_next_square_0
 
 __ai_movegen_cap_rook_0:
-  lda $f1
+  lda $f5
   ldx $f0
   jsr GenerateRookCaptures
   jmp __ai_movegen_cap_next_square_0
 
 __ai_movegen_cap_queen_0:
-  lda $f1
+  lda $f5
   ldx $f0
   jsr GenerateQueenCaptures
   jmp __ai_movegen_cap_next_square_0
 
 __ai_movegen_cap_king_0:
-  lda $f1
+  lda $f5
   ldx $f0
   jsr GenerateKingCaptures
 
 __ai_movegen_cap_next_square_0:
   inc $f1
-  lda $f1
-  and #$08
-  beq __ai_movegen_cap_check_done_0
-  lda $f1
-  clc
-  adc #$08; Skip offboard gap to next rank
-  sta $f1
-__ai_movegen_cap_check_done_0:
-  lda $f1
-  cmp #BOARD_SIZE
-  bne __ai_movegen_cap_gen_loop_0
+  jmp __ai_movegen_cap_gen_loop_0
 
+__ai_movegen_cap_done_0:
   lda MoveCount
   rts
 

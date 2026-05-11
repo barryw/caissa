@@ -1,0 +1,88 @@
+{
+  "positions": [
+    {
+      "name": "mate-in-one-rh8",
+      "fen": "k7/8/1K6/8/8/8/7R/8 w - - 0 1",
+      "description": "White should find Rh8#",
+      "category": "mate",
+      "tags": ["rook", "mate", "endgame"]
+    },
+    {
+      "name": "queen-delivers-mate",
+      "fen": "6k1/5ppp/8/8/8/8/5PPP/6KQ w - - 0 1",
+      "description": "White queen has a mating attack against the boxed black king",
+      "category": "mate",
+      "tags": ["queen", "mate", "king-safety"]
+    },
+    {
+      "name": "hanging-queen",
+      "fen": "4k3/8/3q4/8/4N3/8/8/4K3 w - - 0 1",
+      "description": "White knight can take a loose black queen",
+      "category": "tactic",
+      "tags": ["capture", "knight", "material"]
+    },
+    {
+      "name": "black-captures-checking-queen",
+      "fen": "4k3/3Q4/8/4n3/8/8/8/4K3 b - - 0 1",
+      "description": "Black can answer check by winning the attacking queen",
+      "category": "tactic",
+      "tags": ["capture", "knight", "check"]
+    },
+    {
+      "name": "rook-takes-bishop",
+      "fen": "4k3/8/8/8/4b3/8/4R3/4K3 w - - 0 1",
+      "description": "White rook can win a loose bishop on the same file",
+      "category": "tactic",
+      "tags": ["capture", "rook", "material"]
+    },
+    {
+      "name": "king-takes-rook",
+      "fen": "4k3/8/8/8/8/8/4r3/4K3 w - - 0 1",
+      "description": "White king can capture an undefended rook",
+      "category": "tactic",
+      "tags": ["capture", "king", "material"]
+    },
+    {
+      "name": "promotion-queen",
+      "fen": "k7/4P3/8/8/8/8/8/7K w - - 0 1",
+      "description": "White should promote the e-pawn",
+      "category": "promotion",
+      "tags": ["promotion", "queen"]
+    },
+    {
+      "name": "promotion-captures-rook",
+      "fen": "k2r4/4P3/8/8/8/8/8/7K w - - 0 1",
+      "description": "White can promote while capturing a rook",
+      "category": "promotion",
+      "tags": ["promotion", "capture", "queen"]
+    },
+    {
+      "name": "black-promotion-queen",
+      "fen": "7k/8/8/8/8/8/4p3/K7 b - - 0 1",
+      "description": "Black should promote the e-pawn",
+      "category": "promotion",
+      "tags": ["promotion", "queen"]
+    },
+    {
+      "name": "passed-pawn-race",
+      "fen": "8/8/8/3k4/8/4K3/4P3/8 w - - 0 1",
+      "description": "Sparse king and pawn ending tests king activity around a passer",
+      "category": "endgame",
+      "tags": ["king", "pawn", "endgame"]
+    },
+    {
+      "name": "opposition-pawn",
+      "fen": "8/8/8/4k3/8/4K3/4P3/8 w - - 0 1",
+      "description": "King opposition and pawn advance choice",
+      "category": "endgame",
+      "tags": ["king", "pawn", "opposition"]
+    },
+    {
+      "name": "rook-behind-passer",
+      "fen": "6k1/8/8/8/8/8/P7/R5K1 w - - 0 1",
+      "description": "Rook and passed pawn endgame placement",
+      "category": "endgame",
+      "tags": ["rook", "passed-pawn", "endgame"]
+    }
+  ]
+}

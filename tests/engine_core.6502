@@ -58,6 +58,7 @@ suites {
 
       [Board88] + $44 = $b6
       [Board88] + $00 = $36
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
 
       $e8 = $80
       $e9 = $7f
@@ -111,6 +112,208 @@ suites {
       assert(peekbyte([MoveListTo]) == $44, "Promoted history move should keep its destination")
     }
 
+    test("countermove-orders-quiet-replies", "Move ordering promotes quiet replies that refuted the previous move destination") {
+      jsr([ClearKillers], stop_on_rts = true, fail_on_brk = true)
+      jsr([ClearHistory], stop_on_rts = true, fail_on_brk = true)
+
+      [SearchDepth] = $02
+      [LastMoveToByDepth] + $02 = $44
+      $f0 = $64
+      $f1 = $54
+      jsr([StoreCounterMove], stop_on_rts = true, fail_on_brk = true)
+
+      memfill([Board88], 128, $30)
+      [MoveCount] = $03
+      [MoveListFrom] + $00 = $60
+      [MoveListTo] + $00 = $50
+      [MoveListFrom] + $01 = $64
+      [MoveListTo] + $01 = $54
+      [MoveListFrom] + $02 = $67
+      [MoveListTo] + $02 = $57
+
+      jsr([OrderMovesMVVLVA], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([MoveListFrom]) == $64, "Countermove reply should be promoted")
+      assert(peekbyte([MoveListTo]) == $54, "Countermove destination should move to the front")
+    }
+
+    test("ordering-keeps-bad-captures-behind-quiets", "Stale killers cannot promote captures rejected by swap-off") {
+      jsr([ClearKillers], stop_on_rts = true, fail_on_brk = true)
+      jsr([ClearHistory], stop_on_rts = true, fail_on_brk = true)
+
+      memfill([Board88], 128, $30)
+      [Board88] + $70 = $b6
+      [Board88] + $07 = $36
+      [Board88] + $67 = $b2
+      [Board88] + $64 = $b5
+      [Board88] + $44 = $31
+      [Board88] + $04 = $34
+      [whitekingsq] = $70
+      [blackkingsq] = $07
+      [SearchDepth] = $02
+      a = $64
+      x = $44
+      y = $02
+      jsr([StoreKiller], stop_on_rts = true, fail_on_brk = true)
+
+      [MoveCount] = $02
+      [MoveListFrom] + $00 = $67
+      [MoveListTo] + $00 = $57
+      [MoveListFrom] + $01 = $64
+      [MoveListTo] + $01 = $44
+
+      jsr([OrderMovesMVVLVA], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([MoveListFrom]) == $67, "Bad defended capture should stay behind ordinary quiets")
+      assert(peekbyte([MoveListTo]) == $57, "Quiet move should remain first")
+    }
+
+    test("ordering-boosts-recaptures", "MVV-LVA gives forced recaptures a bounded score bump") {
+      jsr([ClearKillers], stop_on_rts = true, fail_on_brk = true)
+      jsr([ClearHistory], stop_on_rts = true, fail_on_brk = true)
+
+      memfill([Board88], 128, $30)
+      [Board88] + $77 = $b6
+      [Board88] + $00 = $36
+      [Board88] + $70 = $b4
+      [Board88] + $64 = $b2
+      [Board88] + $43 = $33
+      [Board88] + $44 = $31
+      [whitekingsq] = $77
+      [blackkingsq] = $00
+      [SearchDepth] = $01
+      [LastMoveWasCaptureByDepth] + $01 = $01
+      [LastMoveToByDepth] + $01 = $44
+
+      [MoveCount] = $02
+      [MoveListFrom] + $00 = $70
+      [MoveListTo] + $00 = $43
+      [MoveListFrom] + $01 = $64
+      [MoveListTo] + $01 = $44
+
+      jsr([OrderMovesMVVLVA], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([MoveListFrom]) == $64, "Recapture should move ahead of a slightly higher nominal MVV-LVA capture")
+      assert(peekbyte([MoveListTo]) == $44, "Recapture destination should be the previous capture square")
+    }
+
+    test("tt-keeps-deeper-current-generation-entry", "Transposition table replacement prefers deeper entries") {
+      jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
+
+      [ZobristHash] = $02
+      [ZobristHash] + $01 = $44
+      [TTScoreLo] = $2a
+      [TTScoreHi] = $00
+      [TTStoreFrom] = $44
+      [TTStoreTo] = $23
+      [TTStoreUseMove] = $01
+      a = $05
+      x = $00
+      jsr([TTStore], stop_on_rts = true, fail_on_brk = true)
+
+      [TTScoreLo] = $11
+      [TTScoreHi] = $00
+      [TTStoreFrom] = $60
+      [TTStoreTo] = $50
+      [TTStoreUseMove] = $01
+      a = $02
+      x = $00
+      jsr([TTStore], stop_on_rts = true, fail_on_brk = true)
+
+      a = $05
+      jsr([TTProbe], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([TTHit]) == $01, "Deeper entry should still satisfy a deep probe")
+      assert(peekbyte([TTScoreLo]) == $2a, "Shallow replacement should not overwrite deeper score")
+      assert(peekbyte([TTBestFrom]) == $44, "Shallow replacement should not overwrite deeper move")
+
+      [TTScoreLo] = $33
+      [TTScoreHi] = $00
+      [TTStoreFrom] = $61
+      [TTStoreTo] = $51
+      [TTStoreUseMove] = $01
+      a = $06
+      x = $00
+      jsr([TTStore], stop_on_rts = true, fail_on_brk = true)
+
+      a = $06
+      jsr([TTProbe], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([TTHit]) == $01, "Deeper replacement should satisfy the deeper probe")
+      assert(peekbyte([TTScoreLo]) == $33, "Deeper replacement should overwrite the old score")
+      assert(peekbyte([TTBestFrom]) == $61, "Deeper replacement should overwrite the old move")
+
+      [TTScoreLo] = $12
+      [TTScoreHi] = $00
+      [TTStoreFrom] = $62
+      [TTStoreTo] = $52
+      [TTStoreUseMove] = $01
+      a = $06
+      x = $01
+      jsr([TTStore], stop_on_rts = true, fail_on_brk = true)
+
+      a = $06
+      jsr([TTProbe], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([TTScoreLo]) == $33, "Same-depth bound should not replace an exact TT score")
+      assert(peekbyte([TTBestFrom]) == $61, "Same-depth bound should not replace an exact TT move")
+
+      [TTScoreLo] = $44
+      [TTScoreHi] = $00
+      [TTStoreFrom] = $63
+      [TTStoreTo] = $53
+      [TTStoreUseMove] = $01
+      a = $06
+      x = $00
+      jsr([TTStore], stop_on_rts = true, fail_on_brk = true)
+
+      a = $06
+      jsr([TTProbe], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([TTScoreLo]) == $44, "Same-depth exact score should refresh the TT entry")
+      assert(peekbyte([TTBestFrom]) == $63, "Same-depth exact move should refresh the TT entry")
+    }
+
+    test("make-unmake-maintains-piece-lists", "Search move state keeps compact piece lists current") {
+      jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
+
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $44 = $b2
+      [Board88] + $04 = $36
+      [Board88] + $23 = $35
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchDepth] = $00
+      [SearchSide] = $80
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+      jsr([ComputeZobristHash], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([ZobristHashValid]) == $01, "Full hash computation should mark cached Zobrist hash valid")
+
+      a = $44
+      x = $23
+      jsr([MakeMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([ZobristHashValid]) == $00, "MakeMove should dirty the cached Zobrist hash")
+      assert(peekbyte([WhitePieceCount]) == $02, "Capture should preserve white piece count")
+      assert(peekbyte([BlackPieceCount]) == $01, "Capture should remove one black piece")
+      assert(peekbyte([WhitePieceList]) == $23, "Moved white knight should be listed on d6")
+      assert(peekbyte([BlackPieceList]) == $04, "Only black king should remain listed")
+      jsr([ComputeZobristHash], stop_on_rts = true, fail_on_brk = true)
+      assert(peekbyte([ZobristHashValid]) == $01, "Hash recomputation after MakeMove should refresh the cache flag")
+
+      a = $44
+      x = $23
+      jsr([UnmakeMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([ZobristHashValid]) == $00, "UnmakeMove should dirty the cached Zobrist hash")
+      assert(peekbyte([WhitePieceCount]) == $02, "Unmake should restore white piece count")
+      assert(peekbyte([BlackPieceCount]) == $02, "Unmake should restore black piece count")
+      assert(peekbyte([WhitePieceList]) == $44, "White knight should return to e4 in the list")
+      assert(peekbyte([BlackPieceList] + $01) == $23, "Captured black queen should return to d6 in the list")
+    }
+
     test("ordering-promotes-forcing-quiets", "Move ordering searches quiet checks and promotions before ordinary quiet moves") {
       jsr([ClearKillers], stop_on_rts = true, fail_on_brk = true)
       jsr([ClearHistory], stop_on_rts = true, fail_on_brk = true)
@@ -149,6 +352,1041 @@ suites {
 
       assert(peekbyte([MoveListFrom]) == $14, "Quiet promotion should be promoted before ordinary quiets")
       assert(peekbyte([MoveListTo]) == $04, "Quiet promotion destination should move to the front")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $64 = $b2
+      [Board88] + $04 = $36
+      [Board88] + $37 = $35
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchDepth] = $00
+      [MoveCount] = $02
+      [MoveListFrom] + $00 = $74
+      [MoveListTo] + $00 = $73
+      [MoveListFrom] + $01 = $64
+      [MoveListTo] + $01 = $45
+
+      jsr([OrderMovesMVVLVA], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([MoveListFrom]) == $64, "Quiet knight fork threat should be promoted before ordinary quiets")
+      assert(peekbyte([MoveListTo]) == $45, "Threatening quiet move destination should move to the front")
+    }
+
+    test("root-shortcut-finds-mate-in-one", "Root tactical shortcut takes immediate mate before search") {
+      memfill([Board88], 128, $30)
+      [Board88] + $00 = $36
+      [Board88] + $21 = $b6
+      [Board88] + $67 = $b4
+      [whitekingsq] = $21
+      [blackkingsq] = $00
+      [SearchDepth] = $00
+      [SearchSide] = $80
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootMateInOne], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Root mate shortcut should find a mate")
+      assert(peekbyte([BestMoveFrom]) == $67, "Mate shortcut should move rook from h2")
+      assert(peekbyte([BestMoveTo]) == $07, "Mate shortcut should play Rh8#")
+      assert(peekbyte([SearchDepth]) == $00, "Mate shortcut should restore search depth")
+      assert(peekbyte([SearchSide]) == $80, "Mate shortcut should restore side to move")
+    }
+
+    test("root-penalizes-move-allowing-mate-in-one", "Root scoring rejects moves that hand the opponent immediate mate") {
+      memfill([Board88], 128, $30)
+      [Board88] + $00 = $34
+      [Board88] + $02 = $33
+      [Board88] + $03 = $34
+      [Board88] + $06 = $36
+      [Board88] + $11 = $31
+      [Board88] + $15 = $31
+      [Board88] + $16 = $31
+      [Board88] + $17 = $31
+      [Board88] + $31 = $31
+      [Board88] + $45 = $32
+      [Board88] + $55 = $35
+      [Board88] + $46 = $b1
+      [Board88] + $50 = $b1
+      [Board88] + $51 = $b3
+      [Board88] + $72 = $b4
+      [Board88] + $74 = $b6
+      [Board88] + $76 = $b4
+      [whitekingsq] = $74
+      [blackkingsq] = $06
+      [currentplayer] = $01
+      [SearchSide] = $80
+      [SearchDepth] = $00
+      [castlerights] = $00
+      [enpassantsq] = $ff
+
+      memfill([WhitePieceList], 16, $ff)
+      memfill([BlackPieceList], 16, $ff)
+      [WhitePieceList] + $00 = $74
+      [WhitePieceList] + $01 = $46
+      [WhitePieceList] + $02 = $50
+      [WhitePieceList] + $03 = $51
+      [WhitePieceList] + $04 = $72
+      [WhitePieceList] + $05 = $76
+      [WhitePieceCount] = $06
+      [BlackPieceList] + $00 = $06
+      [BlackPieceList] + $01 = $00
+      [BlackPieceList] + $02 = $02
+      [BlackPieceList] + $03 = $03
+      [BlackPieceList] + $04 = $11
+      [BlackPieceList] + $05 = $15
+      [BlackPieceList] + $06 = $16
+      [BlackPieceList] + $07 = $17
+      [BlackPieceList] + $08 = $31
+      [BlackPieceList] + $09 = $45
+      [BlackPieceList] + $0a = $55
+      [BlackPieceCount] = $0b
+
+      [NegamaxState] + $03 = $51
+      [NegamaxState] + $04 = $60
+      [BestMoveFrom] = $72
+      [BestMoveTo] = $73
+      $eb = $20
+
+      jsr([ApplyRootAllowsMatePenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $80, "Move allowing Qe2 mate should be rejected")
+      assert(peekbyte([BestMoveFrom]) == $72, "Mate probe should restore current best move from")
+      assert(peekbyte([BestMoveTo]) == $73, "Mate probe should restore current best move to")
+      assert(peekbyte([SearchDepth]) == $00, "Mate probe should restore search depth")
+      assert(peekbyte([SearchSide]) == $80, "Mate probe should restore side to move")
+
+      [NegamaxState] + $03 = $51
+      [NegamaxState] + $04 = $33
+      $eb = $78
+
+      jsr([ApplyRootAllowsMatePenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $80, "Mate-score candidates still cannot allow mate in one")
+      assert(peekbyte([SearchDepth]) == $00, "Second mate probe should restore search depth")
+      assert(peekbyte([SearchSide]) == $80, "Second mate probe should restore side to move")
+
+      [NegamaxState] + $03 = $51
+      [NegamaxState] + $04 = $15
+      $eb = $20
+
+      jsr([ApplyRootAllowsMatePenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $20, "Checking capture that stops mate should keep its score")
+      assert(peekbyte([SearchDepth]) == $00, "Safe mate probe should restore search depth")
+      assert(peekbyte([SearchSide]) == $80, "Safe mate probe should restore side to move")
+
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+
+      jsr([TryRootAvoidMateThreatMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Root emergency should find a move that stops mate")
+      assert(peekbyte([BestMoveFrom]) == $51, "Mate-threat escape should use the active bishop")
+      assert(peekbyte([BestMoveTo]) == $73, "Mate-threat escape should block the mating queen on d1")
+      assert(peekbyte([SearchDepth]) == $00, "Mate-threat escape should restore search depth")
+      assert(peekbyte([SearchSide]) == $80, "Mate-threat escape should restore side to move")
+
+      [MoveCount] = $02
+      [MoveListFrom] + $00 = $51
+      [MoveListTo] + $00 = $60
+      [MoveListFrom] + $01 = $51
+      [MoveListTo] + $01 = $73
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+
+      jsr([SetSafeRootFallbackMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $51, "Fallback should skip a bishop move that allows Qe2 mate")
+      assert(peekbyte([BestMoveTo]) == $73, "Fallback should keep the bishop block that stops mate")
+      assert(peekbyte([SearchDepth]) == $00, "Fallback mate probe should restore search depth")
+      assert(peekbyte([SearchSide]) == $80, "Fallback mate probe should restore side to move")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $00 = $34
+      [Board88] + $04 = $36
+      [Board88] + $07 = $34
+      [Board88] + $12 = $31
+      [Board88] + $15 = $31
+      [Board88] + $16 = $31
+      [Board88] + $17 = $31
+      [Board88] + $20 = $31
+      [Board88] + $22 = $31
+      [Board88] + $25 = $32
+      [Board88] + $32 = $33
+      [Board88] + $40 = $b1
+      [Board88] + $44 = $b1
+      [Board88] + $55 = $b1
+      [Board88] + $57 = $b1
+      [Board88] + $61 = $35
+      [Board88] + $66 = $b1
+      [Board88] + $73 = $b4
+      [Board88] + $75 = $b6
+      [Board88] + $77 = $b4
+      [whitekingsq] = $75
+      [blackkingsq] = $04
+      [SearchSide] = $80
+      [SearchDepth] = $00
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootAvoidMateThreatMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Root emergency should see Qb2-f2 mate from four files away")
+      assert(peekbyte([BestMoveFrom]) != $ff, "Wide mate-threat escape should pick a legal source")
+      assert(peekbyte([BestMoveTo]) != $ff, "Wide mate-threat escape should pick a legal destination")
+      assert(peekbyte([SearchDepth]) == $00, "Wide mate-threat escape should restore search depth")
+      assert(peekbyte([SearchSide]) == $80, "Wide mate-threat escape should restore side to move")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $00 = $34
+      [Board88] + $02 = $33
+      [Board88] + $04 = $36
+      [Board88] + $06 = $32
+      [Board88] + $07 = $34
+      [Board88] + $10 = $31
+      [Board88] + $11 = $31
+      [Board88] + $12 = $31
+      [Board88] + $14 = $33
+      [Board88] + $15 = $31
+      [Board88] + $34 = $b2
+      [Board88] + $42 = $b1
+      [Board88] + $43 = $b1
+      [Board88] + $45 = $31
+      [Board88] + $47 = $31
+      [Board88] + $55 = $b4
+      [Board88] + $63 = $35
+      [Board88] + $65 = $b1
+      [Board88] + $66 = $b1
+      [Board88] + $67 = $b1
+      [Board88] + $74 = $b4
+      [Board88] + $76 = $b6
+      [whitekingsq] = $76
+      [blackkingsq] = $04
+      [SearchSide] = $80
+      [SearchDepth] = $00
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootAvoidMateThreatMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Root emergency should find an escape in the Qd2 mate net")
+      assert(peekbyte([BestMoveFrom]) != $ff, "Generic mate escape should pick a legal source")
+      assert(peekbyte([BestMoveTo]) != $ff, "Generic mate escape should pick a legal destination")
+      assert(peekbyte([SearchDepth]) == $00, "Generic mate escape should restore search depth")
+      assert(peekbyte([SearchSide]) == $80, "Generic mate escape should restore side to move")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $34
+      [Board88] + $06 = $36
+      [Board88] + $15 = $31
+      [Board88] + $26 = $31
+      [Board88] + $20 = $b1
+      [Board88] + $30 = $33
+      [Board88] + $41 = $b1
+      [Board88] + $46 = $33
+      [Board88] + $53 = $31
+      [Board88] + $63 = $b2
+      [Board88] + $66 = $b1
+      [Board88] + $67 = $b1
+      [Board88] + $72 = $35
+      [Board88] + $74 = $b3
+      [Board88] + $75 = $b6
+      [whitekingsq] = $75
+      [blackkingsq] = $06
+      [SearchSide] = $80
+      [SearchDepth] = $00
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootAvoidMateThreatMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Root emergency should find an escape in the back-rank queen trap")
+      assert(peekbyte([BestMoveFrom]) != $ff, "Generic back-rank escape should pick a legal source")
+      assert(peekbyte([BestMoveTo]) != $ff, "Generic back-rank escape should pick a legal destination")
+      assert(peekbyte([SearchDepth]) == $00, "Generic mate escape should restore search depth")
+      assert(peekbyte([SearchSide]) == $80, "Generic mate escape should restore side to move")
+    }
+
+    test("root-mate-threat-shortcut-skips-check", "Checked positions use normal evasion search instead of the mate-threat shortcut") {
+      memfill([Board88], 128, $30)
+      [Board88] + $75 = $b6
+      [Board88] + $73 = $b5
+      [Board88] + $45 = $35
+      [Board88] + $06 = $36
+      [whitekingsq] = $75
+      [blackkingsq] = $06
+      [SearchSide] = $80
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+
+      jsr([TryRootAvoidMateThreatMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == false, "Mate-threat shortcut should not choose evasions while already in check")
+      assert(peekbyte([BestMoveFrom]) == $ff, "Checked shortcut skip should leave best move alone")
+      assert(peekbyte([BestMoveTo]) == $ff, "Checked shortcut skip should leave best destination alone")
+    }
+
+    test("root-king-move-cannot-allow-mate-in-one", "Root scoring rejects checked king moves that walk into immediate mate") {
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $b4
+      [Board88] + $05 = $b3
+      [Board88] + $15 = $31
+      [Board88] + $16 = $36
+      [Board88] + $17 = $31
+      [Board88] + $20 = $31
+      [Board88] + $22 = $b2
+      [Board88] + $24 = $b1
+      [Board88] + $31 = $31
+      [Board88] + $36 = $31
+      [Board88] + $50 = $32
+      [Board88] + $52 = $b1
+      [Board88] + $57 = $b1
+      [Board88] + $60 = $b1
+      [Board88] + $62 = $b1
+      [Board88] + $65 = $b1
+      [Board88] + $66 = $b1
+      [Board88] + $74 = $b4
+      [Board88] + $76 = $b6
+      [whitekingsq] = $76
+      [blackkingsq] = $16
+      [currentplayer] = $00
+      [SearchSide] = $00
+      [SearchDepth] = $00
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      [NegamaxState] + $03 = $16
+      [NegamaxState] + $04 = $07
+      $eb = $20
+
+      jsr([ApplyRootAllowsMatePenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $80, "Kh8 should be rejected because Bh6 mates immediately")
+      assert(peekbyte([SearchDepth]) == $00, "King-move mate probe should restore search depth")
+      assert(peekbyte([SearchSide]) == $00, "King-move mate probe should restore side to move")
+
+      [NegamaxState] + $03 = $16
+      [NegamaxState] + $04 = $26
+      $eb = $20
+
+      jsr([ApplyRootAllowsMatePenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $20, "Kg6 should remain available when it prevents immediate mate")
+      assert(peekbyte([SearchDepth]) == $00, "Safe king probe should restore search depth")
+      assert(peekbyte([SearchSide]) == $00, "Safe king probe should restore side to move")
+    }
+
+    test("findbestmove-prefers-mate-over-major-capture", "Root shortcut order takes mate before material") {
+      memfill([Board88], 128, $30)
+      [Board88] + $00 = $36
+      [Board88] + $22 = $b6
+      [Board88] + $71 = $b5
+      [Board88] + $35 = $b2
+      [Board88] + $47 = $35
+      [whitekingsq] = $22
+      [blackkingsq] = $00
+      [currentplayer] = $01
+      [difficulty] = $02
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+
+      jsr([FindBestMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $71, "Mate should beat the knight capture of a loose queen")
+      assert(peekbyte([BestMoveTo]) == $11, "FindBestMove should play Qb7 mate")
+      assert(peekbyte([SearchCompletedDepth]) == $00, "Mate shortcut should not claim iterative depth")
+    }
+
+    test("root-shortcut-takes-safe-major-capture", "Root tactical shortcut takes safe queen and rook captures in non-sparse positions") {
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $44 = $b2
+      [Board88] + $67 = $b1
+      [Board88] + $04 = $36
+      [Board88] + $23 = $35
+      [Board88] + $10 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchDepth] = $00
+      [SearchSide] = $80
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootMajorCaptureMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Root major-capture shortcut should find a safe queen capture")
+      assert(peekbyte([BestMoveFrom]) == $44, "Major-capture shortcut should move knight from e4")
+      assert(peekbyte([BestMoveTo]) == $23, "Major-capture shortcut should take the queen on d6")
+      assert(peekbyte([SearchDepth]) == $00, "Major-capture shortcut should restore search depth")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $36
+      [Board88] + $34 = $32
+      [Board88] + $13 = $b5
+      [Board88] + $74 = $b6
+      [blackkingsq] = $04
+      [whitekingsq] = $74
+      [SearchDepth] = $00
+      [SearchSide] = $00
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootMajorCaptureMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Root major-capture shortcut should find the black queen capture")
+      assert(peekbyte([BestMoveFrom]) == $34, "Major-capture shortcut should prefer the knight over the king")
+      assert(peekbyte([BestMoveTo]) == $13, "Major-capture shortcut should take the checking queen on d7")
+    }
+
+    test("root-shortcut-takes-safe-winning-minor-capture", "Root tactical shortcut takes safe minor-piece wins in normal positions") {
+      memfill([Board88], 128, $30)
+      [Board88] + $70 = $b4
+      [Board88] + $72 = $b3
+      [Board88] + $73 = $b5
+      [Board88] + $74 = $b6
+      [Board88] + $75 = $b3
+      [Board88] + $77 = $b4
+      [Board88] + $60 = $b1
+      [Board88] + $61 = $b1
+      [Board88] + $42 = $b1
+      [Board88] + $43 = $b1
+      [Board88] + $65 = $b1
+      [Board88] + $66 = $b1
+      [Board88] + $67 = $b1
+      [Board88] + $52 = $b2
+      [Board88] + $36 = $b2
+
+      [Board88] + $00 = $34
+      [Board88] + $02 = $33
+      [Board88] + $04 = $36
+      [Board88] + $05 = $33
+      [Board88] + $07 = $34
+      [Board88] + $10 = $31
+      [Board88] + $11 = $31
+      [Board88] + $12 = $31
+      [Board88] + $13 = $31
+      [Board88] + $16 = $31
+      [Board88] + $17 = $31
+      [Board88] + $22 = $32
+      [Board88] + $24 = $31
+      [Board88] + $44 = $32
+
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchDepth] = $00
+      [SearchSide] = $80
+      [currentplayer] = $01
+      [castlerights] = $0f
+      [enpassantsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootWinningCaptureMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Root winning-capture shortcut should find Nxe4")
+      assert(peekbyte([BestMoveFrom]) == $52, "Winning-capture shortcut should use a knight that can take on e4")
+      assert(peekbyte([BestMoveTo]) == $44, "Winning-capture shortcut should take the knight on e4")
+    }
+
+    test("root-shortcut-skips-equal-minor-capture-onto-pawn-attack", "Equal recapturable minor trades stay in full search") {
+      memfill([Board88], 128, $30)
+      [Board88] + $00 = $34
+      [Board88] + $02 = $33
+      [Board88] + $03 = $35
+      [Board88] + $04 = $36
+      [Board88] + $05 = $33
+      [Board88] + $06 = $32
+      [Board88] + $07 = $34
+      [Board88] + $10 = $31
+      [Board88] + $11 = $31
+      [Board88] + $12 = $31
+      [Board88] + $14 = $31
+      [Board88] + $16 = $31
+      [Board88] + $17 = $31
+      [Board88] + $20 = $32
+      [Board88] + $23 = $31
+      [Board88] + $35 = $31
+      [Board88] + $36 = $b2
+      [Board88] + $43 = $b1
+      [Board88] + $44 = $b1
+      [Board88] + $52 = $b2
+      [Board88] + $60 = $b1
+      [Board88] + $61 = $b1
+      [Board88] + $62 = $b1
+      [Board88] + $65 = $b1
+      [Board88] + $66 = $b1
+      [Board88] + $67 = $b1
+      [Board88] + $70 = $b4
+      [Board88] + $72 = $b3
+      [Board88] + $73 = $b5
+      [Board88] + $74 = $b6
+      [Board88] + $75 = $b3
+      [Board88] + $77 = $b4
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchDepth] = $00
+      [SearchSide] = $80
+      [currentplayer] = $01
+      [castlerights] = $0f
+      [enpassantsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootWinningCaptureMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == false, "Shortcut should not auto-play Bxa6 when b7 can recapture")
+      assert(peekbyte([BestMoveFrom]) == $ff, "Equal recapturable capture should leave source unset")
+      assert(peekbyte([BestMoveTo]) == $ff, "Equal recapturable capture should leave destination unset")
+    }
+
+    test("root-shortcut-rejects-capture-allowing-mate", "Root tactical captures cannot bypass the mate-in-one safety gate") {
+      memfill([Board88], 128, $30)
+      [Board88] + $00 = $34
+      [Board88] + $02 = $33
+      [Board88] + $03 = $35
+      [Board88] + $05 = $34
+      [Board88] + $07 = $36
+      [Board88] + $10 = $31
+      [Board88] + $15 = $31
+      [Board88] + $16 = $31
+      [Board88] + $17 = $b3
+      [Board88] + $22 = $31
+      [Board88] + $23 = $33
+      [Board88] + $25 = $32
+      [Board88] + $30 = $32
+      [Board88] + $36 = $b2
+      [Board88] + $43 = $31
+      [Board88] + $47 = $b5
+      [Board88] + $52 = $b1
+      [Board88] + $60 = $b1
+      [Board88] + $61 = $b1
+      [Board88] + $65 = $b1
+      [Board88] + $66 = $b1
+      [Board88] + $67 = $b1
+      [Board88] + $70 = $b4
+      [Board88] + $71 = $b2
+      [Board88] + $72 = $b3
+      [Board88] + $75 = $b4
+      [Board88] + $76 = $b6
+      [whitekingsq] = $76
+      [blackkingsq] = $07
+      [currentplayer] = $00
+      [SearchSide] = $00
+      [SearchDepth] = $00
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      [RootProbeFrom] = $25
+      [RootProbeTo] = $17
+      jsr([RootProbeAllowsMateInOne], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Nxh7 should allow Qxh7 mate")
+
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([TryRootWinningCaptureMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == false, "Winning-capture shortcut should reject captures that allow mate")
+      assert(peekbyte([BestMoveFrom]) == $ff, "Shortcut should not commit Nxh7")
+      assert(peekbyte([BestMoveTo]) == $ff, "Shortcut should leave the mate-safe choice to root search")
+    }
+
+    test("root-shortcut-skips-early-queen-pawn-recapture", "Root tactical shortcuts leave early queen pawn recaptures to full search") {
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $04 = $36
+      [Board88] + $73 = $b5
+      [Board88] + $52 = $b1
+      [Board88] + $43 = $31
+      [Board88] + $76 = $b2
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchDepth] = $00
+      [SearchSide] = $80
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootWinningCaptureMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == false, "Winning-capture shortcut should leave early queen pawn recaptures to search")
+      assert(peekbyte([BestMoveFrom]) == $ff, "Shortcut should not choose Qxd4")
+      assert(peekbyte([BestMoveTo]) == $ff, "Shortcut should not commit a queen recapture")
+    }
+
+    test("opening-survival-book-is-disabled", "Exact survival rows are no longer part of the engine") {
+      [SearchSide] = $80
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+
+      jsr([TryEngineOpeningSurvivalMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == false, "Survival book should not provide memorized moves")
+      assert(peekbyte([BestMoveFrom]) == $ff, "Disabled survival book should leave source unchanged")
+      assert(peekbyte([BestMoveTo]) == $ff, "Disabled survival book should leave destination unchanged")
+    }
+
+    test("root-opening-center-claims-before-knights", "Opening shortcut claims center space before developing home minors") {
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $36
+      [Board88] + $74 = $b6
+      [Board88] + $71 = $b2
+      [Board88] + $72 = $b3
+      [Board88] + $75 = $b3
+      [Board88] + $76 = $b2
+      [Board88] + $62 = $b1
+      [Board88] + $63 = $b1
+      [Board88] + $64 = $b1
+      [Board88] + $65 = $b1
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [currentplayer] = $01
+      [SearchSide] = $80
+      [SearchDepth] = $00
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootOpeningCenterPawnMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Untouched white home minors should prefer e2-e4")
+      assert(peekbyte([BestMoveFrom]) == $64, "Opening center shortcut should move the e-pawn")
+      assert(peekbyte([BestMoveTo]) == $44, "Opening center shortcut should play e2-e4")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $36
+      [Board88] + $74 = $b6
+      [Board88] + $71 = $b2
+      [Board88] + $72 = $b3
+      [Board88] + $75 = $b3
+      [Board88] + $76 = $b2
+      [Board88] + $62 = $b1
+      [Board88] + $63 = $b1
+      [Board88] + $65 = $b1
+      [Board88] + $54 = $b1
+      [Board88] + $24 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchSide] = $80
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootOpeningCenterPawnMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "After e3, untouched white home minors should prefer c2-c4")
+      assert(peekbyte([BestMoveFrom]) == $62, "Opening center shortcut should use the c-pawn after e3")
+      assert(peekbyte([BestMoveTo]) == $42, "Opening center shortcut should play c2-c4")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $36
+      [Board88] + $74 = $b6
+      [Board88] + $71 = $b2
+      [Board88] + $72 = $b3
+      [Board88] + $75 = $b3
+      [Board88] + $76 = $b2
+      [Board88] + $62 = $b1
+      [Board88] + $63 = $b1
+      [Board88] + $65 = $b1
+      [Board88] + $54 = $b1
+      [Board88] + $34 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchSide] = $80
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootOpeningCenterPawnMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "After e3 against an e5 pawn, the shortcut should prefer d2-d4")
+      assert(peekbyte([BestMoveFrom]) == $63, "Opening center shortcut should use the d-pawn against e5")
+      assert(peekbyte([BestMoveTo]) == $43, "Opening center shortcut should play d2-d4")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $36
+      [Board88] + $74 = $b6
+      [Board88] + $71 = $b2
+      [Board88] + $72 = $b3
+      [Board88] + $75 = $b3
+      [Board88] + $76 = $b2
+      [Board88] + $62 = $b1
+      [Board88] + $63 = $b1
+      [Board88] + $65 = $b1
+      [Board88] + $44 = $b1
+      [Board88] + $25 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchSide] = $80
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootOpeningCenterPawnMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "After e4 against f6, the shortcut should expand with d2-d4")
+      assert(peekbyte([BestMoveFrom]) == $63, "Opening center shortcut should use the d-pawn against f6")
+      assert(peekbyte([BestMoveTo]) == $43, "Opening center shortcut should play d2-d4 against f6")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $36
+      [Board88] + $70 = $b6
+      [Board88] + $44 = $b2
+      [Board88] + $47 = $35
+      [Board88] + $63 = $b1
+      [whitekingsq] = $70
+      [blackkingsq] = $04
+      [currentplayer] = $01
+      [SearchSide] = $80
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootOpeningCenterPawnMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "A queen-hit central knight should be supported before retreating")
+      assert(peekbyte([BestMoveFrom]) == $63, "Opening center shortcut should use the d-pawn to support Ne4")
+      assert(peekbyte([BestMoveTo]) == $53, "Opening center shortcut should play d2-d3 against Qh4")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $06 = $36
+      [Board88] + $74 = $b6
+      [Board88] + $34 = $32
+      [Board88] + $37 = $b5
+      [Board88] + $13 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $06
+      [currentplayer] = $00
+      [SearchSide] = $00
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootOpeningCenterPawnMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "The queen-hit central knight support rule should mirror for black")
+      assert(peekbyte([BestMoveFrom]) == $13, "Opening center shortcut should use the d-pawn to support Ne5")
+      assert(peekbyte([BestMoveTo]) == $23, "Opening center shortcut should play d7-d6 against Qh5")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $36
+      [Board88] + $74 = $b6
+      [Board88] + $71 = $b2
+      [Board88] + $72 = $b3
+      [Board88] + $75 = $b3
+      [Board88] + $76 = $b2
+      [Board88] + $62 = $b1
+      [Board88] + $63 = $b1
+      [Board88] + $64 = $b1
+      [Board88] + $45 = $b1
+      [Board88] + $33 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchSide] = $80
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootOpeningCenterPawnMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "After f4 against d5, the shortcut should restrain with e2-e3")
+      assert(peekbyte([BestMoveFrom]) == $64, "Opening center shortcut should use the e-pawn after f4")
+      assert(peekbyte([BestMoveTo]) == $54, "Opening center shortcut should play e2-e3 after f4")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $36
+      [Board88] + $74 = $b6
+      [Board88] + $52 = $b2
+      [Board88] + $72 = $b3
+      [Board88] + $75 = $b3
+      [Board88] + $76 = $b2
+      [Board88] + $63 = $b1
+      [Board88] + $64 = $b1
+      [Board88] + $65 = $b1
+      [Board88] + $33 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchSide] = $80
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootOpeningCenterPawnMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "After one developed minor, the shortcut should still challenge d5")
+      assert(peekbyte([BestMoveFrom]) == $63, "Opening center shortcut should use the d-pawn after Nc3 d5")
+      assert(peekbyte([BestMoveTo]) == $43, "Opening center shortcut should play d2-d4 after Nc3 d5")
+    }
+
+    test("root-opening-center-recovers-after-wing-pawn-drift", "Opening shortcut still claims central space after a c-pawn drift") {
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $36
+      [Board88] + $74 = $b6
+      [Board88] + $71 = $b2
+      [Board88] + $72 = $b3
+      [Board88] + $75 = $b3
+      [Board88] + $76 = $b2
+      [Board88] + $52 = $b1
+      [Board88] + $63 = $b1
+      [Board88] + $64 = $b1
+      [Board88] + $65 = $b1
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchSide] = $80
+      [SearchDepth] = $00
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootOpeningCenterPawnMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "A prior c-pawn drift should not prevent claiming e4")
+      assert(peekbyte([BestMoveFrom]) == $64, "Opening center shortcut should use the e-pawn after c3")
+      assert(peekbyte([BestMoveTo]) == $44, "Opening center shortcut should play e2-e4 after c3")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $36
+      [Board88] + $74 = $b6
+      [Board88] + $71 = $b2
+      [Board88] + $72 = $b3
+      [Board88] + $75 = $b3
+      [Board88] + $76 = $b2
+      [Board88] + $52 = $b1
+      [Board88] + $63 = $b1
+      [Board88] + $64 = $b1
+      [Board88] + $65 = $b1
+      [Board88] + $34 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchSide] = $80
+      [SearchDepth] = $00
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootOpeningCenterPawnMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "After c3 against e5, the shortcut should use the d-pawn break")
+      assert(peekbyte([BestMoveFrom]) == $63, "Opening center shortcut should use the d-pawn after c3 e5")
+      assert(peekbyte([BestMoveTo]) == $43, "Opening center shortcut should play d2-d4 after c3 e5")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $36
+      [Board88] + $74 = $b6
+      [Board88] + $71 = $b2
+      [Board88] + $72 = $b3
+      [Board88] + $75 = $b3
+      [Board88] + $76 = $b2
+      [Board88] + $42 = $b1
+      [Board88] + $63 = $b1
+      [Board88] + $64 = $b1
+      [Board88] + $65 = $b1
+      [Board88] + $23 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchSide] = $80
+      [SearchDepth] = $00
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootOpeningCenterPawnMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "After c4 against d6, the shortcut should use the d-pawn break")
+      assert(peekbyte([BestMoveFrom]) == $63, "Opening center shortcut should use the d-pawn after c4 d6")
+      assert(peekbyte([BestMoveTo]) == $43, "Opening center shortcut should play d2-d4 after c4 d6")
+    }
+
+    test("root-saves-attacked-major-generically", "Root shortcut moves a rook out of a minor attack without exact survival rows") {
+      memfill([Board88], 128, $30)
+      [Board88] + $06 = $36
+      [Board88] + $01 = $34
+      [Board88] + $04 = $34
+      [Board88] + $25 = $35
+      [Board88] + $23 = $33
+      [Board88] + $35 = $33
+      [Board88] + $12 = $31
+      [Board88] + $15 = $31
+      [Board88] + $16 = $31
+      [Board88] + $17 = $31
+      [Board88] + $76 = $b6
+      [Board88] + $70 = $b4
+      [Board88] + $74 = $b4
+      [Board88] + $56 = $b5
+      [Board88] + $22 = $b3
+      [Board88] + $54 = $b3
+      [Board88] + $50 = $b1
+      [Board88] + $41 = $b1
+      [Board88] + $33 = $b1
+      [Board88] + $45 = $b1
+      [Board88] + $67 = $b1
+      [whitekingsq] = $76
+      [blackkingsq] = $06
+      [currentplayer] = $00
+      [SearchSide] = $00
+      [SearchDepth] = $00
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      $f0 = $04
+      $f1 = $00
+      jsr([IsPieceBishopAttacked], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "White bishop on c6 should attack the black rook on e8")
+
+      a = $00
+      jsr([SideHasMinorAttackedMajor], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Black should report a rook under minor attack")
+
+      jsr([TryRootSaveAttackedMajorMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Attacked-major shortcut should find a rook escape")
+      assert(peekbyte([BestMoveFrom]) == $04, "Attacked-major shortcut should move the attacked e8 rook")
+      assert(peekbyte([BestMoveTo]) != $ff, "Attacked-major shortcut should choose a concrete destination")
+      assert(peekbyte([SearchDepth]) == $00, "Attacked-major shortcut should restore SearchDepth after probes")
+      assert(peekbyte([SearchSide]) == $00, "Attacked-major shortcut should restore SearchSide after probes")
+    }
+
+    test("easy-converts-lone-king-endgame-with-pawns", "Easy mode pushes connected win-condition pawns instead of only shuffling pieces", timeout = 13000000) {
+      jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
+      jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
+
+      [difficulty] = $00
+      [currentplayer] = $01
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $70 = $b4
+      [Board88] + $72 = $b3
+      [Board88] + $60 = $b1
+      [Board88] + $42 = $b1
+      [Board88] + $56 = $b1
+      [Board88] + $07 = $36
+      [whitekingsq] = $74
+      [blackkingsq] = $07
+
+      jsr([FindBestMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $42, "Easy should advance the most progressed pawn from c4")
+      assert(peekbyte([BestMoveTo]) == $32, "Easy should play c4-c5 against a bare king")
+      assert(peekbyte([SearchCompletedDepth]) == $00, "Conversion shortcut should not claim iterative depth")
+    }
+
+    test("king-pawn-endgame-prefers-forward-outflank", "K+P shortcut gains ground when the diagonal opposition move is legal") {
+      memfill([Board88], 128, $30)
+      [Board88] + $54 = $b6
+      [Board88] + $64 = $b1
+      [Board88] + $33 = $36
+      [whitekingsq] = $54
+      [blackkingsq] = $33
+      [SearchSide] = $80
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TrySimpleKingPawnEndgameMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "White should use the forward outflank when it is legal")
+      assert(peekbyte([BestMoveFrom]) == $54, "Kf4 should move the e3 king")
+      assert(peekbyte([BestMoveTo]) == $45, "Kf4 should land on f4")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $54 = $b6
+      [Board88] + $64 = $b1
+      [Board88] + $34 = $36
+      [whitekingsq] = $54
+      [blackkingsq] = $34
+      [SearchSide] = $80
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TrySimpleKingPawnEndgameMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "White should fall back to the same-rank outflank when d4 is illegal")
+      assert(peekbyte([BestMoveFrom]) == $54, "Kd3 should move the e3 king")
+      assert(peekbyte([BestMoveTo]) == $53, "Kd3 should remain the legal opposition fallback")
+    }
+
+    test("lone-king-conversion-works-for-black", "Bare-king conversion picks black's most advanced legal pawn push") {
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $36
+      [Board88] + $00 = $34
+      [Board88] + $33 = $31
+      [Board88] + $11 = $31
+      [Board88] + $77 = $b6
+      [blackkingsq] = $04
+      [whitekingsq] = $77
+      [SearchSide] = $00
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryLoneKingPawnConversionMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Black conversion should find a pawn advance")
+      assert(peekbyte([BestMoveFrom]) == $33, "Black should advance the d5 pawn")
+      assert(peekbyte([BestMoveTo]) == $43, "Black should play d5-d4 toward promotion")
+    }
+
+    test("rook-pawn-endgame-unblocks-edge-passer", "K+R+P shortcut slides the rook off an edge passer before cutting off the king") {
+      memfill([Board88], 128, $30)
+      [Board88] + $76 = $b6
+      [Board88] + $06 = $36
+      [Board88] + $60 = $b1
+      [Board88] + $70 = $b4
+      [whitekingsq] = $76
+      [blackkingsq] = $06
+      [SearchSide] = $80
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TrySimpleRookPawnEndgameMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "White should unblock the a-pawn before trying to cut off the king")
+      assert(peekbyte([BestMoveFrom]) == $70, "Rb1 should move the a1 rook")
+      assert(peekbyte([BestMoveTo]) == $71, "Rb1 should land beside the passer")
     }
 
     test("check-extension-extends-near-horizon-checks", "Near-horizon checking moves search one ply deeper without stacking extensions") {
@@ -238,6 +1476,30 @@ suites {
       jsr([UnmakeMove], stop_on_rts = true, fail_on_brk = true)
     }
 
+    test("quiesce-searches-quiet-evasions-while-in-check", "Checked quiescence nodes cannot stand pat or search only captures") {
+      memfill([Board88], 128, $30)
+      memfill([QInCheck], 6, $00)
+      [Board88] + $74 = $b6
+      [Board88] + $54 = $34
+      [Board88] + $00 = $36
+      [whitekingsq] = $74
+      [blackkingsq] = $00
+      [SearchSide] = $80
+      [SearchDepth] = $02
+      [QuiesceDepth] = $00
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      $e8 = $80
+      $e9 = $90
+      jsr([Quiesce], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([QInCheck] + $01) == $01, "Checked quiescence should enter full-evasion mode before any cutoff")
+      assert(peekbyte([SearchDepth]) == $02, "Quiescence evasions should restore SearchDepth")
+      assert(peekbyte([QuiesceDepth]) == $00, "Quiescence should unwind its depth counter")
+    }
+
     test("eval-rewards-bishop-pair", "Evaluation counts bishops and applies the bishop-pair bonus") {
       [EvalScore] = $00
       [EvalScore] + $01 = $00
@@ -272,6 +1534,110 @@ suites {
 
       assert(peekbyte([EvalWhiteBishopCount]) == $02, "EvaluatePosition should count both white bishops")
       assert(peekbyte([EvalBlackBishopCount]) == $01, "EvaluatePosition should count the single black bishop")
+    }
+
+    test("eval-rewards-advanced-pawns", "Advanced pawns get compact space and promotion-pressure bonuses") {
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      $f0 = $34
+      $f1 = $80
+      $f2 = $01
+
+      jsr([EvaluateAdvancedPawn], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $08, "White pawn on the fifth rank should get the advanced bonus")
+      assert(peekbyte([EvalScore] + $01) == $00, "White advanced bonus should keep score positive")
+
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      $f0 = $24
+      $f1 = $80
+      $f2 = $01
+
+      jsr([EvaluateAdvancedPawn], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $10, "White pawn on the sixth rank should get the deep advanced bonus")
+
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      $f0 = $54
+      $f1 = $00
+      $f2 = $01
+
+      jsr([EvaluateAdvancedPawn], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $f0, "Black pawn on the sixth rank should subtract the deep advanced bonus")
+      assert(peekbyte([EvalScore] + $01) == $ff, "Black advanced bonus should keep score negative")
+    }
+
+    test("eval-rewards-connected-passers", "Connected passed pawns get an extra structure bonus") {
+      memfill([Board88], 128, $30)
+      [Board88] + $34 = $b1
+      [Board88] + $35 = $b1
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      [EvalEndgameFlag] = $00
+
+      jsr([EvaluatePawnStructure], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $40, "Two connected white passers should get passed and connected bonuses")
+      assert(peekbyte([EvalScore] + $01) == $00, "Connected white passers should keep score positive")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $44 = $31
+      [Board88] + $45 = $31
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      [EvalEndgameFlag] = $00
+
+      jsr([EvaluatePawnStructure], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $c0, "Two connected black passers should subtract passed and connected bonuses")
+      assert(peekbyte([EvalScore] + $01) == $ff, "Connected black passers should keep score negative")
+    }
+
+    test("eval-scores-protected-and-blockaded-passers", "Protected passers gain value while blockaded passers lose urgency") {
+      memfill([Board88], 128, $30)
+      [Board88] + $34 = $b1
+      [Board88] + $45 = $b1
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      [EvalEndgameFlag] = $00
+
+      jsr([EvaluatePawnStructure], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $2b, "A protected white passer should add the protected-passer bonus")
+      assert(peekbyte([EvalScore] + $01) == $00, "Protected white passer score should stay positive")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $44 = $31
+      [Board88] + $33 = $31
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      [EvalEndgameFlag] = $00
+
+      jsr([EvaluatePawnStructure], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $d5, "A protected black passer should subtract the protected-passer bonus")
+      assert(peekbyte([EvalScore] + $01) == $ff, "Protected black passer score should stay negative")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $34 = $b1
+      [Board88] + $24 = $33
+      $f0 = $34
+
+      jsr([CheckWhiteBlockadedPasser], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "White passer should report a direct blockade")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $44 = $31
+      [Board88] + $54 = $b3
+      $f0 = $44
+
+      jsr([CheckBlackBlockadedPasser], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Black passer should report a direct blockade")
     }
 
     test("eval-rewards-rooks-on-open-files", "Rook file activity scores open and semi-open files") {
@@ -324,6 +1690,40 @@ suites {
       assert(peekbyte([EvalScore]) == $f4, "Black rook on a semi-open file should subtract the smaller bonus")
     }
 
+    test("eval-rewards-heavy-pieces-on-seventh-rank", "Rooks and queens get pressure bonuses on the enemy second rank") {
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      $f0 = $13
+      $f1 = $80
+      $f2 = $04
+
+      jsr([EvaluateSeventhRankPressure], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $12, "White rook on the seventh rank should get the invasion bonus")
+      assert(peekbyte([EvalScore] + $01) == $00, "White invasion bonus should keep score positive")
+
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      $f0 = $63
+      $f1 = $00
+      $f2 = $05
+
+      jsr([EvaluateSeventhRankPressure], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $ee, "Black queen on the second rank should subtract the invasion bonus")
+      assert(peekbyte([EvalScore] + $01) == $ff, "Black invasion bonus should keep score negative")
+
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      $f0 = $73
+      $f1 = $80
+      $f2 = $04
+
+      jsr([EvaluateSeventhRankPressure], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $00, "Home-rank rooks should not get the invasion bonus")
+    }
+
     test("eval-rewards-knight-outposts", "Knight outposts require central support and no pawn chase") {
       memfill([Board88], 128, $30)
       [Board88] + $42 = $b1
@@ -368,6 +1768,46 @@ suites {
       jsr([EvaluateKnightOutpost], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte([EvalScore]) == $00, "Rim knights should not get the outpost bonus")
+    }
+
+    test("eval-penalizes-majors-under-minor-attack", "Rooks and queens lose value when enemy minors attack them") {
+      memfill([Board88], 128, $30)
+      [Board88] + $44 = $b4
+      [Board88] + $11 = $33
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      $f0 = $44
+      $f1 = $80
+      $f2 = $04
+
+      jsr([EvaluateMinorPressure], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $e4, "White rook attacked by a bishop should lose minor-pressure value")
+      assert(peekbyte([EvalScore] + $01) == $ff, "White rook pressure should keep score negative")
+      a = $80
+
+      jsr([SideHasMinorAttackedMajor], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "White side should report a major under minor attack")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $44 = $35
+      [Board88] + $65 = $b2
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+      $f0 = $44
+      $f1 = $00
+      $f2 = $05
+
+      jsr([EvaluateMinorPressure], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([EvalScore]) == $23, "Black queen attacked by a knight should add minor-pressure value")
+      assert(peekbyte([EvalScore] + $01) == $00, "Black queen pressure should keep score positive")
+      a = $00
+
+      jsr([SideHasMinorAttackedMajor], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Black side should report a major under minor attack")
     }
 
     test("eval-penalizes-open-king-files", "King safety penalizes open and semi-open files around the king") {
@@ -428,6 +1868,30 @@ suites {
       jsr([ApplyBlackKingFileExposure], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($f1) == $00, "King exposure should skip when pawn counts are unavailable")
+    }
+
+    test("eval-penalizes-attacked-king-zone", "King safety counts attacked squares around the king") {
+      memfill([Board88], 128, $30)
+      [Board88] + $76 = $b6
+      [Board88] + $06 = $34
+      $f0 = $76
+      $f1 = $00
+      a = $00
+
+      jsr([ApplyKingZonePressure], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($f1) == $fb, "A rook attack into the white king zone should subtract pressure")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $01 = $36
+      [Board88] + $71 = $b4
+      $f0 = $01
+      $f1 = $00
+      a = $80
+
+      jsr([ApplyKingZonePressure], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($f1) == $fb, "A rook attack into the black king zone should subtract pressure")
     }
 
     test("eval-penalizes-pinned-pieces", "King-ray pins make trapped defenders tactical targets") {
@@ -503,6 +1967,10 @@ suites {
       [whitekingsq] = $74
       [blackkingsq] = $00
       [SearchSide] = $80
+      [SearchDepth] = $00
+      [MoveListFrom] + $00 = $73
+      [MoveListTo] + $00 = $64
+      [NegamaxState] + $02 = $00
       [NegamaxState] + $03 = $73
       [NegamaxState] + $04 = $64
       $eb = $50
@@ -512,11 +1980,33 @@ suites {
       assert(peekbyte($eb) == $50, "Developed positions should allow quiet queen moves")
 
       [Board88] + $71 = $b2
+      [MoveListFrom] + $00 = $73
+      [MoveListTo] + $00 = $64
       $eb = $50
 
       jsr([ApplyRootEarlyQueenPenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $23, "Home minors should keep the early queen penalty active")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $73 = $b5
+      [Board88] + $71 = $b2
+      [Board88] + $04 = $36
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchSide] = $80
+      [SearchDepth] = $00
+      [MoveListFrom] + $00 = $73
+      [MoveListTo] + $00 = $37
+      [NegamaxState] + $02 = $00
+      [NegamaxState] + $03 = $73
+      [NegamaxState] + $04 = $37
+      $eb = $50
+
+      jsr([ApplyRootEarlyQueenPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Checking queen moves should bypass the early queen penalty")
 
       memfill([Board88], 128, $30)
       [Board88] + $74 = $b6
@@ -541,6 +2031,76 @@ suites {
       assert(peekbyte($eb) == $0a, "Home minors should keep the early rook penalty active")
     }
 
+    test("root-rewards-safe-quiet-checks", "Root scoring keeps forcing quiet checks competitive") {
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $73 = $b5
+      [Board88] + $04 = $36
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchSide] = $80
+      [SearchDepth] = $00
+      [MoveListFrom] + $00 = $73
+      [MoveListTo] + $00 = $37
+      [NegamaxState] + $02 = $00
+      [NegamaxState] + $03 = $73
+      [NegamaxState] + $04 = $37
+      $eb = $50
+
+      jsr([ApplyRootQuietCheckBonus], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $68, "Qd1-h5+ should gain a quiet-check bonus")
+
+      [MoveListTo] + $00 = $63
+      [NegamaxState] + $04 = $63
+      $eb = $50
+
+      jsr([ApplyRootQuietCheckBonus], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Non-checking queen moves should not gain the quiet-check bonus")
+
+      [MoveListTo] + $00 = $37
+      [NegamaxState] + $04 = $37
+      $eb = $80
+
+      jsr([ApplyRootQuietCheckBonus], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $80, "Rejected moves should not be revived by quiet-check scoring")
+    }
+
+    test("root-allows-king-escape-under-queen-pressure", "Exposed kings can run when an enemy queen is close") {
+      memfill([Board88], 128, $30)
+      [Board88] + $52 = $b6
+      [Board88] + $45 = $35
+      [Board88] + $06 = $36
+      [whitekingsq] = $52
+      [blackkingsq] = $06
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $52
+      [NegamaxState] + $04 = $61
+      $eb = $50
+
+      jsr([ApplyRootEarlyKingPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Kc3-b2 should not be treated as an opening king walk under queen pressure")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $00 = $36
+      [whitekingsq] = $74
+      [blackkingsq] = $00
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $74
+      [NegamaxState] + $04 = $73
+      $eb = $50
+
+      jsr([ApplyRootEarlyKingPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $fb, "Unforced Ke1-d1 should still take the early king penalty")
+    }
+
     test("root-penalizes-ignored-sliding-queen-attack", "Root scoring handles rook attacks on either queen color") {
       memfill([Board88], 128, $30)
       [Board88] + $77 = $b6
@@ -550,6 +2110,7 @@ suites {
       [Board88] + $04 = $34
       [whitekingsq] = $77
       [blackkingsq] = $00
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
       [SearchSide] = $80
       [NegamaxState] + $03 = $70
       [NegamaxState] + $04 = $71
@@ -557,7 +2118,7 @@ suites {
 
       jsr([ApplyRootHangingQueenPenalty], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte($eb) == $0a, "White ignoring a rook attack on the queen should be penalized")
+      assert(peekbyte($eb) == $80, "White ignoring a rook attack on the queen should be rejected")
 
       [NegamaxState] + $03 = $44
       [NegamaxState] + $04 = $43
@@ -575,6 +2136,7 @@ suites {
       [Board88] + $04 = $34
       [whitekingsq] = $77
       [blackkingsq] = $00
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
       [SearchSide] = $80
       [NegamaxState] + $03 = $43
       [NegamaxState] + $04 = $34
@@ -592,6 +2154,7 @@ suites {
       [Board88] + $04 = $34
       [whitekingsq] = $77
       [blackkingsq] = $00
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
       [SearchSide] = $80
       [NegamaxState] + $03 = $25
       [NegamaxState] + $04 = $04
@@ -609,6 +2172,7 @@ suites {
       [Board88] + $01 = $34
       [whitekingsq] = $77
       [blackkingsq] = $00
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
       [SearchSide] = $00
       [NegamaxState] + $03 = $01
       [NegamaxState] + $04 = $02
@@ -616,7 +2180,7 @@ suites {
 
       jsr([ApplyRootHangingQueenPenalty], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte($eb) == $0a, "Black ignoring a rook attack on the queen should be penalized")
+      assert(peekbyte($eb) == $80, "Black ignoring a rook attack on the queen should be rejected")
 
       [NegamaxState] + $03 = $34
       [NegamaxState] + $04 = $33
@@ -625,6 +2189,191 @@ suites {
       jsr([ApplyRootHangingQueenPenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $50, "Moving the black queen should escape the hanging-queen penalty")
+    }
+
+    test("root-rejects-queen-move-onto-attack", "Root scoring refuses queen moves onto enemy attacks") {
+      memfill([Board88], 128, $30)
+      [Board88] + $75 = $b6
+      [Board88] + $73 = $b5
+      [Board88] + $45 = $35
+      [Board88] + $06 = $36
+      [whitekingsq] = $75
+      [blackkingsq] = $06
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $73
+      [NegamaxState] + $04 = $55
+      $eb = $70
+
+      jsr([ApplyRootMajorSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $80, "Queen should not move to f3 while a black queen attacks f3")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $75 = $b6
+      [Board88] + $55 = $b5
+      [Board88] + $45 = $35
+      [Board88] + $06 = $36
+      [whitekingsq] = $75
+      [blackkingsq] = $06
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $55
+      [NegamaxState] + $04 = $45
+      $eb = $70
+
+      jsr([ApplyRootMajorSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $70, "Queen captures of queens should remain exempt")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $77 = $b6
+      [Board88] + $07 = $36
+      [Board88] + $45 = $35
+      [Board88] + $44 = $b4
+      [Board88] + $74 = $b4
+      [whitekingsq] = $77
+      [blackkingsq] = $07
+      [SearchSide] = $00
+      [NegamaxState] + $03 = $45
+      [NegamaxState] + $04 = $44
+      $eb = $70
+
+      jsr([ApplyRootMajorSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $70, "An attacked queen should be allowed to capture material before search compares the trade")
+    }
+
+    test("root-fallback-skips-queen-hang", "Root fallback avoids preserving an unsafe queen interposition") {
+      memfill([Board88], 128, $30)
+      [Board88] + $75 = $b6
+      [Board88] + $73 = $b5
+      [Board88] + $45 = $35
+      [Board88] + $06 = $36
+      [whitekingsq] = $75
+      [blackkingsq] = $06
+      [SearchSide] = $80
+      [MoveCount] = $02
+      [MoveListFrom] + $00 = $73
+      [MoveListTo] + $00 = $55
+      [MoveListFrom] + $01 = $75
+      [MoveListTo] + $01 = $74
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+
+      jsr([SetSafeRootFallbackMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $75, "Fallback should skip Qf3 when the black queen attacks f3")
+      assert(peekbyte([BestMoveTo]) == $74, "Fallback should prefer the safe king evasion")
+    }
+
+    test("root-fallback-resolves-current-queen-hang", "Root fallback does not ignore an already attacked queen") {
+      memfill([Board88], 128, $30)
+      [Board88] + $77 = $b6
+      [Board88] + $07 = $36
+      [Board88] + $00 = $32
+      [Board88] + $44 = $b4
+      [Board88] + $45 = $35
+      [whitekingsq] = $77
+      [blackkingsq] = $07
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+      [SearchSide] = $00
+      [MoveCount] = $02
+      [MoveListFrom] + $00 = $00
+      [MoveListTo] + $00 = $21
+      [MoveListFrom] + $01 = $45
+      [MoveListTo] + $01 = $25
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+
+      jsr([SetSafeRootFallbackMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $45, "Fallback should skip quiet drift while the queen is attacked")
+      assert(peekbyte([BestMoveTo]) == $25, "Fallback should choose the queen move that resolves the attack")
+    }
+
+    test("root-fallback-skips-rook-hang", "Root fallback avoids preserving an unsafe rook interposition") {
+      memfill([Board88], 128, $30)
+      [Board88] + $67 = $b6
+      [Board88] + $11 = $b5
+      [Board88] + $07 = $36
+      [Board88] + $05 = $34
+      [whitekingsq] = $67
+      [blackkingsq] = $07
+      [SearchSide] = $00
+      [MoveCount] = $02
+      [MoveListFrom] + $00 = $05
+      [MoveListTo] + $00 = $15
+      [MoveListFrom] + $01 = $07
+      [MoveListTo] + $01 = $06
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+
+      jsr([SetSafeRootFallbackMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $07, "Fallback should skip Rf8-f7 when the white queen attacks f7")
+      assert(peekbyte([BestMoveTo]) == $06, "Fallback should prefer the safe king move")
+    }
+
+    test("root-fallback-skips-queen-danger-pawn-push", "Root fallback avoids random pawn pushes under queen pressure") {
+      memfill([Board88], 128, $30)
+      [Board88] + $62 = $b6
+      [Board88] + $46 = $b1
+      [Board88] + $64 = $b1
+      [Board88] + $43 = $35
+      [Board88] + $06 = $36
+      [whitekingsq] = $62
+      [blackkingsq] = $06
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+      [SearchSide] = $80
+      [MoveCount] = $02
+      [MoveListFrom] + $00 = $46
+      [MoveListTo] + $00 = $36
+      [MoveListFrom] + $01 = $64
+      [MoveListTo] + $01 = $54
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+
+      jsr([SetSafeRootFallbackMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) == $64, "Fallback should skip g4-g5 while the queen is close")
+      assert(peekbyte([BestMoveTo]) == $54, "Fallback should prefer the pawn move that attacks the queen")
+    }
+
+    test("root-rejects-quiet-pawn-push-under-queen-pressure", "Root scoring refuses random pawn pushes near an exposed king") {
+      memfill([Board88], 128, $30)
+      [Board88] + $62 = $b6
+      [Board88] + $46 = $b1
+      [Board88] + $43 = $35
+      [Board88] + $06 = $36
+      [whitekingsq] = $62
+      [blackkingsq] = $06
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+      [SearchSide] = $80
+      [SearchDepth] = $00
+      [NegamaxState] + $03 = $46
+      [NegamaxState] + $04 = $36
+      $eb = $20
+
+      jsr([ApplyRootQueenDangerPawnPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $80, "g4-g5 should be rejected while the queen is close to the white king")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $62 = $b6
+      [Board88] + $64 = $b1
+      [Board88] + $43 = $35
+      [Board88] + $06 = $36
+      [whitekingsq] = $62
+      [blackkingsq] = $06
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+      [SearchSide] = $80
+      [SearchDepth] = $00
+      [NegamaxState] + $03 = $64
+      [NegamaxState] + $04 = $54
+      $eb = $20
+
+      jsr([ApplyRootQueenDangerPawnPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $20, "e2-e3 should remain available because it attacks the nearby queen")
     }
 
     test("book-safety-rejects-heavy-piece-attack", "Book safety rejects rook and queen moves onto generic attacks") {
@@ -672,6 +2421,7 @@ suites {
       [Board88] + $17 = $33
       [whitekingsq] = $77
       [blackkingsq] = $00
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
       [SearchSide] = $80
       [NegamaxState] + $03 = $60
       [NegamaxState] + $04 = $50
@@ -697,6 +2447,7 @@ suites {
       [Board88] + $17 = $33
       [whitekingsq] = $77
       [blackkingsq] = $00
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
       [SearchSide] = $80
       [NegamaxState] + $03 = $25
       [NegamaxState] + $04 = $17
@@ -715,6 +2466,7 @@ suites {
       [Board88] + $17 = $33
       [whitekingsq] = $77
       [blackkingsq] = $00
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
       [SearchSide] = $80
       [NegamaxState] + $03 = $60
       [NegamaxState] + $04 = $50
@@ -732,6 +2484,7 @@ suites {
       [Board88] + $04 = $34
       [whitekingsq] = $77
       [blackkingsq] = $00
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
       [SearchSide] = $80
       [NegamaxState] + $03 = $60
       [NegamaxState] + $04 = $50
@@ -758,6 +2511,7 @@ suites {
       [Board88] + $04 = $34
       [whitekingsq] = $77
       [blackkingsq] = $00
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
       [SearchSide] = $80
       [NegamaxState] + $03 = $60
       [NegamaxState] + $04 = $50
@@ -766,6 +2520,269 @@ suites {
       jsr([ApplyRootLoosePiecePenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $50, "Defended bishops should not trigger the loose-piece penalty")
+    }
+
+    test("root-prefers-opening-center-breaks", "Root scoring discourages quiet drift when a home pawn can challenge the center") {
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $04 = $36
+      [Board88] + $63 = $b1
+      [Board88] + $76 = $b2
+      [Board88] + $34 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $76
+      [NegamaxState] + $04 = $55
+      $eb = $50
+
+      jsr([ApplyRootMissedOpeningCenterBreakPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $14, "Ignoring an available d2-d4 center break should be penalized")
+
+      [NegamaxState] + $03 = $63
+      [NegamaxState] + $04 = $43
+      $eb = $50
+
+      jsr([ApplyRootMissedOpeningCenterBreakPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Playing the center break should avoid the penalty")
+    }
+
+    test("root-penalizes-early-queen-pawn-recapture", "Root scoring prefers pawn recaptures over early queen recaptures") {
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $04 = $36
+      [Board88] + $73 = $b5
+      [Board88] + $54 = $b1
+      [Board88] + $43 = $31
+      [Board88] + $76 = $b2
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $73
+      [NegamaxState] + $04 = $43
+      $eb = $50
+
+      jsr([ApplyRootEarlyQueenRecapturePenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $23, "Qxd4 should be penalized when e3xd4 is available")
+
+      [NegamaxState] + $03 = $54
+      [NegamaxState] + $04 = $43
+      $eb = $50
+
+      jsr([ApplyRootEarlyQueenRecapturePenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "The pawn recapture should avoid the early-queen penalty")
+    }
+
+    test("root-prefers-developing-bishop-recapture", "Root scoring avoids side-pawn recaptures when a bishop can recapture and develop") {
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $04 = $36
+      [Board88] + $75 = $b3
+      [Board88] + $62 = $b1
+      [Board88] + $53 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $62
+      [NegamaxState] + $04 = $53
+      $eb = $50
+
+      jsr([ApplyRootBlockedBishopRecapturePenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $0a, "cxd3 should be penalized when Bxd3 develops")
+
+      [NegamaxState] + $03 = $75
+      [NegamaxState] + $04 = $53
+      $eb = $50
+
+      jsr([ApplyRootBlockedBishopRecapturePenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Bxd3 should avoid the side-pawn recapture penalty")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $36
+      [Board88] + $74 = $b6
+      [Board88] + $05 = $33
+      [Board88] + $12 = $31
+      [Board88] + $23 = $b1
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [SearchSide] = $00
+      [NegamaxState] + $03 = $12
+      [NegamaxState] + $04 = $23
+      $eb = $50
+
+      jsr([ApplyRootBlockedBishopRecapturePenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $0a, "cxd6 should be penalized when Bxd6 develops")
+    }
+
+    test("root-shortcut-developing-bishop-recapture", "Root shortcut develops a bishop when it can recapture an advanced center pawn") {
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $04 = $36
+      [Board88] + $75 = $b3
+      [Board88] + $62 = $b1
+      [Board88] + $53 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [currentplayer] = $01
+      [SearchSide] = $80
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootDevelopingBishopRecaptureMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "White should develop the bishop to recapture d3")
+      assert(peekbyte([BestMoveFrom]) == $75, "Bishop recapture shortcut should move Bf1")
+      assert(peekbyte([BestMoveTo]) == $53, "Bishop recapture shortcut should play Bxd3")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $04 = $36
+      [Board88] + $74 = $b6
+      [Board88] + $05 = $33
+      [Board88] + $12 = $31
+      [Board88] + $23 = $b1
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [currentplayer] = $00
+      [SearchSide] = $00
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      jsr([TryRootDevelopingBishopRecaptureMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Black should develop the bishop to recapture d6")
+      assert(peekbyte([BestMoveFrom]) == $05, "Bishop recapture shortcut should move Bf8")
+      assert(peekbyte([BestMoveTo]) == $23, "Bishop recapture shortcut should play Bxd6")
+    }
+
+    test("root-treats-fourth-rank-pawns-as-urgent", "Root scoring discourages ignoring capturable center pawns on the fourth rank") {
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $04 = $36
+      [Board88] + $52 = $b2
+      [Board88] + $44 = $31
+      [Board88] + $63 = $b1
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $63
+      [NegamaxState] + $04 = $53
+      $eb = $50
+
+      jsr([ApplyRootMissedAdvancedPawnPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $05, "Ignoring a capturable e4 pawn should be penalized")
+
+      [NegamaxState] + $03 = $52
+      [NegamaxState] + $04 = $44
+      $eb = $50
+
+      jsr([ApplyRootMissedAdvancedPawnPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Capturing the fourth-rank pawn should avoid the penalty")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $04 = $36
+      [Board88] + $44 = $b1
+      [Board88] + $35 = $31
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $75
+      [NegamaxState] + $04 = $20
+      $eb = $50
+
+      jsr([ApplyRootMissedAdvancedPawnPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $05, "Ignoring a capturable fifth-rank f-pawn should be penalized")
+
+      [NegamaxState] + $03 = $44
+      [NegamaxState] + $04 = $35
+      $eb = $50
+
+      jsr([ApplyRootMissedAdvancedPawnPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Capturing the fifth-rank f-pawn should avoid the penalty")
+
+      [Board88] + $04 = $30
+      [Board88] + $15 = $36
+      [blackkingsq] = $15
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+      [NegamaxState] + $03 = $75
+      [NegamaxState] + $04 = $20
+      $eb = $50
+
+      jsr([ApplyRootMissedAdvancedPawnPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "A fifth-rank f-pawn is less urgent after the king leaves home rank")
+    }
+
+    test("root-allows-central-pawn-defense-under-queen-pressure", "Queen-pressure filtering rejects flank drift but allows central pawn cover") {
+      memfill([Board88], 128, $30)
+      [Board88] + $62 = $b6
+      [Board88] + $06 = $36
+      [Board88] + $43 = $35
+      [Board88] + $63 = $b1
+      [Board88] + $67 = $b1
+      [whitekingsq] = $62
+      [blackkingsq] = $06
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+      [SearchSide] = $80
+      [NegamaxState] + $03 = $67
+      [NegamaxState] + $04 = $57
+      $eb = $50
+
+      jsr([ApplyRootQueenDangerPawnPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $80, "A quiet h-pawn move should still be rejected under queen pressure")
+
+      [NegamaxState] + $03 = $63
+      [NegamaxState] + $04 = $53
+      $eb = $50
+
+      jsr([ApplyRootQueenDangerPawnPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "A quiet central pawn move should be allowed under queen pressure")
+    }
+
+    test("root-rejects-queen-pawn-raid-under-king-pressure", "Queen-pressure filtering rejects queen pawn raids while the king is exposed") {
+      memfill([Board88], 128, $30)
+      [Board88] + $06 = $36
+      [Board88] + $25 = $35
+      [Board88] + $37 = $b5
+      [Board88] + $65 = $b1
+      [Board88] + $72 = $b6
+      [blackkingsq] = $06
+      [whitekingsq] = $72
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+      [SearchSide] = $00
+      [NegamaxState] + $03 = $25
+      [NegamaxState] + $04 = $65
+      $eb = $50
+
+      jsr([ApplyRootQueenPawnRaidPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $80, "Qxf2 should be rejected while the white queen is near the black king")
+
+      [Board88] + $37 = $30
+      [Board88] + $40 = $b5
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+      $eb = $50
+
+      jsr([ApplyRootQueenPawnRaidPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $50, "Queen pawn captures should remain available when the king is not under queen pressure")
     }
 
     test("root-penalizes-rook-landing-on-attack", "Root scoring rejects rook moves onto cheap attacks") {
@@ -781,26 +2798,42 @@ suites {
       [NegamaxState] + $04 = $34
       $eb = $50
 
-      jsr([ApplyRootRookSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
+      jsr([ApplyRootMajorSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte($eb) == $00, "A rook moving onto a bishop attack should be penalized")
+      assert(peekbyte($eb) == $80, "A rook moving onto a bishop attack should be rejected")
 
       [Board88] + $34 = $35
       $eb = $50
 
-      jsr([ApplyRootRookSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
+      jsr([ApplyRootMajorSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $50, "A rook capturing a queen should not take the rook-destination penalty")
 
       [Board88] + $34 = $31
       $eb = $50
 
-      jsr([ApplyRootRookSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
+      jsr([ApplyRootMajorSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte($eb) == $00, "A rook winning only a pawn while landing attacked should be penalized")
+      assert(peekbyte($eb) == $80, "A rook winning only a pawn while landing attacked should be rejected")
+
+      memfill([Board88], 128, $30)
+      [Board88] + $67 = $b6
+      [Board88] + $11 = $b5
+      [Board88] + $07 = $36
+      [Board88] + $05 = $34
+      [whitekingsq] = $67
+      [blackkingsq] = $07
+      [SearchSide] = $00
+      [NegamaxState] + $03 = $05
+      [NegamaxState] + $04 = $15
+      $eb = $70
+
+      jsr([ApplyRootMajorSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $80, "A high-scoring rook move onto a queen attack should still be rejected")
     }
 
-    test("null-move-prunes-deep-safe-node", "Guarded null move can fail high and restore state", timeout = 13000000) {
+    test("null-move-probes-deep-safe-node", "Guarded null move can probe a deep safe node and restore state", timeout = 13000000) {
       jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
       jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
 
@@ -811,6 +2844,7 @@ suites {
       [Board88] + $63 = $b1
       [Board88] + $64 = $b1
       [Board88] + $65 = $b1
+      [Board88] + $43 = $b5
       [Board88] + $04 = $36
       [Board88] + $00 = $34
       [Board88] + $07 = $34
@@ -829,7 +2863,8 @@ suites {
       [WhitePieceList] + $03 = $63
       [WhitePieceList] + $04 = $64
       [WhitePieceList] + $05 = $65
-      [WhitePieceCount] = $06
+      [WhitePieceList] + $06 = $43
+      [WhitePieceCount] = $07
       [BlackPieceList] + $00 = $04
       [BlackPieceList] + $01 = $00
       [BlackPieceList] + $02 = $07
@@ -846,17 +2881,16 @@ suites {
       [SearchNullMoveEvalSkips] = $00
       [NegamaxState] + $0d = $04
       [NegamaxState] + $0e = $80
-      [NegamaxState] + $0f = $9c
+      [NegamaxState] + $0f = $9b
 
       jsr([TryNullMovePrune], stop_on_rts = true, fail_on_brk = true)
 
-      assert(c == true, "Low beta should allow null move to fail high")
-      assert(a == $9c, "Null cutoff should return beta")
+      assert(c == false, "Correct checked quiescence can keep this null probe from failing high")
       assert(peekbyte([SearchDepth]) == $01, "Null move should restore SearchDepth")
       assert(peekbyte([SearchSide]) == $80, "Null move should restore SearchSide")
       assert(peekbyte([enpassantsq]) == $ff, "Null move should restore en passant state")
       assert(peekbyte([SearchNullMoveAttempts]) == $01, "Null move attempt counter should increment")
-      assert(peekbyte([SearchNullMoveCutoffs]) == $01, "Null move cutoff counter should increment")
+      assert(peekbyte([SearchNullMoveCutoffs]) == $00, "Non-cutting null probe should not increment cutoff counter")
       assert(peekbyte([SearchNullMoveEvalSkips]) == $00, "Passing static eval should not count as an eval skip")
 
       jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
@@ -868,15 +2902,14 @@ suites {
       [SearchNullMoveEvalSkips] = $00
       [NegamaxState] + $0d = $03
       [NegamaxState] + $0e = $80
-      [NegamaxState] + $0f = $9c
+      [NegamaxState] + $0f = $9b
 
       jsr([TryNullMovePrune], stop_on_rts = true, fail_on_brk = true)
 
-      assert(c == true, "Depth-three null move should clamp the child search and fail high")
-      assert(a == $9c, "Depth-three null cutoff should return beta")
+      assert(c == false, "Depth-three null move should clamp the child search without forcing a cutoff")
       assert(peekbyte([SearchDepth]) == $01, "Depth-three null move should restore SearchDepth")
       assert(peekbyte([SearchNullMoveAttempts]) == $01, "Depth-three null move should count as an attempt")
-      assert(peekbyte([SearchNullMoveCutoffs]) == $01, "Depth-three null move should count as a cutoff")
+      assert(peekbyte([SearchNullMoveCutoffs]) == $00, "Depth-three non-cutting probe should not count as a cutoff")
     }
 
     test("null-move-skips-low-static-eval", "Null move avoids probes when static eval cannot reach beta") {
@@ -1048,6 +3081,114 @@ suites {
       assert(peekbyte([SearchRootMoveCount]) > $00, "Headless search should report root moves")
       assert(peekbyte([SearchUsedBook]) == $00, "Headless test platform should not use a book")
       assert(peekbyte([SearchAspirationAttempts]) > $00, "Iterative deepening should use aspiration after depth one")
+    }
+
+    test("headless-engine-extended-search-keeps-legal-root-move", "Extended hard search must not corrupt the root move", timeout = 300000000) {
+      jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
+      jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
+
+      memfill([Board88], 128, $30)
+      [Board88] + $00 = $34
+      [Board88] + $02 = $33
+      [Board88] + $03 = $35
+      [Board88] + $04 = $36
+      [Board88] + $05 = $33
+      [Board88] + $06 = $32
+      [Board88] + $07 = $34
+      [Board88] + $10 = $31
+      [Board88] + $11 = $31
+      [Board88] + $12 = $31
+      [Board88] + $16 = $31
+      [Board88] + $17 = $31
+      [Board88] + $20 = $32
+      [Board88] + $23 = $31
+      [Board88] + $34 = $31
+      [Board88] + $35 = $b1
+      [Board88] + $36 = $b2
+      [Board88] + $43 = $b1
+      [Board88] + $52 = $b2
+      [Board88] + $60 = $b1
+      [Board88] + $61 = $b1
+      [Board88] + $62 = $b1
+      [Board88] + $66 = $b1
+      [Board88] + $67 = $b1
+      [Board88] + $70 = $b4
+      [Board88] + $72 = $b3
+      [Board88] + $73 = $b5
+      [Board88] + $74 = $b6
+      [Board88] + $75 = $b3
+      [Board88] + $77 = $b4
+
+      [currentplayer] = $01
+      [difficulty] = $02
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [castlerights] = $03
+      [enpassantsq] = $24
+      [HistoryCount] = $00
+      [BestMoveFrom] = $ff
+      [BestMoveTo] = $ff
+
+      jsr([ChessFindBestMove], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([BestMoveFrom]) != $ff, "Hard search should find a concrete source")
+      assert(peekbyte([BestMoveTo]) != $ff, "Hard search should find a concrete destination")
+      assert(peekbyte([BestMoveTo]) != $74, "Hard search must not return a move onto its own king")
+      assert(peekbyte([Board88] + $74) == $b6, "Search should leave the white king on e1")
+    }
+
+    test("headless-engine-ponder-cache-restores-board", "ChessPonderSearch caches a matching reply without committing the predicted move", timeout = 13000000) {
+      jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
+      jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
+
+      [difficulty] = $00
+      [currentplayer] = $00
+      [SearchSide] = $00
+      [SearchDepth] = $00
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [BestMoveFrom] = $12
+      [BestMoveTo] = $21
+      [LastEngineMoveFrom] = $56
+      [LastEngineMoveTo] = $65
+      [EngineGameState] = $7e
+
+      memfill([Board88], 128, $30)
+      [Board88] + $44 = $b6
+      [Board88] + $00 = $36
+      [Board88] + $10 = $31
+      [whitekingsq] = $44
+      [blackkingsq] = $00
+
+      a = $10
+      x = $20
+      jsr([ChessPonderSearch], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Ponder search should cache a reply to the predicted move")
+      assert(peekbyte([PonderValid]) == $01, "Ponder cache should be valid after a matching search")
+      assert(peekbyte([PonderPredictedFrom]) == $10, "Ponder should remember the predicted source")
+      assert(peekbyte([PonderPredictedTo]) == $20, "Ponder should remember the predicted destination")
+      assert(peekbyte([PonderReplyFrom]) != $ff, "Ponder should cache a concrete reply source")
+      assert(peekbyte([PonderReplyTo]) != $ff, "Ponder should cache a concrete reply destination")
+      assert(peekbyte([Board88] + $10) == $31, "Ponder search should restore the predicted pawn source")
+      assert(peekbyte([Board88] + $20) == $30, "Ponder search should restore the predicted pawn destination")
+      assert(peekbyte([currentplayer]) == $00, "Ponder search should restore currentplayer")
+      assert(peekbyte([SearchDepth]) == $00, "Ponder search should restore SearchDepth")
+      assert(peekbyte([EngineGameState]) == $7e, "Ponder search should restore EngineGameState")
+      assert(peekbyte([BestMoveFrom]) == $12, "Ponder search should not publish the cached reply early")
+      assert(peekbyte([BestMoveTo]) == $21, "Ponder search should preserve the prior best move")
+      assert(peekbyte([LastEngineMoveFrom]) == $56, "Ponder search should preserve loop-memory source")
+      assert(peekbyte([LastEngineMoveTo]) == $65, "Ponder search should preserve loop-memory destination")
+
+      a = $10
+      x = $20
+      jsr([ChessPonderUse], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Matching actual move should accept the ponder reply")
+      assert(peekbyte([PonderValid]) == $00, "Using the ponder reply should clear the cache")
+      assert(peekbyte([BestMoveFrom]) != $12, "Using ponder should publish the cached source")
+      assert(peekbyte([BestMoveFrom]) != $ff, "Using ponder should publish a valid source")
+      assert(peekbyte([BestMoveTo]) != $ff, "Using ponder should publish a valid destination")
     }
   }
 }

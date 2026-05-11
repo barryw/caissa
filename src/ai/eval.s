@@ -33,7 +33,8 @@ PAWN_ATTACK_MINOR_PENALTY = 60
 PAWN_ATTACK_ROOK_PENALTY = 60
 PAWN_ATTACK_QUEEN_PENALTY = 85
 QUEEN_ATTACK_MINOR_PENALTY = 75
-KNIGHT_ATTACK_QUEEN_PENALTY = 35
+MINOR_ATTACK_ROOK_PENALTY = 28
+MINOR_ATTACK_QUEEN_PENALTY = 35
 KNIGHT_OUTPOST_BONUS = 25
 PINNED_PAWN_PENALTY = 12
 PINNED_MINOR_PENALTY = 25
@@ -47,10 +48,16 @@ PINNED_ATTACKED_PENALTY = 20
 DOUBLED_PAWN_PENALTY = 15
 ISOLATED_PAWN_PENALTY = 20
 PASSED_PAWN_BONUS_BASE = 20
+ADVANCED_PAWN_BONUS = 8
+DEEP_ADVANCED_PAWN_BONUS = 16
 ROOK_BEHIND_PASSER_BONUS = 20
+CONNECTED_PASSER_BONUS = 12
+PROTECTED_PASSER_BONUS = 8
+BLOCKADED_PASSER_PENALTY = 10
 BISHOP_PAIR_BONUS = 20
 ROOK_OPEN_FILE_BONUS = 25
 ROOK_SEMI_OPEN_FILE_BONUS = 12
+HEAVY_SEVENTH_RANK_BONUS = 18
 ENDGAME_NONPAWN_LIMIT = 1; K+P and single-piece endings
 ENDGAME_KING_ACTIVITY_BONUS = 30
 ENDGAME_ROOK_OPEN_FILE_BONUS = 60
@@ -64,6 +71,7 @@ PAWN_SHIELD_BONUS = 10; Bonus per pawn in shield
 OPEN_FILE_PENALTY = 25; Penalty for open file near king
 SEMI_OPEN_FILE_PENALTY = 12; Penalty for half-open file near king
 KING_CENTER_PENALTY = 30; Penalty for king in center in middlegame
+KING_ZONE_ATTACK_PENALTY = 5; Penalty per attacked square around the king
 
 ; Passed pawn bonus by rank (row 0 = rank 8, row 7 = rank 1)
 ; White pawns advance toward row 0, black toward row 7
@@ -100,6 +108,15 @@ QueenAttackPenalty:
   .byte QUEEN_ATTACK_MINOR_PENALTY; 3: bishop
   .byte 0; 4: rook
   .byte 0; 5: queen
+  .byte 0; 6: king
+
+MinorAttackPenalty:
+  .byte 0; 0: empty/invalid
+  .byte 0; 1: pawn
+  .byte 0; 2: knight
+  .byte 0; 3: bishop
+  .byte MINOR_ATTACK_ROOK_PENALTY; 4: rook
+  .byte MINOR_ATTACK_QUEEN_PENALTY; 5: queen
   .byte 0; 6: king
 
 PinnedPiecePenalty:
@@ -145,81 +162,6 @@ BlackPawnsPerFile: .res 8
 .segment "CODE"
 
 ;
-; Evaluate material balance
-; Loops through board, sums white pieces, subtracts black pieces
-; Result in EvalScore (16-bit signed)
-; Clobbers: A, X, Y
-;
-EvaluateMaterial:
-; Clear score
-  lda #$00
-  sta EvalScore
-  sta EvalScore + 1
-
-; Loop through the 64 valid 0x88 squares, skipping offboard gaps.
-  ldx #$00
-
-__ai_eval_squareloop_0:
-; Get piece at this square
-  lda Board88, x
-  cmp #EMPTY_PIECE
-  beq __ai_eval_nextsquare_0
-
-; Save square index
-  stx $f7
-
-; Extract piece type (lower 3 bits)
-  pha; Save full piece value
-  and #$07; Get type (1-6)
-  tay; Y = piece type index
-  lda PieceValues, y; A = piece value
-  sta $f8; Save value
-
-; Check piece color
-  pla; Restore piece value
-  and #WHITE_COLOR; Check high bit
-  beq __ai_eval_blackpiece_0
-
-; White piece - add to score
-  clc
-  lda EvalScore
-  adc $f8
-  sta EvalScore
-  lda EvalScore + 1
-  adc #$00; Add carry
-  sta EvalScore + 1
-  jmp __ai_eval_restorex_0
-
-__ai_eval_blackpiece_0:
-; Black piece - subtract from score
-  sec
-  lda EvalScore
-  sbc $f8
-  sta EvalScore
-  lda EvalScore + 1
-  sbc #$00; Subtract borrow
-  sta EvalScore + 1
-
-__ai_eval_restorex_0:
-; Restore square index
-  ldx $f7
-
-__ai_eval_nextsquare_0:
-  inx
-  txa
-  and #$08; Past file h in 0x88 layout?
-  beq __ai_eval_mat_check_done_0
-  txa
-  clc
-  adc #$08; Skip offboard gap to next rank
-  tax
-__ai_eval_mat_check_done_0:
-  cpx #BOARD_SIZE; Done all 128 bytes?
-  bne __ai_eval_squareloop_0
-
-  rts
-
-;
 ; EvaluatePosition
 ; Full evaluation: material + piece-square tables
 ; Result in EvalScore (16-bit signed)
@@ -261,6 +203,7 @@ __ai_eval_pst_piece_present_0:
   cmp #PAWN_TYPE
   bne __ai_eval_piece_phase_not_pawn_0
   inc EvalPawnCount
+  jsr EvaluateAdvancedPawn
   jmp __ai_eval_piece_phase_done_0
 __ai_eval_piece_phase_not_pawn_0:
   cmp #KING_TYPE
@@ -286,6 +229,7 @@ __ai_eval_piece_phase_not_queen_0:
   jsr EvaluateMinorPressure
   jsr EvaluateKnightOutpost
   jsr EvaluateMobility
+  jsr EvaluateSeventhRankPressure
 __ai_eval_piece_phase_done_0:
 
 ; Add material value for this piece.
@@ -496,6 +440,59 @@ __ai_eval_done_1:
   rts
 
 ;
+; EvaluateAdvancedPawn
+; Reward pawns that have crossed into enemy territory even before they qualify
+; as passed. These pawns take space, cramp pieces, and become tactical hooks.
+; Inputs: $f0=square, $f1=color, $f2=piece type.
+; Clobbers: A
+;
+EvaluateAdvancedPawn:
+  lda $f2
+  cmp #PAWN_TYPE
+  beq __ai_eval_adv_pawn_0
+  rts
+
+__ai_eval_adv_pawn_0:
+  lda $f1
+  beq __ai_eval_black_adv_pawn_0
+
+; White pawns: row 3 is advanced, rows 1-2 are deep in enemy territory.
+  lda $f0
+  and #$70
+  cmp #$30
+  beq __ai_eval_white_advanced_0
+  cmp #$30
+  bcs __ai_eval_adv_done_0
+  cmp #$00
+  beq __ai_eval_adv_done_0
+  lda #DEEP_ADVANCED_PAWN_BONUS
+  jmp AddEvalUnsigned
+
+__ai_eval_white_advanced_0:
+  lda #ADVANCED_PAWN_BONUS
+  jmp AddEvalUnsigned
+
+__ai_eval_black_adv_pawn_0:
+; Black pawns: row 4 is advanced, rows 5-6 are deep in enemy territory.
+  lda $f0
+  and #$70
+  cmp #$40
+  beq __ai_eval_black_advanced_0
+  cmp #$50
+  bcc __ai_eval_adv_done_0
+  cmp #$70
+  beq __ai_eval_adv_done_0
+  lda #DEEP_ADVANCED_PAWN_BONUS
+  jmp SubtractEvalUnsigned
+
+__ai_eval_black_advanced_0:
+  lda #ADVANCED_PAWN_BONUS
+  jmp SubtractEvalUnsigned
+
+__ai_eval_adv_done_0:
+  rts
+
+;
 ; ApplyBishopPairBonus
 ; Two bishops are a durable strategic asset in open positions. Track the pair
 ; during the main board pass and apply this compact bonus once per side.
@@ -546,27 +543,38 @@ __ai_eval_done_2:
 
 ;
 ; EvaluateMinorPressure
-; Penalize a queen currently attacked by an enemy knight. This is intentionally
-; narrow: queen-in-danger positions are expensive when missed, and knight
-; attacks are cheap to detect from the queen square.
+; Penalize loose rooks and queens attacked by enemy knights or bishops. Heavy
+; pieces under minor pressure are tactical targets and often become forks,
+; skewers, or forced concessions before raw material changes.
 ; Inputs: $f0=square, $f1=color, $f2=piece type.
-; Clobbers: A, X, Y, $f3-$f5
+; Clobbers: A, X, Y, $f3-$f6
 ;
 EvaluateMinorPressure:
   lda $f2
-  cmp #QUEEN_TYPE
-  bne __ai_eval_done_3
+  cmp #ROOK_TYPE
+  bcc __ai_eval_done_3
+  cmp #KING_TYPE
+  bcs __ai_eval_done_3
 
   jsr IsPieceKnightAttacked
+  bcs __ai_eval_apply_minor_pressure_0
+
+  jsr IsPieceBishopAttacked
   bcc __ai_eval_done_3
+
+__ai_eval_apply_minor_pressure_0:
+  ldy $f2
+  lda MinorAttackPenalty, y
+  beq __ai_eval_done_3
+  sta $f3
 
   lda $f1
   beq __ai_eval_black_attacked_2
-  lda #KNIGHT_ATTACK_QUEEN_PENALTY
+  lda $f3
   jmp SubtractEvalUnsigned
 
 __ai_eval_black_attacked_2:
-  lda #KNIGHT_ATTACK_QUEEN_PENALTY
+  lda $f3
   jmp AddEvalUnsigned
 
 __ai_eval_done_3:
@@ -706,6 +714,45 @@ __ai_eval_black_piece_0:
   jmp SubtractEvalUnsigned
 
 __ai_eval_done_4:
+  rts
+
+;
+; EvaluateSeventhRankPressure
+; Reward rooks and queens that invade the enemy second rank. These pieces
+; pressure pawns and trap kings even when the immediate material is unchanged.
+; Inputs: $f0=square, $f1=color, $f2=piece type.
+; Clobbers: A
+;
+EvaluateSeventhRankPressure:
+  lda $f2
+  cmp #ROOK_TYPE
+  beq __ai_eval_heavy_piece_0
+  cmp #QUEEN_TYPE
+  beq __ai_eval_heavy_piece_0
+  rts
+
+__ai_eval_heavy_piece_0:
+  lda $f1
+  beq __ai_eval_black_heavy_0
+
+; White heavy pieces on rank 7 (row $10).
+  lda $f0
+  and #$70
+  cmp #$10
+  bne __ai_eval_seventh_done_0
+  lda #HEAVY_SEVENTH_RANK_BONUS
+  jmp AddEvalUnsigned
+
+__ai_eval_black_heavy_0:
+; Black heavy pieces on rank 2 (row $60).
+  lda $f0
+  and #$70
+  cmp #$60
+  bne __ai_eval_seventh_done_0
+  lda #HEAVY_SEVENTH_RANK_BONUS
+  jmp SubtractEvalUnsigned
+
+__ai_eval_seventh_done_0:
   rts
 
 ;
@@ -896,6 +943,61 @@ __ai_eval_attacked_1:
   rts
 
 ;
+; IsPieceBishopAttacked
+; Inputs: $f0=square, $f1=color.
+; Output: Carry set if the piece is currently attacked by an enemy bishop.
+; Clobbers: A, X, Y, $f3-$f6
+;
+IsPieceBishopAttacked:
+  lda $f1
+  beq __ai_eval_black_piece_bishop_0
+  lda #BLACK_BISHOP
+  jmp __ai_eval_set_enemy_bishop_0
+
+__ai_eval_black_piece_bishop_0:
+  lda #WHITE_BISHOP
+
+__ai_eval_set_enemy_bishop_0:
+  sta $f6; $f6 = enemy bishop piece byte
+  lda #$00
+  sta $f3; $f3 = direction index
+
+__ai_eval_bishop_dir_loop_0:
+  ldy $f3
+  lda DiagonalOffsets, y
+  sta $f4; $f4 = ray delta
+  lda $f0
+  sta $f5; $f5 = current ray square
+
+__ai_eval_bishop_ray_loop_0:
+  lda $f5
+  clc
+  adc $f4
+  sta $f5
+  and #OFFBOARD_MASK
+  bne __ai_eval_bishop_next_dir_0
+
+  ldx $f5
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_eval_bishop_ray_loop_0
+  cmp $f6
+  beq __ai_eval_attacked_by_bishop_0
+
+__ai_eval_bishop_next_dir_0:
+  inc $f3
+  lda $f3
+  cmp #DiagonalOffsetsEnd - DiagonalOffsets
+  bne __ai_eval_bishop_dir_loop_0
+
+  clc
+  rts
+
+__ai_eval_attacked_by_bishop_0:
+  sec
+  rts
+
+;
 ; IsPieceQueenAttacked
 ; Inputs: $f0=square, $f1=color, $f2=piece type.
 ; Output: Carry set if a minor piece is attacked by an enemy queen on d1/d8.
@@ -1009,6 +1111,61 @@ __ai_eval_found_0:
   sec
   rts
 
+;
+; SideHasMinorAttackedMajor
+; Input: A = color bit ($80 white, $00 black)
+; Output: Carry set if any rook or queen of that color is attacked by an enemy
+; knight or bishop. Used to avoid trusting book moves while a major is loose.
+; Clobbers: A, X, Y, $f0-$f7
+;
+SideHasMinorAttackedMajor:
+  sta $f7
+  ldx #$00
+
+__ai_eval_major_scan_loop_0:
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_eval_major_next_square_0
+  sta $f5
+  and #WHITE_COLOR
+  cmp $f7
+  bne __ai_eval_major_next_square_0
+  lda $f5
+  and #$07
+  cmp #ROOK_TYPE
+  bcc __ai_eval_major_next_square_0
+  cmp #KING_TYPE
+  bcs __ai_eval_major_next_square_0
+
+  stx $f0
+  sta $f2
+  lda $f7
+  sta $f1
+  jsr IsPieceKnightAttacked
+  bcs __ai_eval_major_found_0
+  jsr IsPieceBishopAttacked
+  bcs __ai_eval_major_found_0
+  ldx $f0
+
+__ai_eval_major_next_square_0:
+  inx
+  txa
+  and #$08
+  beq __ai_eval_major_scan_check_done_0
+  txa
+  clc
+  adc #$08
+  tax
+__ai_eval_major_scan_check_done_0:
+  cpx #BOARD_SIZE
+  bne __ai_eval_major_scan_loop_0
+  clc
+  rts
+
+__ai_eval_major_found_0:
+  sec
+  rts
+
 CheckBlackPawnAt:
   sta $f3
   and #OFFBOARD_MASK
@@ -1075,7 +1232,7 @@ EvaluateKingPins:
 
   lda blackkingsq
   ldx #BLACK_COLOR
-  jmp EvaluatePinsFromKing
+; Fall through for the black king
 
 ;
 ; EvaluatePinsFromKing
@@ -1156,7 +1313,7 @@ __ai_eval_pin_apply_0:
 
 __ai_eval_pin_black_piece_0:
   jsr AddEvalUnsigned
-  jmp ApplyPinnedAttackPressure
+; Fall through to pinned attack pressure
 
 ;
 ; ApplyPinnedAttackPressure
@@ -1400,12 +1557,16 @@ __ai_eval_passed_is_pawn_0:
 ; Check pawn color
   lda Board88, x
   and #WHITE_COLOR
-  bne __ai_eval_check_white_passed_0
+  beq __ai_eval_check_black_passed_0
+  jmp __ai_eval_check_white_passed_0
 
+__ai_eval_check_black_passed_0:
 ; Black pawn - check if passed (no white pawns ahead toward row 7)
   jsr CheckBlackPassed
-  bcc __ai_eval_passed_next_0
+  bcs __ai_eval_black_passed_continue_0
+  jmp __ai_eval_passed_next_0
 
+__ai_eval_black_passed_continue_0:
 ; Black passed pawn - penalty for white
 ; Bonus = PassedPawnBonus[7 - row] since black advances toward row 7
   lda #$07
@@ -1421,6 +1582,36 @@ __ai_eval_passed_is_pawn_0:
   lda EvalScore + 1
   sbc #$00
   sta EvalScore + 1
+  jsr CheckBlackConnectedPasser
+  bcc __ai_eval_black_connected_done_0
+  sec
+  lda EvalScore
+  sbc #CONNECTED_PASSER_BONUS
+  sta EvalScore
+  lda EvalScore + 1
+  sbc #$00
+  sta EvalScore + 1
+__ai_eval_black_connected_done_0:
+  jsr CheckBlackProtectedPasser
+  bcc __ai_eval_black_protected_done_0
+  sec
+  lda EvalScore
+  sbc #PROTECTED_PASSER_BONUS
+  sta EvalScore
+  lda EvalScore + 1
+  sbc #$00
+  sta EvalScore + 1
+__ai_eval_black_protected_done_0:
+  jsr CheckBlackBlockadedPasser
+  bcc __ai_eval_black_blockaded_done_0
+  clc
+  lda EvalScore
+  adc #BLOCKADED_PASSER_PENALTY
+  sta EvalScore
+  lda EvalScore + 1
+  adc #$00
+  sta EvalScore + 1
+__ai_eval_black_blockaded_done_0:
   lda EvalEndgameFlag
   beq __ai_eval_black_passed_done_0
   jsr CheckBlackRookBehindPassed
@@ -1452,6 +1643,36 @@ __ai_eval_check_white_passed_0:
   lda EvalScore + 1
   adc #$00
   sta EvalScore + 1
+  jsr CheckWhiteConnectedPasser
+  bcc __ai_eval_white_connected_done_0
+  clc
+  lda EvalScore
+  adc #CONNECTED_PASSER_BONUS
+  sta EvalScore
+  lda EvalScore + 1
+  adc #$00
+  sta EvalScore + 1
+__ai_eval_white_connected_done_0:
+  jsr CheckWhiteProtectedPasser
+  bcc __ai_eval_white_protected_done_0
+  clc
+  lda EvalScore
+  adc #PROTECTED_PASSER_BONUS
+  sta EvalScore
+  lda EvalScore + 1
+  adc #$00
+  sta EvalScore + 1
+__ai_eval_white_protected_done_0:
+  jsr CheckWhiteBlockadedPasser
+  bcc __ai_eval_white_blockaded_done_0
+  sec
+  lda EvalScore
+  sbc #BLOCKADED_PASSER_PENALTY
+  sta EvalScore
+  lda EvalScore + 1
+  sbc #$00
+  sta EvalScore + 1
+__ai_eval_white_blockaded_done_0:
   lda EvalEndgameFlag
   beq __ai_eval_passed_restore_0
   jsr CheckWhiteRookBehindPassed
@@ -1702,6 +1923,162 @@ __ai_eval_bp_not_passed_0:
   rts
 
 ;
+; CheckWhiteConnectedPasser / CheckBlackConnectedPasser
+; A simple connected-passer signal: same-rank friendly pawn on an adjacent file.
+; Input: $f0=square, $f1=file
+; Output: Carry set = connected, carry clear = not connected
+; Clobbers: A, Y
+;
+CheckWhiteConnectedPasser:
+  lda $f1
+  beq __ai_eval_white_connected_right_0
+  ldy $f0
+  dey
+  lda Board88, y
+  cmp #WHITE_PAWN
+  beq __ai_eval_connected_passer_yes_0
+
+__ai_eval_white_connected_right_0:
+  lda $f1
+  cmp #$07
+  beq __ai_eval_connected_passer_no_0
+  ldy $f0
+  iny
+  lda Board88, y
+  cmp #WHITE_PAWN
+  beq __ai_eval_connected_passer_yes_0
+  jmp __ai_eval_connected_passer_no_0
+
+CheckBlackConnectedPasser:
+  lda $f1
+  beq __ai_eval_black_connected_right_0
+  ldy $f0
+  dey
+  lda Board88, y
+  cmp #BLACK_PAWN
+  beq __ai_eval_connected_passer_yes_0
+
+__ai_eval_black_connected_right_0:
+  lda $f1
+  cmp #$07
+  beq __ai_eval_connected_passer_no_0
+  ldy $f0
+  iny
+  lda Board88, y
+  cmp #BLACK_PAWN
+  beq __ai_eval_connected_passer_yes_0
+
+__ai_eval_connected_passer_no_0:
+  clc
+  rts
+
+__ai_eval_connected_passer_yes_0:
+  sec
+  rts
+
+;
+; CheckWhiteProtectedPasser / CheckBlackProtectedPasser
+; A protected passer has a friendly pawn guarding it from behind.
+; Input: $f0=square
+; Output: Carry set = protected, carry clear = not protected
+; Clobbers: A, Y, $f4
+;
+CheckWhiteProtectedPasser:
+  lda $f0
+  clc
+  adc #$0f
+  sta $f4
+  and #OFFBOARD_MASK
+  bne __ai_eval_white_protected_right_0
+  ldy $f4
+  lda Board88, y
+  cmp #WHITE_PAWN
+  beq __ai_eval_protected_passer_yes_0
+
+__ai_eval_white_protected_right_0:
+  lda $f0
+  clc
+  adc #$11
+  sta $f4
+  and #OFFBOARD_MASK
+  bne __ai_eval_protected_passer_no_0
+  ldy $f4
+  lda Board88, y
+  cmp #WHITE_PAWN
+  beq __ai_eval_protected_passer_yes_0
+  jmp __ai_eval_protected_passer_no_0
+
+CheckBlackProtectedPasser:
+  lda $f0
+  sec
+  sbc #$0f
+  sta $f4
+  and #OFFBOARD_MASK
+  bne __ai_eval_black_protected_right_0
+  ldy $f4
+  lda Board88, y
+  cmp #BLACK_PAWN
+  beq __ai_eval_protected_passer_yes_0
+
+__ai_eval_black_protected_right_0:
+  lda $f0
+  sec
+  sbc #$11
+  sta $f4
+  and #OFFBOARD_MASK
+  bne __ai_eval_protected_passer_no_0
+  ldy $f4
+  lda Board88, y
+  cmp #BLACK_PAWN
+  beq __ai_eval_protected_passer_yes_0
+
+__ai_eval_protected_passer_no_0:
+  clc
+  rts
+
+__ai_eval_protected_passer_yes_0:
+  sec
+  rts
+
+;
+; CheckWhiteBlockadedPasser / CheckBlackBlockadedPasser
+; Output: Carry set if the square directly ahead of the passer is occupied.
+; Clobbers: A, Y, $f4
+;
+CheckWhiteBlockadedPasser:
+  lda $f0
+  sec
+  sbc #$10
+  sta $f4
+  and #OFFBOARD_MASK
+  bne __ai_eval_blockaded_passer_no_0
+  ldy $f4
+  lda Board88, y
+  cmp #EMPTY_PIECE
+  bne __ai_eval_blockaded_passer_yes_0
+  jmp __ai_eval_blockaded_passer_no_0
+
+CheckBlackBlockadedPasser:
+  lda $f0
+  clc
+  adc #$10
+  sta $f4
+  and #OFFBOARD_MASK
+  bne __ai_eval_blockaded_passer_no_0
+  ldy $f4
+  lda Board88, y
+  cmp #EMPTY_PIECE
+  bne __ai_eval_blockaded_passer_yes_0
+
+__ai_eval_blockaded_passer_no_0:
+  clc
+  rts
+
+__ai_eval_blockaded_passer_yes_0:
+  sec
+  rts
+
+;
 ; CheckWhiteRookBehindPassed
 ; For a white passed pawn at $f1=file, $f2=row, look behind it toward row 7.
 ; Output: Carry set = friendly rook behind passer
@@ -1726,8 +2103,7 @@ __ai_eval_white_rook_row_0:
   tay
   lda Board88, y
   cmp #WHITE_ROOK
-  beq __ai_eval_has_white_rook_0
-  jmp __ai_eval_white_rook_row_0
+  bne __ai_eval_white_rook_row_0
 
 __ai_eval_has_white_rook_0:
   sec
@@ -1760,8 +2136,7 @@ __ai_eval_black_rook_row_0:
   tay
   lda Board88, y
   cmp #BLACK_ROOK
-  beq __ai_eval_has_black_rook_0
-  jmp __ai_eval_black_rook_row_0
+  bne __ai_eval_black_rook_row_0
 
 __ai_eval_has_black_rook_0:
   sec
@@ -2008,7 +2383,7 @@ EvaluateSingleKingSafety:
   jmp EvalBlackKingSafety
 
 __ai_eval_is_white_0:
-  jmp EvalWhiteKingSafety
+; Fall through to white king safety
 
 ;
 ; EvalWhiteKingSafety - Helper for white king safety
@@ -2139,6 +2514,8 @@ __ai_eval_white_center_penalty_0:
 
 __ai_eval_white_done_0:
   jsr ApplyWhiteKingFileExposure
+  lda #BLACKS_TURN
+  jsr ApplyKingZonePressure
   lda $f1; Return safety score
   rts
 
@@ -2270,6 +2647,8 @@ __ai_eval_black_center_penalty_0:
 
 __ai_eval_black_done_0:
   jsr ApplyBlackKingFileExposure
+  lda #WHITE_COLOR
+  jsr ApplyKingZonePressure
   lda $f1; Return safety score
   rts
 
@@ -2327,6 +2706,115 @@ __ai_eval_black_exposure_file_0:
   jsr PenalizeBlackKingFile
 
 __ai_eval_black_exposure_done_0:
+  rts
+
+;
+; ApplyKingZonePressure
+; Penalize enemy sliders and knights aimed at the king zone. This is a compact
+; attacker count; it avoids repeated full attack-detection calls inside eval.
+; Inputs: $f0=king square, $f1=safety score, A=attacker color
+; Clobbers: A, X, Y, $f2-$f7
+;
+ApplyKingZonePressure:
+  sta $f5; attacking side
+  lda #$00
+  sta $f7; direction index
+
+__ai_eval_king_zone_ray_loop_0:
+  ldx $f7
+  lda $f0
+  sta $f6; ray square
+
+__ai_eval_king_zone_ray_step_0:
+  ldx $f7
+  lda $f6
+  clc
+  adc AllDirectionOffsets, x
+  sta $f6
+  and #OFFBOARD_MASK
+  bne __ai_eval_king_zone_next_ray_0
+
+  ldy $f6
+  lda Board88, y
+  cmp #EMPTY_PIECE
+  beq __ai_eval_king_zone_ray_step_0
+  sta $f4
+  and #WHITE_COLOR
+  cmp $f5
+  bne __ai_eval_king_zone_next_ray_0
+
+  lda $f4
+  and #$07
+  sta $f2
+  cmp #QUEEN_TYPE
+  beq __ai_eval_king_zone_penalize_ray_0
+
+  lda $f7
+  cmp #$01
+  beq __ai_eval_king_zone_orthogonal_0
+  cmp #$03
+  beq __ai_eval_king_zone_orthogonal_0
+  cmp #$04
+  beq __ai_eval_king_zone_orthogonal_0
+  cmp #$06
+  beq __ai_eval_king_zone_orthogonal_0
+
+  lda $f2
+  cmp #BISHOP_TYPE
+  beq __ai_eval_king_zone_penalize_ray_0
+  jmp __ai_eval_king_zone_next_ray_0
+
+__ai_eval_king_zone_orthogonal_0:
+  lda $f2
+  cmp #ROOK_TYPE
+  bne __ai_eval_king_zone_next_ray_0
+
+__ai_eval_king_zone_penalize_ray_0:
+  jsr SubtractKingZonePressure
+
+__ai_eval_king_zone_next_ray_0:
+  inc $f7
+  lda $f7
+  cmp #AllDirectionOffsetsEnd - AllDirectionOffsets
+  bne __ai_eval_king_zone_ray_loop_0
+
+  lda #$00
+  sta $f7; knight offset index
+
+__ai_eval_king_zone_knight_loop_0:
+  lda $f0
+  clc
+  ldx $f7
+  adc KnightOffsets, x
+  sta $f6
+  and #OFFBOARD_MASK
+  bne __ai_eval_king_zone_next_knight_0
+  ldy $f6
+  lda Board88, y
+  cmp #EMPTY_PIECE
+  beq __ai_eval_king_zone_next_knight_0
+  sta $f4
+  and #WHITE_COLOR
+  cmp $f5
+  bne __ai_eval_king_zone_next_knight_0
+  lda $f4
+  and #$07
+  cmp #KNIGHT_TYPE
+  bne __ai_eval_king_zone_next_knight_0
+  jsr SubtractKingZonePressure
+
+__ai_eval_king_zone_next_knight_0:
+  inc $f7
+  lda $f7
+  cmp #KnightOffsetsEnd - KnightOffsets
+  bne __ai_eval_king_zone_knight_loop_0
+  rts
+
+SubtractKingZonePressure:
+  sec
+  lda $f1
+  sbc #KING_ZONE_ATTACK_PENALTY
+  sta $f1
   rts
 
 PenalizeWhiteKingFile:

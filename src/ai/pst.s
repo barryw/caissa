@@ -88,18 +88,6 @@ PST_KingMid:
   .byte <(-30),<(-40),<(-40),<(-50),<(-50),<(-40),<(-40),<(-30)
   .byte <(-30),<(-40),<(-40),<(-50),<(-50),<(-40),<(-40),<(-30)
 
-; King PST - Endgame (64 bytes)
-; Centralized, active king
-PST_KingEnd:
-  .byte <(-50),<(-30),<(-30),<(-30),<(-30),<(-30),<(-30),<(-50)
-  .byte <(-30),<(-30),  0,  0,  0,  0,<(-30),<(-30)
-  .byte <(-30),<(-10), 20, 30, 30, 20,<(-10),<(-30)
-  .byte <(-30),<(-10), 30, 40, 40, 30,<(-10),<(-30)
-  .byte <(-30),<(-10), 30, 40, 40, 30,<(-10),<(-30)
-  .byte <(-30),<(-10), 20, 30, 30, 20,<(-10),<(-30)
-  .byte <(-30),<(-20),<(-10),  0,  0,<(-10),<(-20),<(-30)
-  .byte <(-50),<(-40),<(-30),<(-20),<(-20),<(-30),<(-40),<(-50)
-
 ; PST pointer table (indexed by piece type 1-6)
 ; Each entry points to the PST for that piece type
 PST_Table_Lo:
@@ -119,6 +107,3 @@ PST_Table_Hi:
   .byte >PST_Rook
   .byte >PST_Queen
   .byte >PST_KingMid
-
-; Endgame threshold: if total material < this, use endgame king PST
-ENDGAME_THRESHOLD = 26; Roughly Q+R or less per side

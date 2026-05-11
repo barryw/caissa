@@ -95,10 +95,7 @@ TTClear:
 ;
 TTBeginSearch:
   inc TTCurrentGeneration
-  bne __ai_tt_generation_ok_0
-
-; Generation 0 is reserved for cleared/unused entries.
-  jmp TTClear
+  beq TTClear; Generation 0 is reserved for cleared/unused entries.
 
 __ai_tt_generation_ok_0:
   lda #$00
@@ -243,7 +240,31 @@ TTStore:
   adc #>TT_BASE
   sta tt_ptr + 1
 
-; Store entry (always replace)
+; Depth-preferred replacement. Keep deeper current-generation entries; at the
+; same depth, avoid replacing exact scores with alpha/beta bounds.
+  ldy #$01
+  lda ZobristHash + 1
+  eor TTCurrentGeneration
+  cmp (tt_ptr), y
+  bne __ai_tt_store_entry_0
+  iny; Y = 2, stored depth
+  lda $f2
+  cmp (tt_ptr), y
+  beq __ai_tt_store_same_depth_0
+  bcs __ai_tt_store_entry_0
+  jmp __ai_tt_store_reset_0
+
+__ai_tt_store_same_depth_0:
+  iny; Y = 3, stored flag
+  lda (tt_ptr), y
+  cmp #TT_FLAG_EXACT
+  bne __ai_tt_store_entry_0
+  lda $f3
+  cmp #TT_FLAG_EXACT
+  bne __ai_tt_store_reset_0
+
+__ai_tt_store_entry_0:
+; Store entry
   ldy #$00
   lda ZobristHash
   sta (tt_ptr), y; +0: hash low
@@ -289,6 +310,7 @@ __ai_tt_store_to_override_0:
 __ai_tt_store_to_0:
   sta (tt_ptr), y; +7: best to
 
+__ai_tt_store_reset_0:
   lda #$00
   sta TTStoreUseMove
   lda #$ff

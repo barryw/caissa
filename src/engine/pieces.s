@@ -60,179 +60,104 @@ __engine_pieces_next_square_0:
 
   rts
 
-UpdatePieceListForMove:
-  ldx movetoindex
-  lda Board88, x
-  cmp #EMPTY_SPR
-  beq __engine_pieces_no_capture_0
+;
+; Generic piece-list helpers used by search MakeMove/UnmakeMove.
+; These take explicit squares instead of relying on currentplayer or the UI
+; move globals, so recursive search can keep the lists authoritative.
+;
 
-  lda currentplayer
-  beq __engine_pieces_capture_white_0
-
-  jsr RemoveFromBlackPieceList
-  jmp __engine_pieces_no_capture_0
-
-__engine_pieces_capture_white_0:
-  jsr RemoveFromWhitePieceList
-
-__engine_pieces_no_capture_0:
-  lda currentplayer
-  bne UpdateWhitePiecePosition
-
-  jmp UpdateBlackPiecePosition
-
-RemoveFromWhitePieceList:
-  lda movetoindex
-  ldx #$00
-__engine_pieces_find_loop_0:
-  cpx WhitePieceCount
-  beq __engine_pieces_not_found_0
-  cmp WhitePieceList, x
-  beq __engine_pieces_found_0
-  inx
-  bne __engine_pieces_find_loop_0
-
-__engine_pieces_found_0:
-  dec WhitePieceCount
-  ldy WhitePieceCount
-  lda WhitePieceList, y
-  sta WhitePieceList, x
-  lda #$ff
-  sta WhitePieceList, y
-__engine_pieces_not_found_0:
-  rts
-
-RemoveFromBlackPieceList:
-  lda movetoindex
-  ldx #$00
-__engine_pieces_find_loop_1:
-  cpx BlackPieceCount
-  beq __engine_pieces_not_found_1
-  cmp BlackPieceList, x
-  beq __engine_pieces_found_1
-  inx
-  bne __engine_pieces_find_loop_1
-
-__engine_pieces_found_1:
-  dec BlackPieceCount
-  ldy BlackPieceCount
-  lda BlackPieceList, y
-  sta BlackPieceList, x
-  lda #$ff
-  sta BlackPieceList, y
-__engine_pieces_not_found_1:
-  rts
-
-UpdateWhitePiecePosition:
-  lda movefromindex
-  ldx #$00
-__engine_pieces_find_loop_2:
-  cpx WhitePieceCount
-  beq __engine_pieces_not_found_2
-  cmp WhitePieceList, x
-  beq __engine_pieces_found_2
-  inx
-  bne __engine_pieces_find_loop_2
-
-__engine_pieces_found_2:
-  lda movetoindex
-  sta WhitePieceList, x
-__engine_pieces_not_found_2:
-  rts
-
-UpdateBlackPiecePosition:
-  lda movefromindex
-  ldx #$00
-__engine_pieces_find_loop_3:
-  cpx BlackPieceCount
-  beq __engine_pieces_not_found_3
-  cmp BlackPieceList, x
-  beq __engine_pieces_found_3
-  inx
-  bne __engine_pieces_find_loop_3
-
-__engine_pieces_found_3:
-  lda movetoindex
-  sta BlackPieceList, x
-__engine_pieces_not_found_3:
-  rts
-
-RemovePawnEnPassant:
-  sta piecelist_idx
-  lda currentplayer
-  beq __engine_pieces_remove_white_pawn_0
-
-  lda piecelist_idx
-  ldx #$00
-__engine_pieces_find_black_0:
-  cpx BlackPieceCount
-  beq __engine_pieces_done_0
-  cmp BlackPieceList, x
-  beq __engine_pieces_found_black_0
-  inx
-  bne __engine_pieces_find_black_0
-__engine_pieces_found_black_0:
-  dec BlackPieceCount
-  ldy BlackPieceCount
-  lda BlackPieceList, y
-  sta BlackPieceList, x
-  lda #$ff
-  sta BlackPieceList, y
-  rts
-
-__engine_pieces_remove_white_pawn_0:
-  lda piecelist_idx
-  ldx #$00
-__engine_pieces_find_white_0:
-  cpx WhitePieceCount
-  beq __engine_pieces_done_0
-  cmp WhitePieceList, x
-  beq __engine_pieces_found_white_0
-  inx
-  bne __engine_pieces_find_white_0
-__engine_pieces_found_white_0:
-  dec WhitePieceCount
-  ldy WhitePieceCount
-  lda WhitePieceList, y
-  sta WhitePieceList, x
-  lda #$ff
-  sta WhitePieceList, y
-__engine_pieces_done_0:
-  rts
-
-UpdateCastlingRook:
+MoveWhitePieceListSquare:
   sta piecelist_idx
   stx temp1
-
-  lda currentplayer
-  beq __engine_pieces_update_black_rook_0
-
-  lda piecelist_idx
   ldx #$00
-__engine_pieces_find_white_rook_0:
+__engine_pieces_move_white_loop_0:
   cpx WhitePieceCount
-  beq __engine_pieces_castling_done_0
-  cmp WhitePieceList, x
-  beq __engine_pieces_found_white_rook_0
+  beq __engine_pieces_move_white_done_0
+  lda WhitePieceList, x
+  cmp piecelist_idx
+  beq __engine_pieces_move_white_found_0
   inx
-  bne __engine_pieces_find_white_rook_0
-__engine_pieces_found_white_rook_0:
+  bne __engine_pieces_move_white_loop_0
+__engine_pieces_move_white_found_0:
   lda temp1
   sta WhitePieceList, x
+__engine_pieces_move_white_done_0:
   rts
 
-__engine_pieces_update_black_rook_0:
-  lda piecelist_idx
+MoveBlackPieceListSquare:
+  sta piecelist_idx
+  stx temp1
   ldx #$00
-__engine_pieces_find_black_rook_0:
+__engine_pieces_move_black_loop_0:
   cpx BlackPieceCount
-  beq __engine_pieces_castling_done_0
-  cmp BlackPieceList, x
-  beq __engine_pieces_found_black_rook_0
+  beq __engine_pieces_move_black_done_0
+  lda BlackPieceList, x
+  cmp piecelist_idx
+  beq __engine_pieces_move_black_found_0
   inx
-  bne __engine_pieces_find_black_rook_0
-__engine_pieces_found_black_rook_0:
+  bne __engine_pieces_move_black_loop_0
+__engine_pieces_move_black_found_0:
   lda temp1
   sta BlackPieceList, x
-__engine_pieces_castling_done_0:
+__engine_pieces_move_black_done_0:
+  rts
+
+RemoveWhitePieceListSquare:
+  sta piecelist_idx
+  ldx #$00
+__engine_pieces_remove_white_loop_0:
+  cpx WhitePieceCount
+  beq __engine_pieces_remove_white_done_0
+  lda WhitePieceList, x
+  cmp piecelist_idx
+  beq __engine_pieces_remove_white_found_0
+  inx
+  bne __engine_pieces_remove_white_loop_0
+__engine_pieces_remove_white_found_0:
+  dec WhitePieceCount
+  ldy WhitePieceCount
+  lda WhitePieceList, y
+  sta WhitePieceList, x
+  lda #$ff
+  sta WhitePieceList, y
+__engine_pieces_remove_white_done_0:
+  rts
+
+RemoveBlackPieceListSquare:
+  sta piecelist_idx
+  ldx #$00
+__engine_pieces_remove_black_loop_0:
+  cpx BlackPieceCount
+  beq __engine_pieces_remove_black_done_0
+  lda BlackPieceList, x
+  cmp piecelist_idx
+  beq __engine_pieces_remove_black_found_0
+  inx
+  bne __engine_pieces_remove_black_loop_0
+__engine_pieces_remove_black_found_0:
+  dec BlackPieceCount
+  ldy BlackPieceCount
+  lda BlackPieceList, y
+  sta BlackPieceList, x
+  lda #$ff
+  sta BlackPieceList, y
+__engine_pieces_remove_black_done_0:
+  rts
+
+AddWhitePieceListSquare:
+  ldy WhitePieceCount
+  cpy #$10
+  bcs __engine_pieces_add_white_done_0
+  sta WhitePieceList, y
+  inc WhitePieceCount
+__engine_pieces_add_white_done_0:
+  rts
+
+AddBlackPieceListSquare:
+  ldy BlackPieceCount
+  cpy #$10
+  bcs __engine_pieces_add_black_done_0
+  sta BlackPieceList, y
+  inc BlackPieceCount
+__engine_pieces_add_black_done_0:
   rts

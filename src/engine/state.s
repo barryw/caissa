@@ -33,14 +33,6 @@ currentplayer:
 EngineGameState:
   .byte GAME_NORMAL
 
-; Store the 0x88 offset in Board88 for the piece to move here.
-movefromindex:
-  .byte BIT8
-
-; Store the 0x88 offset in Board88 for the location to move to here.
-movetoindex:
-  .byte BIT8
-
 ;
 ; 0x88 Board Representation
 ;
@@ -145,16 +137,6 @@ PawnCaptureOffsets:
   .byte $0f, $11; Black: SW(+15), SE(+17)
   .byte $ef, $f1; White: NW(-17), NE(-15)
 
-;
-; Promotion State
-;
-
-; Square where pawn is promoting ($ff = not promoting)
-promotionsq:
-  .byte $ff
-
-; Selected promotion piece type
-;
 ; Piece Lists for Optimized Move Generation
 ;
 
@@ -174,8 +156,6 @@ BlackPieceCount:
 ; Temp storage for piece list operations
 .segment "BSS"
 
-promotionpiece:
-  .res 1
 piecelist_idx:
   .res 1
 

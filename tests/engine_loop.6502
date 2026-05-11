@@ -40,7 +40,7 @@ suites {
 
       jsr([ApplyRootLoopPenalty], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte($eb) == $23, "Direct reversal should subtract the reverse-move penalty")
+      assert(peekbyte($eb) == $05, "Direct reversal should subtract the reverse-move penalty")
     }
 
     test("root-penalizes-recorded-position-repeat", "Root scoring penalizes moves that recreate a recorded position") {

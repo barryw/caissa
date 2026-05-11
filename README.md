@@ -20,6 +20,39 @@ Performance tracking is documented in `docs/performance.md`.
 Override `CA65` and `LD65` if cc65 is installed somewhere other than
 `/Users/barry/Git/cc65/bin`.
 
+## Stockfish Harness
+
+The Stockfish strength/game/Elo harness lives in `tools/` and runs against the
+same headless ca65 engine binary as the deterministic tests:
+`build/engine_harness.prg` plus `build/engine_harness.sym`.
+
+```sh
+make stockfish-tools-test
+make stockfish-bridge-self-test
+make stockfish-strength
+make stockfish-blunder-check
+make stockfish-games
+make stockfish-elo
+```
+
+The default backend is the persistent sim6502 bridge because it avoids starting a
+fresh simulator for every move. It needs `dotnet`, `python-chess`, Stockfish on
+`PATH` or `STOCKFISH_PATH`, and a built Sim6502 runner; override
+`SIM6502_OUTPUT_DIR` when it is not at
+`~/Git/sim6502/sim6502/bin/Release/net10.0`. Generated Stockfish JSON and PGN
+output goes under `build/`.
+
+Useful knobs:
+
+- `STRENGTH_JOBS=4` parallelizes corpus probes.
+- `STOCKFISH_JOBS=4` parallelizes Elo ladder games.
+- `STOCKFISH_DEPTH=10` raises strength-probe analysis depth.
+- `STOCKFISH_ELOS=1320,1520,1720` chooses Elo ladder anchors.
+- `STOCKFISH_TIMEOUT_CYCLES=750000000` controls corpus-probe simulator
+  timeout.
+- `STOCKFISH_BACKEND=docker` uses the Docker simulator path instead of the
+  persistent bridge.
+
 ## Import Pattern
 
 Host programs should define placement knobs, include shared constants, include
@@ -77,6 +110,9 @@ External hosts should prefer these labels from `src/engine/api.s`:
 - `ChessInitPieceLists`
 - `ChessGenerateLegalMoves`
 - `ChessFindBestMove`
+- `ChessPonderClear`
+- `ChessPonderSearch`
+- `ChessPonderUse`
 - `ChessMakeMove`
 - `ChessBeginGame`
 - `ChessCommitMove`
@@ -90,9 +126,8 @@ External hosts should prefer these labels from `src/engine/api.s`:
 
 `src/engine/state.s` owns board and rule state such as `Board88`, `currentplayer`,
 `difficulty`, king squares, castling rights, en passant state, draw/repetition
-state, move indexes, promotion state, and piece lists. Renderers should read
-`Board88` and map piece IDs to their own graphics; display state should stay out
-of the engine.
+state, and piece lists. Renderers should read `Board88` and map piece IDs to
+their own graphics; display state should stay out of the engine.
 
 Hosts should call `ChessBeginGame` after setting up `Board88`, `currentplayer`,
 castling rights, en passant state, and king squares for a new game. It initializes
@@ -110,6 +145,17 @@ clients should not need them. These APIs initialize the Zobrist tables on demand
 so repetition detection does not depend on platform startup order. The search
 also remembers the last returned engine move so it can avoid immediate quiet
 reversals even before a host wires full position history.
+
+Hosts that have idle time while the opponent is thinking can use the ponder
+cache. Call `ChessPonderSearch` with `A = predicted-from` and
+`X = predicted-to` for a legal opponent move in 0x88 coordinates. The routine
+temporarily makes that move, searches a reply, restores the board, side to move,
+search depth, game state, and previously published best move, and returns carry
+set if `PonderReplyFrom/PonderReplyTo` are valid. After the opponent actually
+moves, call `ChessPonderUse` with the actual from/to. Carry set means
+`BestMoveFrom/BestMoveTo` now contain the cached reply; carry clear means the
+prediction missed and the host should run `ChessFindBestMove` normally.
+`ChessPonderClear` invalidates any cached prediction.
 
 `ChessCheckGameState` returns one of the `GAME_*` constants and stores the same
 value in `EngineGameState`: normal, check, checkmate, stalemate, 50-move claim

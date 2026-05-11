@@ -204,10 +204,7 @@ __ai_rules_insuf_scan_loop_0:
 ; Check if empty (hot path: most valid squares are empty)
   lda Board88, x
   cmp #EMPTY_PIECE
-  beq __ai_rules_insuf_next_sq_0; Empty - branch to nearby label (2 cycles vs 3)
-
-; Has piece - process (cold path, ~16-32 pieces)
-  jmp __ai_rules_process_piece_0
+  bne __ai_rules_process_piece_0; Has piece - process cold path
 
 __ai_rules_insuf_next_sq_0:
   inx

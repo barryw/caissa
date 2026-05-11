@@ -188,7 +188,7 @@ MATE_SCORE = 120; Score for checkmate (+120 = we win, -120 = we lose)
 DRAW_SCORE = 0; Score for stalemate/draw
 NEG_INFINITY = $80; -128 as signed byte (worst possible)
 MAX_DEPTH = 8; Maximum search depth
-MAX_KILLER_DEPTH = 16; Maximum killer move storage depth
+MAX_KILLER_DEPTH = MAX_DEPTH; Maximum killer move storage depth
 
 ;
 ; Game State Constants (returned by CheckGameState)

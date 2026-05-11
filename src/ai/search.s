@@ -11,6 +11,10 @@
 ;
 ; Quiescence search depth limiter
 MAX_QUIESCE_DEPTH = 6
+CHECK_QUIESCE_MAX_DEPTH = 2
+CHECK_QUIESCE_MIN_SEARCH_PLY = 2
+CHECK_QUIESCE_MAX_SEARCH_PLY = 3
+MOVE_LIST_SNAPSHOT_DEPTH = MAX_DEPTH - 1
 
 ; Undo Stack
 ; Each entry saves state needed to unmake a move
@@ -61,10 +65,6 @@ QuiesceDepth:
   .res 1
 NextMoveUsedRecaptureExtension:
   .res 1
-StartTimeLo:
-  .res 1
-StartTimeHi:
-  .res 1
 TimeBudgetLo:
   .res 1
 TimeBudgetHi:
@@ -72,6 +72,8 @@ TimeBudgetHi:
 TimeUp:
   .res 1
 RootRepeatSavedCurrentPlayer:
+  .res 1
+PieceListUpdateDisabled:
   .res 1
 
 .segment "CODE"
@@ -96,24 +98,30 @@ MaxDepthTable:
 ; Keep static evaluation below the mate score band. Mate is reported as
 ; exactly +/-MATE_SCORE, so non-terminal scores must never look like mate.
 STATIC_EVAL_LIMIT = MATE_SCORE - 11
-ROOT_ATTACKED_QUEEN_DEST_PENALTY = 120
-ROOT_HANGING_QUEEN_PENALTY = 70
-ROOT_ATTACKED_ROOK_DEST_PENALTY = 80
 ROOT_MINOR_QUEEN_RAY_PENALTY = 90
 ROOT_MINOR_KNIGHT_DEST_PENALTY = 45
 ROOT_MINOR_ATTACKED_DEST_PENALTY = 80
 ROOT_HANGING_MINOR_PENALTY = 65
 ROOT_MISSED_PAWN_WIN_PENALTY = 70
 ROOT_EARLY_QUEEN_MOVE_PENALTY = 45
+ROOT_QUIET_CHECK_BONUS = 24
 ROOT_MISSED_ADVANCED_PAWN_PENALTY = 75
+ROOT_MISSED_CENTER_BREAK_PENALTY = 60
+ROOT_BLOCKED_BISHOP_RECAPTURE_PENALTY = 70
 ROOT_EARLY_KING_MOVE_PENALTY = 85
+ROOT_CHECKED_KING_MOVE_PENALTY = 60
 ROOT_EARLY_ROOK_MOVE_PENALTY = 70
-ROOT_REVERSE_MOVE_PENALTY = 45
+ROOT_EXPOSED_KING_FLANK_PAWN_PENALTY = 65
+ROOT_REVERSE_MOVE_PENALTY = 75
 ROOT_HISTORY_SEEN_PENALTY = 35
 ROOT_REPETITION_PENALTY = 85
+ROOT_MAJOR_CAPTURE_MIN_SCORE = 64
+ROOT_WINNING_CAPTURE_MIN_SCORE = 32
 FUTILITY_MARGIN = 30
 LMR_MIN_DEPTH = 2
 LMR_FULL_MOVES = 1
+LMP_MAX_DEPTH = 2
+LMP_FULL_MOVES = 8
 ASPIRATION_DELTA = 20
 PVS_MIN_DEPTH = 4
 CHECK_EXTENSION_DEPTH = 2
@@ -129,6 +137,170 @@ LastEngineMoveFrom:
   .byte $ff
 LastEngineMoveTo:
   .byte $ff
+
+;
+; UpdatePieceListsAfterMake
+; Keep compact piece lists synchronized with a just-made move.
+; Input: X = UndoStack offset for current SearchDepth,
+;        $f0 = from, $f1 = clean to, $f3 = moved piece after promotion.
+; Clobbers: A, X, Y, piecelist helpers.
+;
+UpdatePieceListsAfterMake:
+  stx $f6
+
+; Remove any captured piece from its own list. En passant stores the captured
+; pawn square in extra_to; normal captures use the destination square.
+  ldx $f6
+  lda UndoStack, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_make_piece_move_0
+  and #WHITE_COLOR
+  bne __ai_search_make_remove_white_capture_0
+
+  lda UndoStack + 3, x
+  and #UNDO_FLAG_EP_CAPTURE
+  beq __ai_search_make_remove_black_normal_0
+  lda UndoStack + 5, x
+  jmp __ai_search_make_remove_black_ready_0
+__ai_search_make_remove_black_normal_0:
+  lda $f1
+__ai_search_make_remove_black_ready_0:
+  jsr RemoveBlackPieceListSquare
+  jmp __ai_search_make_piece_move_0
+
+__ai_search_make_remove_white_capture_0:
+  lda UndoStack + 3, x
+  and #UNDO_FLAG_EP_CAPTURE
+  beq __ai_search_make_remove_white_normal_0
+  lda UndoStack + 5, x
+  jmp __ai_search_make_remove_white_ready_0
+__ai_search_make_remove_white_normal_0:
+  lda $f1
+__ai_search_make_remove_white_ready_0:
+  jsr RemoveWhitePieceListSquare
+
+__ai_search_make_piece_move_0:
+; Move the active piece entry from source to destination.
+  lda $f3
+  and #WHITE_COLOR
+  bne __ai_search_make_move_white_piece_0
+  lda $f0
+  ldx $f1
+  jsr MoveBlackPieceListSquare
+  jmp __ai_search_make_castle_list_0
+
+__ai_search_make_move_white_piece_0:
+  lda $f0
+  ldx $f1
+  jsr MoveWhitePieceListSquare
+
+__ai_search_make_castle_list_0:
+; Castling also moves the rook.
+  ldx $f6
+  lda UndoStack + 3, x
+  and #UNDO_FLAG_CASTLING
+  beq __ai_search_make_piece_lists_done_0
+
+  lda $f3
+  and #WHITE_COLOR
+  bne __ai_search_make_castle_white_rook_0
+  lda UndoStack + 5, x
+  sta $f7
+  lda UndoStack + 4, x
+  ldx $f7
+  jmp MoveBlackPieceListSquare
+
+__ai_search_make_castle_white_rook_0:
+  lda UndoStack + 5, x
+  sta $f7
+  lda UndoStack + 4, x
+  ldx $f7
+  jsr MoveWhitePieceListSquare
+
+__ai_search_make_piece_lists_done_0:
+  rts
+
+;
+; UpdatePieceListsAfterUnmake
+; Reverses the piece-list changes made by UpdatePieceListsAfterMake.
+; Input: X = UndoStack offset for restored parent SearchDepth,
+;        $f0 = original from, $f1 = clean to, $f3 = moved piece as restored.
+; Clobbers: A, X, Y, piecelist helpers.
+;
+UpdatePieceListsAfterUnmake:
+  stx $f6
+
+; Move the active piece entry from destination back to source.
+  lda $f3
+  and #WHITE_COLOR
+  bne __ai_search_unmake_move_white_piece_0
+  lda $f1
+  ldx $f0
+  jsr MoveBlackPieceListSquare
+  jmp __ai_search_unmake_castle_list_0
+
+__ai_search_unmake_move_white_piece_0:
+  lda $f1
+  ldx $f0
+  jsr MoveWhitePieceListSquare
+
+__ai_search_unmake_castle_list_0:
+; Castling moves the rook back as well.
+  ldx $f6
+  lda UndoStack + 3, x
+  and #UNDO_FLAG_CASTLING
+  beq __ai_search_unmake_restore_capture_0
+
+  lda $f3
+  and #WHITE_COLOR
+  bne __ai_search_unmake_castle_white_rook_0
+  lda UndoStack + 4, x
+  sta $f7
+  lda UndoStack + 5, x
+  ldx $f7
+  jsr MoveBlackPieceListSquare
+  jmp __ai_search_unmake_restore_capture_0
+
+__ai_search_unmake_castle_white_rook_0:
+  lda UndoStack + 4, x
+  sta $f7
+  lda UndoStack + 5, x
+  ldx $f7
+  jsr MoveWhitePieceListSquare
+
+__ai_search_unmake_restore_capture_0:
+; Add the captured piece back to the compact list. Exact order is intentionally
+; not restored; membership and count are what move generation needs.
+  ldx $f6
+  lda UndoStack, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_unmake_piece_lists_done_0
+  and #WHITE_COLOR
+  bne __ai_search_unmake_add_white_capture_0
+
+  lda UndoStack + 3, x
+  and #UNDO_FLAG_EP_CAPTURE
+  beq __ai_search_unmake_add_black_normal_0
+  lda UndoStack + 5, x
+  jmp __ai_search_unmake_add_black_ready_0
+__ai_search_unmake_add_black_normal_0:
+  lda $f1
+__ai_search_unmake_add_black_ready_0:
+  jmp AddBlackPieceListSquare
+
+__ai_search_unmake_add_white_capture_0:
+  lda UndoStack + 3, x
+  and #UNDO_FLAG_EP_CAPTURE
+  beq __ai_search_unmake_add_white_normal_0
+  lda UndoStack + 5, x
+  jmp __ai_search_unmake_add_white_ready_0
+__ai_search_unmake_add_white_normal_0:
+  lda $f1
+__ai_search_unmake_add_white_ready_0:
+  jsr AddWhitePieceListSquare
+
+__ai_search_unmake_piece_lists_done_0:
+  rts
 
 ;
 ; MakeMove
@@ -530,6 +702,11 @@ __ai_search_record_capture_ready_0:
   lda #$00
   sta NextMoveUsedRecaptureExtension
 
+  lda PieceListUpdateDisabled
+  bne __ai_search_skip_make_piece_lists_0
+  jsr UpdatePieceListsAfterMake
+__ai_search_skip_make_piece_lists_0:
+
 ; Increment search depth
   inc SearchDepth
 
@@ -537,6 +714,8 @@ __ai_search_record_capture_ready_0:
   lda SearchSide
   eor #WHITE_COLOR
   sta SearchSide
+  lda #$00
+  sta ZobristHashValid
 
   rts
 
@@ -671,6 +850,12 @@ __ai_search_restore_white_king_0:
   sta whitekingsq
 
 __ai_search_unmake_done_0:
+  lda PieceListUpdateDisabled
+  bne __ai_search_skip_unmake_piece_lists_0
+  jsr UpdatePieceListsAfterUnmake
+__ai_search_skip_unmake_piece_lists_0:
+  lda #$00
+  sta ZobristHashValid
   rts
 
 ;
@@ -851,6 +1036,8 @@ FilterLegalMoves:
   lda #$00
   sta $e0; $e0 = read index
   sta $e1; $e1 = write index (legal move count)
+  lda #$01
+  sta PieceListUpdateDisabled
 
 __ai_search_filter_loop_0:
 ; Check if we've processed all moves
@@ -918,6 +1105,8 @@ __ai_search_skip_illegal_0:
 
 __ai_search_filter_done_0:
 ; Update MoveCount with legal move count
+  lda #$00
+  sta PieceListUpdateDisabled
   lda $e1
   sta MoveCount
   rts
@@ -955,6 +1144,8 @@ GenerateLegalMoves:
 ; Sets depth to 0 and side to current player
 ;
 InitSearch:
+  jsr InitPieceLists
+
   lda #$00
   sta SearchDepth
   sta SearchCompletedDepth
@@ -970,6 +1161,8 @@ InitSearch:
   sta SearchNullMoveEvalSkips
   sta SearchHistoryUpdates
   sta SearchHistoryActive
+  sta SearchCounterMoveActive
+  sta PieceListUpdateDisabled
   sta LastMoveWasCaptureByDepth
   sta RecaptureExtensionUsedByDepth
   sta NextMoveUsedRecaptureExtension
@@ -1055,8 +1248,17 @@ __ai_search_clear_history_loop_0:
   sta HistoryScores, x
   dex
   bpl __ai_search_clear_history_loop_0
+  ldx #$7f
+  lda #$ff
+__ai_search_clear_counter_loop_0:
+  sta CounterMoveFrom, x
+  sta CounterMoveTo, x
+  dex
+  bpl __ai_search_clear_counter_loop_0
+  lda #$00
   sta SearchHistoryActive
   sta SearchHistoryUpdates
+  sta SearchCounterMoveActive
   rts
 
 HistoryBonusByDepth:
@@ -1090,38 +1292,693 @@ __ai_search_history_score_ready_0:
   rts
 
 ;
-; RootBestMoveIsLegal
-; Validate a root candidate already stored in BestMoveFrom/BestMoveTo against
-; the current legal move list. Used by compact tactical/opening shortcuts that
-; are intentionally pattern-based.
+; StoreCounterMove
+; Remember a quiet beta-cutoff as a reply to the previous move destination.
+; Input: $f0 = from, $f1 = cleaned to
+; Clobbers: A, Y
 ;
-; Output: Carry set if BestMoveFrom/BestMoveTo is legal
-;         Carry clear otherwise
-; Clobbers: A, X, Y, move list, $e0-$e7
-;
-RootBestMoveIsLegal:
-  jsr GenerateLegalMoves
+StoreCounterMove:
+  lda SearchDepth
+  beq __ai_search_counter_store_done_0
+  tay
+  lda LastMoveToByDepth, y
+  cmp #$ff
+  beq __ai_search_counter_store_done_0
+  and #$7f
+  tay
+  lda $f0
+  sta CounterMoveFrom, y
+  lda $f1
+  sta CounterMoveTo, y
+  lda #$01
+  sta SearchCounterMoveActive
 
-  ldx #$00
-__ai_search_root_legal_loop_0:
-  cpx MoveCount
-  bne __ai_search_root_check_candidate_0
+__ai_search_counter_store_done_0:
+  rts
+
+;
+; RootMoveGivesCheck
+; Cheap prefilter for TryRootMateInOne. Temporarily applies a legal root move
+; on Board88 only, then checks whether it attacks the opponent king. This lets
+; the mate probe avoid full MakeMove/UnmakeMove work for non-checking moves.
+; Input: X = move-list index.
+; Output: Carry set if the move gives check, carry clear otherwise.
+; Clobbers: A, X, Y, $f0-$f5, attack_sq, attack_color
+;
+RootMoveGivesCheck:
+  lda MoveListFrom, x
+  sta $f0; source
+  lda MoveListTo, x
+  sta $f5; original to, including promotion flag
+  and #$7f
+  sta $f1; clean destination
+
+  ldy $f0
+  lda Board88, y
+  cmp #EMPTY_PIECE
+  bne __ai_search_root_check_have_piece_0
   clc
   rts
 
-__ai_search_root_check_candidate_0:
-  lda MoveListFrom, x
-  cmp BestMoveFrom
-  bne __ai_search_root_next_candidate_0
-  lda MoveListTo, x
-  cmp BestMoveTo
-  beq __ai_search_root_candidate_legal_0
-__ai_search_root_next_candidate_0:
-  inx
-  jmp __ai_search_root_legal_loop_0
+__ai_search_root_check_have_piece_0:
+  sta $f2; original moving piece
+  sta $f3; piece to place on destination
 
-__ai_search_root_candidate_legal_0:
+; The temporary board move below does not move the rook, so skip castling.
+  and #$07
+  cmp #KING_TYPE
+  bne __ai_search_root_check_promotion_0
+  lda $f1
   sec
+  sbc $f0
+  cmp #$02
+  beq __ai_search_root_check_reject_0
+  cmp #$fe
+  beq __ai_search_root_check_reject_0
+  bne __ai_search_root_check_promotion_0
+
+__ai_search_root_check_reject_0:
+  jmp __ai_search_root_check_no_0
+
+__ai_search_root_check_promotion_0:
+  lda $f2
+  and #$07
+  cmp #PAWN_TYPE
+  bne __ai_search_root_check_apply_0
+
+  lda $f2
+  and #WHITE_COLOR
+  beq __ai_search_root_check_black_promo_0
+  lda $f1
+  and #$70
+  cmp #WHITE_PROMO_ROW
+  bne __ai_search_root_check_apply_0
+  jmp __ai_search_root_check_promote_piece_0
+
+__ai_search_root_check_black_promo_0:
+  lda $f1
+  and #$70
+  cmp #BLACK_PROMO_ROW
+  bne __ai_search_root_check_apply_0
+
+__ai_search_root_check_promote_piece_0:
+  lda $f5
+  bmi __ai_search_root_check_knight_promo_0
+  lda $f2
+  and #WHITE_COLOR
+  ora #QUEEN_SPR
+  sta $f3
+  jmp __ai_search_root_check_apply_0
+
+__ai_search_root_check_knight_promo_0:
+  lda $f2
+  and #WHITE_COLOR
+  ora #KNIGHT_SPR
+  sta $f3
+
+__ai_search_root_check_apply_0:
+  ldy $f1
+  lda Board88, y
+  sta $f4; captured piece or empty
+
+  ldy $f0
+  lda #EMPTY_PIECE
+  sta Board88, y
+  ldy $f1
+  lda $f3
+  sta Board88, y
+
+  lda SearchSide
+  beq __ai_search_root_check_black_moved_0
+  lda blackkingsq
+  sta attack_sq
+  lda #WHITES_TURN
+  jmp __ai_search_root_check_attack_ready_0
+
+__ai_search_root_check_black_moved_0:
+  lda whitekingsq
+  sta attack_sq
+  lda #BLACKS_TURN
+
+__ai_search_root_check_attack_ready_0:
+  sta attack_color
+  jsr IsSquareAttacked
+  lda #$00
+  rol
+  sta $f5
+
+  ldy $f0
+  lda $f2
+  sta Board88, y
+  ldy $f1
+  lda $f4
+  sta Board88, y
+
+  lda $f5
+  bne __ai_search_root_check_yes_0
+
+__ai_search_root_check_no_0:
+  clc
+  rts
+
+__ai_search_root_check_yes_0:
+  sec
+  rts
+
+;
+; FilterCheckingMoves
+; Keep only pseudo-legal moves that give check. This is intentionally applied
+; before full legality filtering, so non-checking moves do not pay make/unmake
+; king-safety costs in mate probes or check quiescence.
+; Output: MoveList*/MoveCount compacted to checking moves only.
+; Clobbers: A, X, Y, $e0-$e1, $f0-$f5, attack_sq, attack_color
+;
+FilterCheckingMoves:
+  lda #$00
+  sta $e0; read index
+  sta $e1; write index
+
+__ai_search_check_filter_loop_0:
+  lda $e0
+  cmp MoveCount
+  bne __ai_search_check_filter_test_0
+  lda $e1
+  sta MoveCount
+  rts
+
+__ai_search_check_filter_test_0:
+  ldx $e0
+  jsr RootMoveGivesCheck
+  bcc __ai_search_check_filter_next_0
+
+  lda $e0
+  cmp $e1
+  beq __ai_search_check_filter_keep_0
+
+  ldx $e0
+  ldy $e1
+  lda MoveListFrom, x
+  sta MoveListFrom, y
+  lda MoveListTo, x
+  sta MoveListTo, y
+
+__ai_search_check_filter_keep_0:
+  inc $e1
+
+__ai_search_check_filter_next_0:
+  inc $e0
+  jmp __ai_search_check_filter_loop_0
+
+;
+; GenerateCheckingMoves
+; Generate legal checking moves for the current SearchSide.
+; Output: MoveList*/MoveCount contain only legal checks.
+; Clobbers: A, X, Y, many temps.
+;
+GenerateCheckingMoves:
+  jsr ClearMoveList
+  ldx SearchSide
+  jsr GenerateAllMoves
+  jsr FilterCheckingMoves
+  jmp FilterLegalMoves
+
+;
+; TryRootMateInOne
+; Root-only tactical shortcut. If any legal move leaves the opponent in check
+; with no legal reply, play it immediately. This avoids iterative deepening
+; proving the obvious and prevents non-mate shortcuts from stealing a forced
+; mate.
+;
+; Output: Carry set if BestMoveFrom/BestMoveTo were set
+;         Carry clear if no mate-in-one exists
+; Clobbers: A, X, Y, move list, $e0-$e5
+;
+TryRootMateInOne:
+  jsr GenerateCheckingMoves
+  lda MoveCount
+  bne __ai_search_mate_have_root_moves_0
+  clc
+  rts
+
+__ai_search_mate_have_root_moves_0:
+  jsr SaveMoveListForDepth
+
+  lda #$00
+  sta RootShortcutIndex
+
+__ai_search_mate_loop_0:
+  lda RootShortcutIndex
+  cmp MoveCount
+  bne __ai_search_mate_check_move_0
+  clc
+  rts
+
+__ai_search_mate_check_move_0:
+  tax
+  lda MoveListFrom, x
+  sta RootShortcutFrom
+  lda MoveListTo, x
+  sta RootShortcutTo
+
+  ldx RootShortcutTo
+  lda RootShortcutFrom
+  jsr MakeMove
+
+  jsr GenerateLegalMoves
+  lda MoveCount
+  beq __ai_search_mate_found_0
+
+  lda RootShortcutFrom
+  ldx RootShortcutTo
+  jsr UnmakeMove
+  jsr RestoreMoveListForDepth
+
+  inc RootShortcutIndex
+  jmp __ai_search_mate_loop_0
+
+__ai_search_mate_found_0:
+  lda RootShortcutFrom
+  ldx RootShortcutTo
+  jsr UnmakeMove
+
+  lda RootShortcutFrom
+  sta BestMoveFrom
+  lda RootShortcutTo
+  sta BestMoveTo
+  sec
+  rts
+
+;
+; TryRootShortcutCandidateLegal
+; Accept RootShortcutFrom/RootShortcutTo if that exact move is legal.
+; Output: Carry set if BestMoveFrom/BestMoveTo were set.
+;         Carry clear otherwise.
+; Clobbers: A, X, Y, move list
+;
+SetRootShortcutCandidateLegal:
+  sta RootShortcutFrom
+  stx RootShortcutTo
+  jmp TryRootShortcutCandidateLegal
+
+TryRootShortcutCandidateLegal:
+  jsr GenerateLegalMoves
+  ldx #$00
+
+__ai_search_candidate_legal_loop_0:
+  cpx MoveCount
+  bne __ai_search_check_candidate_legal_0
+  clc
+  rts
+
+__ai_search_check_candidate_legal_0:
+  lda MoveListFrom, x
+  cmp RootShortcutFrom
+  bne __ai_search_next_candidate_legal_0
+  lda MoveListTo, x
+  cmp RootShortcutTo
+  beq __ai_search_candidate_legal_0
+
+__ai_search_next_candidate_legal_0:
+  inx
+  jmp __ai_search_candidate_legal_loop_0
+
+__ai_search_candidate_legal_0:
+  lda RootShortcutFrom
+  sta BestMoveFrom
+  lda RootShortcutTo
+  sta BestMoveTo
+  sec
+  rts
+
+;
+; TryRootOpeningCenterPawnMove
+; Before any home minor has developed, claim center space with a pawn rather
+; than drifting into a knight move. This stays structural: from untouched minor
+; setups prefer e-pawn space; after a quiet e3/e6 setup, use the c-pawn to fight
+; for d5/d4.
+; Output: Carry set if BestMoveFrom/BestMoveTo were set.
+;         Carry clear otherwise.
+; Clobbers: A, X, Y, move list
+;
+TryRootOpeningCenterPawnMove:
+  jsr IsCurrentSideInCheck
+  bcc __ai_search_opening_center_not_checked_0
+  clc
+  rts
+
+__ai_search_opening_center_not_checked_0:
+  lda SearchSide
+  bne __ai_search_white_opening_center_0
+  jmp __ai_search_black_opening_center_0
+
+__ai_search_white_opening_center_0:
+  lda Board88 + $44
+  cmp #WHITE_PAWN
+  bne __ai_search_white_e4_minor_support_0
+  jmp __ai_search_white_opening_home_minor_check_0
+
+__ai_search_white_e4_minor_support_0:
+  cmp #WHITE_KNIGHT
+  bne __ai_search_white_opening_home_minor_check_0
+  lda Board88 + $47
+  cmp #BLACK_QUEEN
+  bne __ai_search_white_opening_home_minor_check_0
+  lda Board88 + $46
+  cmp #EMPTY_PIECE
+  bne __ai_search_white_opening_home_minor_check_0
+  lda Board88 + $45
+  cmp #EMPTY_PIECE
+  bne __ai_search_white_opening_home_minor_check_0
+  lda Board88 + $63
+  cmp #WHITE_PAWN
+  bne __ai_search_white_opening_home_minor_check_0
+  lda #$63
+  ldx #$53
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_white_opening_home_minor_check_0:
+; If a central enemy pawn is already established, challenge it with the
+; home d-pawn even after one minor has developed. Flank pawn drift is handled
+; later; do not force d4 when the f-pawn has already moved.
+  jsr RootWhiteDPawnBreakAvailable
+  bcc __ai_search_white_home_minor_gate_0
+  lda Board88 + $65
+  cmp #WHITE_PAWN
+  bne __ai_search_white_home_minor_gate_0
+  lda #$63
+  ldx #$43
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_white_home_minor_gate_0:
+; White home minors must still be undeveloped.
+  lda Board88 + $71
+  cmp #WHITE_KNIGHT
+  bne __ai_search_no_white_opening_center_near_0
+  lda Board88 + $72
+  cmp #WHITE_BISHOP
+  bne __ai_search_no_white_opening_center_near_0
+  lda Board88 + $75
+  cmp #WHITE_BISHOP
+  bne __ai_search_no_white_opening_center_near_0
+  lda Board88 + $76
+  cmp #WHITE_KNIGHT
+  bne __ai_search_no_white_opening_center_near_0
+  jmp __ai_search_white_home_minors_ready_0
+
+__ai_search_no_white_opening_center_near_0:
+  jmp __ai_search_no_white_opening_center_0
+
+__ai_search_white_home_minors_ready_0:
+  lda Board88 + $63
+  cmp #WHITE_PAWN
+  bne __ai_search_no_white_opening_center_near_0
+  lda Board88 + $65
+  cmp #WHITE_PAWN
+  beq __ai_search_white_f_pawn_home_0
+  lda Board88 + $64
+  cmp #WHITE_PAWN
+  bne __ai_search_no_white_opening_center_0
+  lda Board88 + $33
+  cmp #BLACK_PAWN
+  bne __ai_search_no_white_opening_center_0
+  lda #$64
+  ldx #$54
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_white_f_pawn_home_0:
+  lda Board88 + $64
+  cmp #WHITE_PAWN
+  bne __ai_search_white_e3_center_claim_0
+  lda Board88 + $52
+  cmp #WHITE_PAWN
+  bne __ai_search_white_c4_center_claim_0
+  lda Board88 + $34
+  cmp #BLACK_PAWN
+  bne __ai_search_white_e_pawn_full_center_0
+  lda #$63
+  ldx #$43
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_white_c4_center_claim_0:
+  lda Board88 + $42
+  cmp #WHITE_PAWN
+  bne __ai_search_white_e_pawn_full_center_0
+  lda Board88 + $23
+  cmp #BLACK_PAWN
+  bne __ai_search_white_e_pawn_full_center_0
+  lda #$63
+  ldx #$43
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_white_e_pawn_full_center_0:
+  lda #$64
+  ldx #$44
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_white_e3_center_claim_0:
+  lda Board88 + $54
+  cmp #WHITE_PAWN
+  beq __ai_search_white_e3_pawn_ready_0
+  lda Board88 + $44
+  cmp #WHITE_PAWN
+  bne __ai_search_no_white_opening_center_0
+  lda Board88 + $25
+  cmp #BLACK_PAWN
+  bne __ai_search_no_white_opening_center_0
+  lda #$63
+  ldx #$43
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_white_e3_pawn_ready_0:
+  lda Board88 + $62
+  cmp #WHITE_PAWN
+  bne __ai_search_no_white_opening_center_0
+  lda Board88 + $34
+  cmp #BLACK_PAWN
+  bne __ai_search_white_e3_flank_claim_0
+  lda #$63
+  ldx #$43
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_white_e3_flank_claim_0:
+  lda #$62
+  ldx #$42
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_no_white_opening_center_0:
+  jmp __ai_search_no_opening_center_0
+
+__ai_search_black_opening_center_0:
+  lda Board88 + $34
+  cmp #BLACK_PAWN
+  bne __ai_search_black_e5_minor_support_0
+  jmp __ai_search_black_opening_home_minor_check_0
+
+__ai_search_black_e5_minor_support_0:
+  cmp #BLACK_KNIGHT
+  bne __ai_search_black_opening_home_minor_check_0
+  lda Board88 + $37
+  cmp #WHITE_QUEEN
+  bne __ai_search_black_opening_home_minor_check_0
+  lda Board88 + $36
+  cmp #EMPTY_PIECE
+  bne __ai_search_black_opening_home_minor_check_0
+  lda Board88 + $35
+  cmp #EMPTY_PIECE
+  bne __ai_search_black_opening_home_minor_check_0
+  lda Board88 + $13
+  cmp #BLACK_PAWN
+  bne __ai_search_black_opening_home_minor_check_0
+  lda #$13
+  ldx #$23
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_black_opening_home_minor_check_0:
+  jsr RootBlackDPawnBreakAvailable
+  bcc __ai_search_black_home_minor_gate_0
+  lda Board88 + $15
+  cmp #BLACK_PAWN
+  bne __ai_search_black_home_minor_gate_0
+  lda #$13
+  ldx #$33
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_black_home_minor_gate_0:
+; Black home minors must still be undeveloped.
+  lda Board88 + $01
+  cmp #BLACK_KNIGHT
+  bne __ai_search_no_black_opening_center_near_0
+  lda Board88 + $02
+  cmp #BLACK_BISHOP
+  bne __ai_search_no_black_opening_center_near_0
+  lda Board88 + $05
+  cmp #BLACK_BISHOP
+  bne __ai_search_no_black_opening_center_near_0
+  lda Board88 + $06
+  cmp #BLACK_KNIGHT
+  bne __ai_search_no_black_opening_center_near_0
+  jmp __ai_search_black_home_minors_ready_0
+
+__ai_search_no_black_opening_center_near_0:
+  jmp __ai_search_no_opening_center_0
+
+__ai_search_black_home_minors_ready_0:
+  lda Board88 + $13
+  cmp #BLACK_PAWN
+  bne __ai_search_no_black_opening_center_near_0
+  lda Board88 + $15
+  cmp #BLACK_PAWN
+  beq __ai_search_black_f_pawn_home_0
+  lda Board88 + $14
+  cmp #BLACK_PAWN
+  bne __ai_search_no_opening_center_0
+  lda Board88 + $43
+  cmp #WHITE_PAWN
+  bne __ai_search_no_opening_center_0
+  lda #$14
+  ldx #$24
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_black_f_pawn_home_0:
+  lda Board88 + $14
+  cmp #BLACK_PAWN
+  bne __ai_search_black_e6_center_claim_0
+  lda Board88 + $22
+  cmp #BLACK_PAWN
+  bne __ai_search_black_c5_center_claim_0
+  lda Board88 + $44
+  cmp #WHITE_PAWN
+  bne __ai_search_black_e_pawn_full_center_0
+  lda #$13
+  ldx #$33
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_black_c5_center_claim_0:
+  lda Board88 + $32
+  cmp #BLACK_PAWN
+  bne __ai_search_black_e_pawn_full_center_0
+  lda Board88 + $53
+  cmp #WHITE_PAWN
+  bne __ai_search_black_e_pawn_full_center_0
+  lda #$13
+  ldx #$33
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_black_e_pawn_full_center_0:
+  lda #$14
+  ldx #$34
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_black_e6_center_claim_0:
+  lda Board88 + $24
+  cmp #BLACK_PAWN
+  beq __ai_search_black_e6_pawn_ready_0
+  lda Board88 + $34
+  cmp #BLACK_PAWN
+  bne __ai_search_no_opening_center_0
+  lda Board88 + $55
+  cmp #WHITE_PAWN
+  bne __ai_search_no_opening_center_0
+  lda #$13
+  ldx #$33
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_black_e6_pawn_ready_0:
+  lda Board88 + $12
+  cmp #BLACK_PAWN
+  bne __ai_search_no_opening_center_0
+  lda Board88 + $44
+  cmp #WHITE_PAWN
+  bne __ai_search_black_e6_flank_claim_0
+  lda #$13
+  ldx #$33
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_black_e6_flank_claim_0:
+  lda #$12
+  ldx #$32
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_no_opening_center_0:
+  clc
+  rts
+
+;
+; TryRootDevelopingBishopRecaptureMove
+; If an enemy pawn reaches d/e on the third/sixth rank and a home bishop can
+; recapture it, prefer the developing bishop capture over a structure-wrecking
+; side-pawn recapture or a long shallow search.
+; Output: Carry set if BestMoveFrom/BestMoveTo were set.
+;         Carry clear otherwise.
+; Clobbers: A, X, Y, move list
+;
+TryRootDevelopingBishopRecaptureMove:
+  jsr IsCurrentSideInCheck
+  bcc __ai_search_bishop_recap_not_checked_0
+  clc
+  rts
+
+__ai_search_bishop_recap_not_checked_0:
+  lda SearchSide
+  beq __ai_search_black_bishop_recap_0
+
+  lda Board88 + $53
+  cmp #BLACK_PAWN
+  bne __ai_search_white_bishop_recap_e3_0
+  lda Board88 + $75
+  cmp #WHITE_BISHOP
+  bne __ai_search_white_bishop_recap_e3_0
+  lda Board88 + $64
+  cmp #EMPTY_PIECE
+  bne __ai_search_white_bishop_recap_e3_0
+  lda #$75
+  ldx #$53
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_white_bishop_recap_e3_0:
+  lda Board88 + $54
+  cmp #BLACK_PAWN
+  bne __ai_search_no_bishop_recap_0
+  lda Board88 + $72
+  cmp #WHITE_BISHOP
+  bne __ai_search_no_bishop_recap_0
+  lda Board88 + $63
+  cmp #EMPTY_PIECE
+  bne __ai_search_no_bishop_recap_0
+  lda #$72
+  ldx #$54
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_black_bishop_recap_0:
+  lda Board88 + $23
+  cmp #WHITE_PAWN
+  bne __ai_search_black_bishop_recap_e6_0
+  lda Board88 + $05
+  cmp #BLACK_BISHOP
+  bne __ai_search_black_bishop_recap_e6_0
+  lda Board88 + $14
+  cmp #EMPTY_PIECE
+  bne __ai_search_black_bishop_recap_e6_0
+  lda #$05
+  ldx #$23
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_black_bishop_recap_e6_0:
+  lda Board88 + $24
+  cmp #WHITE_PAWN
+  bne __ai_search_no_bishop_recap_0
+  lda Board88 + $02
+  cmp #BLACK_BISHOP
+  bne __ai_search_no_bishop_recap_0
+  lda Board88 + $13
+  cmp #EMPTY_PIECE
+  bne __ai_search_no_bishop_recap_0
+  lda #$02
+  ldx #$24
+  jmp SetRootShortcutCandidateLegal
+
+__ai_search_no_bishop_recap_0:
+  clc
   rts
 
 ;
@@ -1268,8 +2125,7 @@ __ai_search_scan_black_queen_capture_0:
 __ai_search_found_sparse_enemy_queen_0:
   lda RootShortcutTo
   cmp #$ff
-  beq __ai_search_store_sparse_enemy_queen_0
-  jmp __ai_search_sparse_queen_material_fail_0
+  bne __ai_search_sparse_queen_material_fail_0
 
 __ai_search_store_sparse_enemy_queen_0:
   stx RootShortcutTo
@@ -1331,6 +2187,164 @@ __ai_search_next_queen_capture_move_0:
   jmp __ai_search_queen_capture_move_loop_0
 
 ;
+; TryRootMajorCaptureMove
+; In any position, take the best legal queen/rook capture that passes the
+; swap-off gate. This broadens the sparse tactical shortcut to real positions
+; without trusting obviously poisoned heavy-piece grabs.
+;
+; Output: Carry set if BestMoveFrom/BestMoveTo were set
+;         Carry clear otherwise
+; Clobbers: A, X, Y, move list, $e0-$e4, $f0-$f7
+;
+TryRootMajorCaptureMove:
+  ldx #$00
+__ai_search_major_piece_scan_loop_0:
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_major_piece_next_square_0
+
+  lda SearchSide
+  beq __ai_search_scan_white_major_0
+
+  lda Board88, x
+  cmp #BLACK_ROOK
+  beq __ai_search_have_major_piece_0
+  cmp #BLACK_QUEEN
+  beq __ai_search_have_major_piece_0
+  jmp __ai_search_major_piece_next_square_0
+
+__ai_search_scan_white_major_0:
+  lda Board88, x
+  cmp #WHITE_ROOK
+  beq __ai_search_have_major_piece_0
+  cmp #WHITE_QUEEN
+  beq __ai_search_have_major_piece_0
+
+__ai_search_major_piece_next_square_0:
+  inx
+  txa
+  and #$08
+  beq __ai_search_major_piece_check_done_0
+  txa
+  clc
+  adc #$08
+  tax
+__ai_search_major_piece_check_done_0:
+  cpx #BOARD_SIZE
+  bne __ai_search_major_piece_scan_loop_0
+  clc
+  rts
+
+__ai_search_have_major_piece_0:
+  jsr GenerateLegalMoves
+
+  lda #$ff
+  sta RootShortcutFrom
+  lda #$00
+  sta $e0; move index
+  sta $e1; best score
+
+__ai_search_major_capture_loop_0:
+  lda $e0
+  cmp MoveCount
+  bne __ai_search_check_major_capture_0
+  lda RootShortcutFrom
+  cmp #$ff
+  beq __ai_search_no_major_capture_0
+  jmp __ai_search_accept_major_capture_0
+__ai_search_no_major_capture_0:
+  clc
+  rts
+
+__ai_search_check_major_capture_0:
+  ldx $e0
+  lda MoveListTo, x
+  and #$7f
+  tay
+  lda Board88, y
+  cmp #EMPTY_PIECE
+  beq __ai_search_next_major_capture_0
+  and #$07
+  tay
+  lda MVV_LVA_ScoreValues, y
+  cmp #$05
+  bcc __ai_search_next_major_capture_0
+  sta $e2; victim rank
+
+  ldx $e0
+  lda MoveListFrom, x
+  sta NegamaxState + 3
+  lda MoveListTo, x
+  sta NegamaxState + 4
+  jsr RootEarlyQueenPawnRecapture
+  bcs __ai_search_next_major_capture_0
+
+  ldx $e0
+  jsr CapturePassesSwapOff
+  bcc __ai_search_next_major_capture_0
+
+  lda $e2
+  asl
+  asl
+  asl
+  asl
+  sta $e3; victim rank * 16
+
+  ldx $e0
+  lda MoveListFrom, x
+  tay
+  lda Board88, y
+  and #$07
+  sta $e4
+; Queen-for-queen captures are often equalizing trades, not tactical wins.
+; Let full root search compare them against forcing queen attacks by minors.
+  cmp #QUEEN_TYPE
+  bne __ai_search_major_capture_check_king_0
+  lda $e2
+  cmp #$09
+  beq __ai_search_next_major_capture_0
+  lda $e4
+
+__ai_search_major_capture_check_king_0:
+  cmp #KING_TYPE
+  bne __ai_search_major_capture_attacker_rank_0
+  lda $e3
+  sec
+  sbc #$0a
+  jmp __ai_search_major_capture_score_ready_0
+
+__ai_search_major_capture_attacker_rank_0:
+  ldy $e4
+  lda $e3
+  sec
+  sbc MVV_LVA_ScoreValues, y
+
+__ai_search_major_capture_score_ready_0:
+  cmp #ROOT_MAJOR_CAPTURE_MIN_SCORE
+  bcc __ai_search_next_major_capture_0
+  cmp $e1
+  bcc __ai_search_next_major_capture_0
+
+  sta $e1
+  ldx $e0
+  lda MoveListFrom, x
+  sta RootShortcutFrom
+  lda MoveListTo, x
+  sta RootShortcutTo
+
+__ai_search_next_major_capture_0:
+  inc $e0
+  jmp __ai_search_major_capture_loop_0
+
+__ai_search_accept_major_capture_0:
+  lda RootShortcutFrom
+  sta BestMoveFrom
+  lda RootShortcutTo
+  sta BestMoveTo
+  sec
+  rts
+
+;
 ; TrySimpleRookPawnEndgameMove
 ; Root-only endgame heuristic for K+R+P vs K. In these sparse endings, the
 ; rook usually needs to cut the enemy king off near its file before the pawn
@@ -1343,6 +2357,7 @@ __ai_search_next_queen_capture_move_0:
 TrySimpleRookPawnEndgameMove:
   lda #$ff
   sta $e0; rook square
+  sta $e6; own pawn square
   lda #$00
   sta $e1; own pawn count
   sta $e2; own rook count
@@ -1391,6 +2406,7 @@ __ai_search_found_black_rook_0:
   jmp __ai_search_rook_next_square_0
 
 __ai_search_found_own_pawn_0:
+  stx $e6
   inc $e1
   jmp __ai_search_rook_next_square_0
 
@@ -1436,6 +2452,42 @@ __ai_search_pawn_count_ok_0:
   rts
 
 __ai_search_have_rook_square_0:
+  lda SearchSide
+  beq __ai_search_black_rook_behind_pawn_0
+  lda $e6
+  clc
+  adc #$10
+  cmp $e0
+  beq __ai_search_rook_unblock_passer_0
+  jmp __ai_search_rook_cutoff_target_0
+
+__ai_search_black_rook_behind_pawn_0:
+  lda $e6
+  sec
+  sbc #$10
+  cmp $e0
+  bne __ai_search_rook_cutoff_target_0
+
+__ai_search_rook_unblock_passer_0:
+  lda $e0
+  and #$07
+  cmp #$04
+  bcc __ai_search_rook_unblock_right_0
+  lda $e0
+  sec
+  sbc #$01
+  jmp __ai_search_rook_unblock_target_ready_0
+
+__ai_search_rook_unblock_right_0:
+  lda $e0
+  clc
+  adc #$01
+
+__ai_search_rook_unblock_target_ready_0:
+  sta $e5
+  jmp __ai_search_rook_target_ready_0
+
+__ai_search_rook_cutoff_target_0:
   lda SearchSide
   beq __ai_search_black_rook_target_0
   lda blackkingsq
@@ -1545,7 +2597,10 @@ __ai_search_material_check_done_0:
 
 __ai_search_have_sparse_material_0:
   jsr GenerateLegalMoves
+  lda #$00
+  sta $e4
 
+PrepareRootWinningCaptureScan:
   lda #$ff
   sta RootShortcutFrom
   lda #$00
@@ -1558,7 +2613,10 @@ __ai_search_capture_loop_0:
   bne __ai_search_check_capture_0
   lda RootShortcutFrom
   cmp #$ff
-  bne __ai_search_accept_capture_0
+  beq __ai_search_no_winning_capture_0
+  jmp __ai_search_accept_capture_0
+
+__ai_search_no_winning_capture_0:
   clc
   rts
 
@@ -1569,12 +2627,27 @@ __ai_search_check_capture_0:
   tay
   lda Board88, y
   cmp #EMPTY_PIECE
-  beq __ai_search_next_capture_0
+  bne __ai_search_have_capture_target_0
+  jmp __ai_search_next_capture_0
+
+__ai_search_have_capture_target_0:
 
   ldx $e2
-  jsr CapturePassesSwapOff
-  bcc __ai_search_next_capture_0
+  lda MoveListFrom, x
+  sta NegamaxState + 3
+  lda MoveListTo, x
+  sta NegamaxState + 4
+  jsr RootEarlyQueenPawnRecapture
+  bcc __ai_search_check_capture_swapoff_0
+  jmp __ai_search_next_capture_0
 
+__ai_search_check_capture_swapoff_0:
+  ldx $e2
+  jsr CapturePassesSwapOff
+  bcs __ai_search_score_capture_0
+  jmp __ai_search_next_capture_0
+
+__ai_search_score_capture_0:
   ldx $e2
   lda MoveListTo, x
   and #$7f
@@ -1594,10 +2667,59 @@ __ai_search_check_capture_0:
   tay
   lda Board88, y
   and #$07
+  sta $e5
   tay
+  lda MVV_LVA_ScoreValues, y
+  sta $e6
+; Queen trades are not automatically wins. Full root search should compare
+; them against tempo moves that keep the enemy queen trapped or attacked.
+  lda $e5
+  cmp #QUEEN_TYPE
+  bne __ai_search_capture_exposed_king_guard_0
+  lda $e3
+  cmp #$90
+  beq __ai_search_next_capture_0
+
+__ai_search_capture_exposed_king_guard_0:
+; When the enemy king has left the back rank, non-pawn minor captures should
+; stay in full search so forcing checks are not bypassed by material shortcuts.
+  lda $e5
+  cmp #PAWN_TYPE
+  beq __ai_search_capture_attacker_rank_ready_0
+  lda SearchSide
+  beq __ai_search_black_capture_exposed_king_guard_0
+  lda blackkingsq
+  and #$70
+  bne __ai_search_next_capture_0
+  jmp __ai_search_capture_attacker_rank_ready_0
+
+__ai_search_black_capture_exposed_king_guard_0:
+  lda whitekingsq
+  and #$70
+  cmp #$70
+  bne __ai_search_next_capture_0
+
+__ai_search_capture_attacker_rank_ready_0:
+; Equal captures are not root-shortcut wins if the landing square is already
+; recapturable. Let normal search compare those trades against central breaks,
+; checks, and tempo moves.
+  lda $e3
+  lsr
+  lsr
+  lsr
+  lsr
+  cmp $e6
+  bne __ai_search_capture_score_values_ready_0
+  ldx $e2
+  jsr RootEqualCaptureDestinationAttacked
+  bcs __ai_search_next_capture_0
+
+__ai_search_capture_score_values_ready_0:
   lda $e3
   sec
-  sbc MVV_LVA_ScoreValues, y
+  sbc $e6
+  cmp $e4
+  bcc __ai_search_next_capture_0
   cmp $e1
   bcc __ai_search_next_capture_0
 
@@ -1614,11 +2736,197 @@ __ai_search_next_capture_0:
 
 __ai_search_accept_capture_0:
   lda RootShortcutFrom
-  sta BestMoveFrom
+  sta RootProbeFrom
   lda RootShortcutTo
+  sta RootProbeTo
+
+  jsr SaveMoveListForDepth
+  jsr RootProbeAllowsMateInOne
+  lda #$00
+  rol
+  sta RootAllowsMateFlag
+  jsr RestoreMoveListForDepth
+  lda RootAllowsMateFlag
+  beq __ai_search_capture_mate_safe_0
+  clc
+  rts
+
+__ai_search_capture_mate_safe_0:
+  lda RootProbeFrom
+  sta BestMoveFrom
+  lda RootProbeTo
   sta BestMoveTo
   sec
   rts
+
+;
+; RootEqualCaptureDestinationAttacked
+; Input: X = move list index for an equal-value root capture.
+; Output: Carry set if the destination is pawn-attacked after the capture.
+;         Carry clear otherwise.
+; Clobbers: A, X, Y, $f0-$f7
+;
+RootEqualCaptureDestinationAttacked:
+  stx $f7
+
+  lda MoveListTo, x
+  and #$7f
+  sta $f0
+  tay
+  lda Board88, y
+  sta $f5
+
+  lda MoveListFrom, x
+  sta $f4
+  tay
+  lda Board88, y
+  sta $f6
+  and #WHITE_COLOR
+  sta $f1
+  lda $f6
+  and #$07
+  sta $f2
+
+  ldy $f4
+  lda #EMPTY_PIECE
+  sta Board88, y
+  ldy $f0
+  lda $f6
+  sta Board88, y
+
+  jsr IsPiecePawnAttacked
+  lda #$00
+  rol
+  sta $f3
+
+  ldy $f4
+  lda $f6
+  sta Board88, y
+  ldy $f0
+  lda $f5
+  sta Board88, y
+
+  lda $f3
+  bne __ai_search_equal_capture_attacked_0
+  clc
+  rts
+__ai_search_equal_capture_attacked_0:
+  sec
+  rts
+
+;
+; TryRootWinningCaptureMove
+; In normal material positions, take safe captures of loose minor-or-better
+; pieces before search lets a shallow horizon talk itself into quiet drifting.
+; Pawn grabs stay in search; this is for real tactical wins per byte.
+;
+; Output: Carry set if BestMoveFrom/BestMoveTo were set
+;         Carry clear otherwise
+; Clobbers: A, X, Y, move list, $e0-$e7, $f0-$f7
+;
+TryRootWinningCaptureMove:
+  lda WhitePieceCount
+  clc
+  adc BlackPieceCount
+  cmp #$05
+  bcs __ai_search_root_winning_capture_material_ok_0
+  clc
+  rts
+
+__ai_search_root_winning_capture_material_ok_0:
+  jsr GenerateLegalMoves
+  lda #ROOT_WINNING_CAPTURE_MIN_SCORE
+  sta $e4
+  jmp PrepareRootWinningCaptureScan
+
+;
+; TryRootSaveAttackedMajorMove
+; If a rook or queen is under a minor attack, move that major to the first
+; legal safe square instead of burning the whole root search while material is
+; already hanging. This is intentionally generic and still rejects moves that
+; walk into immediate mate.
+;
+; Output: Carry set if BestMoveFrom/BestMoveTo were set
+;         Carry clear otherwise
+; Clobbers: A, X, Y, move list, root probe temps, $f0-$f3
+;
+TryRootSaveAttackedMajorMove:
+  lda SearchSide
+  jsr SideHasMinorAttackedMajor
+  bcs __ai_search_have_attacked_major_0
+  clc
+  rts
+
+__ai_search_have_attacked_major_0:
+  jsr GenerateLegalMoves
+  jsr SaveMoveListForDepth
+  lda #$00
+  sta RootProbeIndex
+
+__ai_search_save_major_loop_0:
+  lda RootProbeIndex
+  cmp MoveCount
+  bne __ai_search_check_save_major_0
+  jsr RestoreMoveListForDepth
+  clc
+  rts
+
+__ai_search_check_save_major_0:
+  tax
+  lda MoveListFrom, x
+  sta $f0
+  tay
+  lda Board88, y
+  cmp #EMPTY_PIECE
+  beq __ai_search_next_save_major_0
+  sta $f3
+  and #WHITE_COLOR
+  cmp SearchSide
+  bne __ai_search_next_save_major_0
+  sta $f1
+  lda $f3
+  and #$07
+  sta $f2
+  cmp #ROOK_TYPE
+  bcc __ai_search_next_save_major_0
+  cmp #KING_TYPE
+  bcs __ai_search_next_save_major_0
+
+  jsr IsPieceKnightAttacked
+  bcs __ai_search_save_major_attacked_0
+  jsr IsPieceBishopAttacked
+  bcc __ai_search_next_save_major_0
+
+__ai_search_save_major_attacked_0:
+  ldx RootProbeIndex
+  lda MoveListTo, x
+  and #$7f
+  sta $f0
+  jsr RootMajorDestinationUnsafe
+  bcs __ai_search_next_save_major_0
+
+  ldx RootProbeIndex
+  lda MoveListFrom, x
+  sta RootProbeFrom
+  lda MoveListTo, x
+  sta RootProbeTo
+  jsr RootProbeAllowsMateInOne
+  bcs __ai_search_restore_next_save_major_0
+
+  jsr RestoreMoveListForDepth
+  lda RootProbeFrom
+  sta BestMoveFrom
+  lda RootProbeTo
+  sta BestMoveTo
+  sec
+  rts
+
+__ai_search_restore_next_save_major_0:
+  jsr RestoreMoveListForDepth
+
+__ai_search_next_save_major_0:
+  inc RootProbeIndex
+  jmp __ai_search_save_major_loop_0
 
 ;
 ; TrySimpleKingPawnEndgameMove
@@ -1662,8 +2970,7 @@ __ai_search_kp_black_side_0:
   cmp #WHITE_KING
   beq __ai_search_kp_next_square_0
   cmp #BLACK_PAWN
-  beq __ai_search_kp_found_pawn_0
-  jmp __ai_search_kp_material_fail_0
+  bne __ai_search_kp_material_fail_0
 
 __ai_search_kp_found_pawn_0:
   stx $e0
@@ -1739,6 +3046,27 @@ __ai_search_kp_target_file_ready_0:
   lda RootShortcutFrom
   and #$70
   ora $e5
+  sta RootShortcutIndex; fallback: old same-rank outflanking move
+
+  lda SearchSide
+  beq __ai_search_kp_black_forward_0
+  lda RootShortcutFrom
+  sec
+  sbc #$10
+  jmp __ai_search_kp_forward_rank_ready_0
+
+__ai_search_kp_black_forward_0:
+  lda RootShortcutFrom
+  clc
+  adc #$10
+
+__ai_search_kp_forward_rank_ready_0:
+  and #$70
+  ora $e5
+  sta RootShortcutTo
+  cmp RootShortcutFrom
+  bne __ai_search_kp_validate_0
+  lda RootShortcutIndex
   sta RootShortcutTo
   cmp RootShortcutFrom
   bne __ai_search_kp_validate_0
@@ -1748,11 +3076,24 @@ __ai_search_kp_no_move_0:
   rts
 
 __ai_search_kp_validate_0:
+  lda #$00
+  sta $e7; first try forward outflank, then same-rank fallback
   jsr GenerateLegalMoves
   ldx #$00
 __ai_search_kp_move_loop_0:
   cpx MoveCount
   bne __ai_search_kp_check_move_0
+  lda $e7
+  bne __ai_search_kp_validate_no_move_0
+  inc $e7
+  lda RootShortcutIndex
+  sta RootShortcutTo
+  cmp RootShortcutFrom
+  beq __ai_search_kp_validate_no_move_0
+  ldx #$00
+  jmp __ai_search_kp_move_loop_0
+
+__ai_search_kp_validate_no_move_0:
   clc
   rts
 
@@ -1772,6 +3113,192 @@ __ai_search_kp_check_move_0:
 __ai_search_kp_next_move_0:
   inx
   jmp __ai_search_kp_move_loop_0
+
+;
+; TryLoneKingPawnConversionMove
+; When the opponent has only a king, do not spend won endgames shuffling the
+; rook/bishop/king forever. If we have support material or multiple pawns,
+; push the legal pawn move that makes the most promotion progress.
+;
+; Output: Carry set if BestMoveFrom/BestMoveTo were set
+;         Carry clear otherwise
+; Clobbers: A, X, Y, move list, $e0-$e6
+;
+TryLoneKingPawnConversionMove:
+  lda #$00
+  sta $e0; own pawn count
+  sta $e1; own support piece count
+  sta $e2; enemy non-king material flag
+
+  ldx #$00
+__ai_search_convert_scan_loop_0:
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_convert_next_square_0
+
+  lda SearchSide
+  beq __ai_search_convert_scan_black_0
+
+  lda Board88, x
+  cmp #WHITE_KING
+  beq __ai_search_convert_next_square_0
+  cmp #BLACK_KING
+  beq __ai_search_convert_next_square_0
+  cmp #WHITE_PAWN
+  beq __ai_search_convert_found_pawn_0
+  and #WHITE_COLOR
+  cmp #WHITE_COLOR
+  beq __ai_search_convert_found_support_0
+  jmp __ai_search_convert_material_fail_0
+
+__ai_search_convert_scan_black_0:
+  lda Board88, x
+  cmp #BLACK_KING
+  beq __ai_search_convert_next_square_0
+  cmp #WHITE_KING
+  beq __ai_search_convert_next_square_0
+  cmp #BLACK_PAWN
+  beq __ai_search_convert_found_pawn_0
+  and #WHITE_COLOR
+  beq __ai_search_convert_found_support_0
+  jmp __ai_search_convert_material_fail_0
+
+__ai_search_convert_found_pawn_0:
+  inc $e0
+  jmp __ai_search_convert_next_square_0
+
+__ai_search_convert_found_support_0:
+  inc $e1
+  jmp __ai_search_convert_next_square_0
+
+__ai_search_convert_material_fail_0:
+  lda #$01
+  sta $e2
+
+__ai_search_convert_next_square_0:
+  inx
+  txa
+  and #$08
+  beq __ai_search_convert_check_done_0
+  txa
+  clc
+  adc #$08
+  tax
+__ai_search_convert_check_done_0:
+  cpx #BOARD_SIZE
+  bne __ai_search_convert_scan_loop_0
+
+  lda $e2
+  beq __ai_search_convert_enemy_bare_0
+  clc
+  rts
+
+__ai_search_convert_enemy_bare_0:
+  lda $e0
+  bne __ai_search_convert_have_pawns_0
+  clc
+  rts
+
+__ai_search_convert_have_pawns_0:
+  lda $e1
+  bne __ai_search_convert_material_ok_0
+  lda $e0
+  cmp #$02
+  bcs __ai_search_convert_material_ok_0
+  clc
+  rts
+
+__ai_search_convert_material_ok_0:
+  jsr GenerateLegalMoves
+
+  lda #$ff
+  sta RootShortcutFrom
+  lda #$00
+  sta RootShortcutTo
+  sta $e3; best progress score
+  sta $e4; move index
+
+__ai_search_convert_move_loop_0:
+  lda $e4
+  cmp MoveCount
+  bne __ai_search_convert_check_move_0
+  lda RootShortcutFrom
+  cmp #$ff
+  bne __ai_search_convert_accept_0
+  clc
+  rts
+
+__ai_search_convert_check_move_0:
+  ldx $e4
+  lda MoveListTo, x
+  bmi __ai_search_convert_next_move_0; leave underpromotions to search
+  and #$7f
+  sta $e5; clean destination
+  tay
+  lda Board88, y
+  cmp #EMPTY_PIECE
+  bne __ai_search_convert_next_move_0
+
+  ldx $e4
+  lda MoveListFrom, x
+  tay
+  lda SearchSide
+  beq __ai_search_convert_check_black_pawn_0
+  lda Board88, y
+  cmp #WHITE_PAWN
+  bne __ai_search_convert_next_move_0
+  lda $e5
+  and #$70
+  lsr
+  lsr
+  lsr
+  lsr
+  sta $e6; destination row
+  lda #$07
+  sec
+  sbc $e6
+  jmp __ai_search_convert_have_score_0
+
+__ai_search_convert_check_black_pawn_0:
+  lda Board88, y
+  cmp #BLACK_PAWN
+  bne __ai_search_convert_next_move_0
+  lda $e5
+  and #$70
+  lsr
+  lsr
+  lsr
+  lsr
+
+__ai_search_convert_have_score_0:
+  sta $e6
+  lda RootShortcutFrom
+  cmp #$ff
+  beq __ai_search_convert_store_move_0
+  lda $e6
+  cmp $e3
+  bcc __ai_search_convert_next_move_0
+
+__ai_search_convert_store_move_0:
+  lda $e6
+  sta $e3
+  ldx $e4
+  lda MoveListFrom, x
+  sta RootShortcutFrom
+  lda MoveListTo, x
+  sta RootShortcutTo
+
+__ai_search_convert_next_move_0:
+  inc $e4
+  jmp __ai_search_convert_move_loop_0
+
+__ai_search_convert_accept_0:
+  lda RootShortcutFrom
+  sta BestMoveFrom
+  lda RootShortcutTo
+  sta BestMoveTo
+  sec
+  rts
 
 ;
 ; TryBoxedKingPawnStormMove
@@ -1869,6 +3396,20 @@ RootShortcutFrom:
   .res 1
 RootShortcutTo:
   .res 1
+RootShortcutIndex:
+  .res 1
+RootProbeFrom:
+  .res 1
+RootProbeTo:
+  .res 1
+RootSavedBestFrom:
+  .res 1
+RootSavedBestTo:
+  .res 1
+RootAllowsMateFlag:
+  .res 1
+RootProbeIndex:
+  .res 1
 
 ; Root-level search telemetry. These are intentionally updated only around
 ; FindBestMove so normal node search does not pay per-node counter overhead.
@@ -1897,6 +3438,8 @@ SearchNullMoveEvalSkips:
 SearchHistoryUpdates:
   .res 1
 SearchHistoryActive:
+  .res 1
+SearchCounterMoveActive:
   .res 1
 
 .segment "CODE"
@@ -2173,6 +3716,35 @@ Quiesce:
   jmp Evaluate
 
 __ai_search_quiesce_continue_0:
+; In deeper check quiescence, standing pat is illegal. Search all legal
+; evasions immediately, not just captures, or quiescence can cut off on an
+; impossible "pass". The first root leaf stays capture-only for speed; root
+; mate/check tactics are handled before iterative search.
+  lda SearchDepth
+  cmp #CHECK_QUIESCE_MIN_SEARCH_PLY
+  bcc __ai_search_q_not_in_check_0
+  jsr IsCurrentSideInCheck
+  bcc __ai_search_q_not_in_check_0
+
+  ldx QuiesceDepth
+  lda $e8
+  sta QAlpha, x
+  lda $e9
+  sta QBeta, x
+  lda #$01
+  sta QInCheck, x
+
+  jsr GenerateLegalMoves
+  lda MoveCount
+  beq __ai_search_q_no_checked_evasions_0
+  jmp __ai_search_q_have_captures_0
+
+__ai_search_q_no_checked_evasions_0:
+  dec QuiesceDepth
+  lda #<-MATE_SCORE
+  rts
+
+__ai_search_q_not_in_check_0:
 ; Stand pat: evaluate current position
 ; If this position is already good enough, we don't need to search captures
   jsr Evaluate
@@ -2245,6 +3817,28 @@ __ai_search_q_alpha_ok_0:
   rts
 
 __ai_search_q_return_quiet_alpha_0:
+; At the first quiet quiescence ply, search legal quiet checks. This is tightly
+; bounded so forcing checks are visible without turning quiescence into full
+; width search.
+  lda SearchDepth
+  cmp #CHECK_QUIESCE_MIN_SEARCH_PLY
+  bcc __ai_search_q_return_quiet_now_0
+  cmp #CHECK_QUIESCE_MAX_SEARCH_PLY + 1
+  bcs __ai_search_q_return_quiet_now_0
+  lda QuiesceDepth
+  cmp #CHECK_QUIESCE_MAX_DEPTH
+  bcs __ai_search_q_return_quiet_now_0
+
+  jsr GenerateCheckingMoves
+  lda MoveCount
+  beq __ai_search_q_return_quiet_now_0
+
+  ldx QuiesceDepth
+  lda #$02
+  sta QInCheck, x
+  jmp __ai_search_q_have_captures_0
+
+__ai_search_q_return_quiet_now_0:
   ldx QuiesceDepth
   dec QuiesceDepth
   lda QAlpha, x
@@ -2349,20 +3943,27 @@ __ai_search_q_no_ov4_0:
 
 __ai_search_q_next_cap_0:
 ; Child quiescence clobbered the shared move list. Rebuild this node's
-; move list before advancing to the next parent move. Checked nodes must
-; search all legal evasions; quiet nodes search captures only.
+; move list before advancing to the next parent move.
   ldx QuiesceDepth
   lda QInCheck, x
-  beq __ai_search_q_regen_captures_0
-
-  jsr GenerateLegalMoves
-  jmp __ai_search_q_regen_done_0
+  cmp #$01
+  beq __ai_search_q_regen_evasions_0
+  cmp #$02
+  beq __ai_search_q_regen_checks_0
 
 __ai_search_q_regen_captures_0:
   ldx SearchSide
   jsr GenerateCaptures
   jsr FilterLegalMoves
   jsr OrderMovesMVVLVA
+  jmp __ai_search_q_regen_done_0
+
+__ai_search_q_regen_evasions_0:
+  jsr GenerateLegalMoves
+  jmp __ai_search_q_regen_done_0
+
+__ai_search_q_regen_checks_0:
+  jsr GenerateCheckingMoves
 
 __ai_search_q_regen_done_0:
   ldx QuiesceDepth
@@ -2480,7 +4081,13 @@ __ai_search_score_done_0:
   lda #$01
   sta TTStoreUseMove
 
-  jsr ComputeZobristHash
+  ldy SearchDepth
+  lda NegamaxHashLo, y
+  sta ZobristHash
+  lda NegamaxHashHi, y
+  sta ZobristHash + 1
+  lda #$01
+  sta ZobristHashValid
 
   lda SearchDepth
   asl
@@ -2490,6 +4097,45 @@ __ai_search_score_done_0:
   lda NegamaxState + 5, x
   ldx TTFlag
   jmp TTStore
+
+;
+; ComputeSearchZobristHash
+; Compute a full position hash for the current search side to move. The shared
+; hash routine keys side-to-move from currentplayer for host/API calls; search
+; advances SearchSide without mutating currentplayer, so xor the side key when
+; those two views disagree.
+; Clobbers: A, X, Y, $f7-$fb
+;
+ComputeSearchZobristHash:
+  jsr ComputeZobristHashFromPieceLists
+
+  lda currentplayer
+  cmp #WHITES_TURN
+  beq __ai_search_hash_current_white_0
+
+__ai_search_hash_current_black_0:
+  lda SearchSide
+  cmp #WHITE_COLOR
+  beq __ai_search_hash_flip_side_0
+  rts
+
+__ai_search_hash_current_white_0:
+  lda SearchSide
+  cmp #WHITE_COLOR
+  beq __ai_search_hash_done_0
+
+__ai_search_hash_flip_side_0:
+  lda ZobristSide
+  eor ZobristHash
+  sta ZobristHash
+  lda ZobristSide + 1
+  eor ZobristHash + 1
+  sta ZobristHash + 1
+
+__ai_search_hash_done_0:
+  lda #$01
+  sta ZobristHashValid
+  rts
 
 ;
 ; ApplyRootPawnSafetyPenalty
@@ -2534,118 +4180,357 @@ __ai_search_done_1:
   rts
 
 ;
-; ApplyRootQueenSafetyPenalty
-; Penalize root queen moves that land on enemy attacks while grabbing less
-; than a queen. This catches shallow queen raids that win a pawn but leave the
-; queen en prise.
+; RootMajorDestinationUnsafe
+; Input: $f0 = clean destination, $f2 = moving piece type, $f3 = moving piece.
+; Output: Carry set if the destination is attacked and does not contain an
+;         equal-or-better major. Carry clear otherwise.
+; Clobbers: A, Y, attack_sq, attack_color
+;
+RootMajorDestinationUnsafe:
+  ldy $f0
+  lda Board88, y
+  cmp #EMPTY_PIECE
+  beq __ai_search_check_root_major_attack_0
+  and #$07
+  cmp $f2
+  bcs __ai_search_root_major_dest_safe_0
+
+__ai_search_check_root_major_attack_0:
+  lda $f0
+  sta attack_sq
+  lda $f3
+  and #WHITE_COLOR
+  beq __ai_search_black_major_0
+  lda #BLACKS_TURN
+  jmp __ai_search_major_attack_color_set_0
+__ai_search_black_major_0:
+  lda #WHITES_TURN
+__ai_search_major_attack_color_set_0:
+  sta attack_color
+  jsr IsSquareAttacked
+  rts
+
+__ai_search_root_major_dest_safe_0:
+  clc
+  rts
+
+;
+; RootAttackedQueenMaterialCapture
+; If the queen is already under attack, allow queen captures of non-pawn
+; material to reach search even when the landing square is attacked. The queen
+; is already in trouble; cashing out for material is often the least bad line.
+; Input: $f0 = clean destination, $f2 = moving piece type, $f3 = moving piece.
+; Output: Carry set if this is an attacked-queen material capture.
+; Clobbers: A, Y, attack_sq, attack_color
+;
+RootAttackedQueenMaterialCapture:
+  lda $f2
+  cmp #QUEEN_TYPE
+  beq __ai_search_attacked_queen_check_capture_0
+  clc
+  rts
+
+__ai_search_attacked_queen_check_capture_0:
+  ldy $f0
+  lda Board88, y
+  cmp #EMPTY_PIECE
+  beq __ai_search_not_attacked_queen_capture_0
+  and #$07
+  cmp #KNIGHT_TYPE
+  bcc __ai_search_not_attacked_queen_capture_0
+  cmp #KING_TYPE
+  bcs __ai_search_not_attacked_queen_capture_0
+
+  lda NegamaxState + 3
+  sta attack_sq
+  lda $f3
+  and #WHITE_COLOR
+  beq __ai_search_black_queen_capture_0
+  lda #BLACKS_TURN
+  jmp __ai_search_queen_capture_attack_color_set_0
+__ai_search_black_queen_capture_0:
+  lda #WHITES_TURN
+__ai_search_queen_capture_attack_color_set_0:
+  sta attack_color
+  jsr IsSquareAttacked
+  rts
+
+__ai_search_not_attacked_queen_capture_0:
+  clc
+  rts
+
+;
+; ApplyRootMajorSafetyPenalty
+; Reject root rook/queen moves that land on enemy attacks while grabbing less
+; than an equal major. This catches shallow raids and "active" moves where a
+; major can simply be taken on the next move.
 ; Input/Output: $eb = root move score from the mover's perspective.
 ; Clobbers: A, X, Y, attack_sq, attack_color, $f0-$f5
 ;
-ApplyRootQueenSafetyPenalty:
+ApplyRootMajorSafetyPenalty:
   ldx NegamaxState + 3; Root move from square
   lda Board88, x
   cmp #EMPTY_PIECE
   beq __ai_search_done_2
   sta $f3
   and #$07
-  cmp #QUEEN_TYPE
-  bne __ai_search_done_2
+  sta $f2
+  cmp #ROOK_TYPE
+  bcc __ai_search_done_2
+  cmp #KING_TYPE
+  bcs __ai_search_done_2
 
-  lda $f3
-  and #WHITE_COLOR
-  sta $f1
   lda NegamaxState + 4; Root move to square
   and #$7f
   sta $f0
 
-  ldx $f0
-  lda Board88, x
-  and #$07
-  cmp #QUEEN_TYPE
-  beq __ai_search_done_2
-
-  lda $f0
-  sta attack_sq
-  lda $f1
-  beq __ai_search_black_queen_0
-  lda #BLACKS_TURN
-  jmp __ai_search_attack_color_set_0
-__ai_search_black_queen_0:
-  lda #WHITES_TURN
-__ai_search_attack_color_set_0:
-  sta attack_color
-  jsr IsSquareAttacked
+  jsr RootMajorDestinationUnsafe
   bcc __ai_search_done_2
 
-  lda $eb
-  sec
-  sbc #ROOT_ATTACKED_QUEEN_DEST_PENALTY
-  bvc __ai_search_store_score_1
+  jsr RootAttackedQueenMaterialCapture
+  bcs __ai_search_done_2
+
   lda #NEG_INFINITY
-__ai_search_store_score_1:
   sta $eb
 
 __ai_search_done_2:
   rts
 
 ;
-; ApplyRootRookSafetyPenalty
-; Penalize root rook moves that land on a non-pawn enemy attack while winning
-; less than a rook. Pawn attacks are handled by ApplyRootPawnSafetyPenalty.
-; Input/Output: $eb = root move score from the mover's perspective.
-; Clobbers: A, X, Y, attack_sq, attack_color, $f0-$f3
+; RootQuietPawnAttacksEnemyQueen
+; Input: $f0 = quiet pawn destination, $f1 = moving color.
+; Output: Carry set if the pawn would attack the enemy queen from $f0.
+; Clobbers: A, X, $f2, $f4
 ;
-ApplyRootRookSafetyPenalty:
+RootQuietPawnAttacksEnemyQueen:
+  lda $f1
+  beq __ai_search_black_pawn_attacks_queen_0
+
+  lda #BLACK_QUEEN
+  sta $f2
+  lda $f0
+  sec
+  sbc #$11
+  jsr CheckRootQueenTarget
+  bcs __ai_search_pawn_attacks_queen_0
+  lda $f0
+  sec
+  sbc #$0f
+  jmp CheckRootQueenTarget
+
+__ai_search_black_pawn_attacks_queen_0:
+  lda #WHITE_QUEEN
+  sta $f2
+  lda $f0
+  clc
+  adc #$0f
+  jsr CheckRootQueenTarget
+  bcs __ai_search_pawn_attacks_queen_0
+  lda $f0
+  clc
+  adc #$11
+  jmp CheckRootQueenTarget
+
+__ai_search_pawn_attacks_queen_0:
+  sec
+  rts
+
+;
+; CheckRootQueenTarget
+; Input: A = target square, $f2 = enemy queen piece.
+; Output: Carry set if target contains that queen.
+; Clobbers: A, X, $f4
+;
+CheckRootQueenTarget:
+  sta $f4
+  and #OFFBOARD_MASK
+  bne __ai_search_not_root_queen_target_0
+  ldx $f4
+  lda Board88, x
+  cmp $f2
+  beq __ai_search_is_root_queen_target_0
+__ai_search_not_root_queen_target_0:
+  clc
+  rts
+__ai_search_is_root_queen_target_0:
+  sec
+  rts
+
+;
+; ApplyRootQueenDangerPawnPenalty
+; Reject quiet pawn pushes while an enemy queen is close to our king, unless
+; the pawn move directly attacks that queen. In measured games these "one more
+; pawn move" choices were how already-bad king positions turned into jokes.
+; Input/Output: $eb = root move score from the mover's perspective.
+; Clobbers: A, X, Y, attack_sq, attack_color, $f0-$f4
+;
+ApplyRootQueenDangerPawnPenalty:
   ldx NegamaxState + 3
   lda Board88, x
   cmp #EMPTY_PIECE
-  beq __ai_search_done_15
+  beq __ai_search_queen_danger_pawn_done_0
   sta $f3
   and #$07
-  cmp #ROOK_TYPE
-  bne __ai_search_done_15
+  cmp #PAWN_TYPE
+  bne __ai_search_queen_danger_pawn_done_0
+
+  lda NegamaxState + 4
+  bmi __ai_search_queen_danger_pawn_done_0
+  sta $f0
+  tax
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  bne __ai_search_queen_danger_pawn_done_0
 
   lda $f3
   and #WHITE_COLOR
   sta $f1
-  lda NegamaxState + 4
-  and #$7f
-  sta $f0
-
-  ldx $f0
-  lda Board88, x
-  cmp #EMPTY_PIECE
-  beq __ai_search_check_rook_dest_attack_0
-  and #$07
-  cmp #ROOK_TYPE
-  bcs __ai_search_done_15
-
-__ai_search_check_rook_dest_attack_0:
-  jsr IsPiecePawnAttacked
-  bcs __ai_search_done_15
-
+  beq __ai_search_check_black_quiet_pawn_promo_0
   lda $f0
-  sta attack_sq
-  lda $f1
-  beq __ai_search_black_rook_1
-  lda #BLACKS_TURN
-  jmp __ai_search_rook_attack_color_set_0
-__ai_search_black_rook_1:
-  lda #WHITES_TURN
-__ai_search_rook_attack_color_set_0:
-  sta attack_color
-  jsr IsSquareAttacked
-  bcc __ai_search_done_15
+  and #$70
+  cmp #WHITE_PROMO_ROW
+  beq __ai_search_queen_danger_pawn_done_0
+  jmp __ai_search_check_quiet_pawn_queen_attack_0
+__ai_search_check_black_quiet_pawn_promo_0:
+  lda $f0
+  and #$70
+  cmp #BLACK_PROMO_ROW
+  beq __ai_search_queen_danger_pawn_done_0
 
-  lda $eb
-  sec
-  sbc #ROOT_ATTACKED_ROOK_DEST_PENALTY
-  bvc __ai_search_store_rook_dest_score_0
+__ai_search_check_quiet_pawn_queen_attack_0:
+; Central pawn moves can blunt queen pressure and open defenders. Do not apply
+; the panic filter to c/d/e/f-pawns; flank pawn moves still need to be forcing.
+  lda NegamaxState + 3
+  and #$07
+  cmp #$02
+  bcc __ai_search_check_quiet_pawn_queen_attack_1
+  cmp #$06
+  bcc __ai_search_queen_danger_pawn_done_0
+
+__ai_search_check_quiet_pawn_queen_attack_1:
+  jsr RootQuietPawnAttacksEnemyQueen
+  bcs __ai_search_queen_danger_pawn_done_0
+
+  jsr RootEnemyQueenNearKing
+  bcc __ai_search_queen_danger_pawn_done_0
+  jsr IsCurrentSideInCheck
+  bcs __ai_search_queen_danger_pawn_done_0
+
   lda #NEG_INFINITY
-__ai_search_store_rook_dest_score_0:
   sta $eb
 
-__ai_search_done_15:
+__ai_search_queen_danger_pawn_done_0:
+  rts
+
+;
+; ApplyRootQueenPawnRaidPenalty
+; If an enemy queen is already near our king, reject queen moves that spend the
+; tempo grabbing a pawn. In those positions the queen needs to defend, trade, or
+; attack something meaningful; pawn raids routinely leave the king boxed in.
+; Input/Output: $eb = root move score from the mover's perspective.
+; Clobbers: A, X, Y, temp1, $f0-$f7
+;
+ApplyRootQueenPawnRaidPenalty:
+  ldx NegamaxState + 3
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_queen_raid_done_0
+  sta $f3
+  and #$07
+  cmp #QUEEN_TYPE
+  bne __ai_search_queen_raid_done_0
+
+  lda NegamaxState + 4
+  and #$7f
+  tax
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_queen_raid_done_0
+  and #$07
+  cmp #PAWN_TYPE
+  bne __ai_search_queen_raid_done_0
+
+  jsr RootEnemyQueenNearKing
+  bcc __ai_search_queen_raid_done_0
+
+  lda #NEG_INFINITY
+  sta $eb
+
+__ai_search_queen_raid_done_0:
+  rts
+
+; SetSafeRootFallbackMove
+; Pick a legal fallback that does not immediately hang a major or ignore a
+; queen near the king. The search can still choose a sharper move later; this
+; only controls fail-safe behavior when all root moves score at the floor.
+; Clobbers: A, X, Y, attack_sq, attack_color, RootProbeIndex, $eb, $f0-$f4
+;
+SetSafeRootFallbackMove:
+  lda MoveListFrom
+  sta BestMoveFrom
+  lda MoveListTo
+  sta BestMoveTo
+
+  jsr SaveMoveListForDepth
+  lda #$00
+  sta RootProbeIndex
+
+__ai_search_root_fallback_loop_0:
+  lda RootProbeIndex
+  cmp MoveCount
+  bne __ai_search_check_root_fallback_0
+  rts
+
+__ai_search_check_root_fallback_0:
+  ldx RootProbeIndex
+  lda MoveListFrom, x
+  sta NegamaxState + 3
+  lda MoveListTo, x
+  sta NegamaxState + 4
+
+  lda #$00
+  sta $eb
+  jsr ApplyRootMajorSafetyPenalty
+  lda $eb
+  cmp #NEG_INFINITY
+  beq __ai_search_next_root_fallback_0
+
+  jsr ApplyRootHangingQueenPenalty
+  lda $eb
+  cmp #NEG_INFINITY
+  beq __ai_search_next_root_fallback_0
+
+  jsr ApplyRootQueenDangerPawnPenalty
+  lda $eb
+  cmp #NEG_INFINITY
+  beq __ai_search_next_root_fallback_0
+
+  jsr ApplyRootBlockedBishopRecapturePenalty
+  lda $eb
+  cmp #NEG_INFINITY
+  beq __ai_search_next_root_fallback_0
+
+  jsr ApplyRootExposedKingFlankPawnPenalty
+  lda $eb
+  cmp #NEG_INFINITY
+  beq __ai_search_next_root_fallback_0
+
+  jsr ApplyRootAllowsMatePenalty
+  jsr RestoreMoveListForDepth
+  lda $eb
+  cmp #NEG_INFINITY
+  bne __ai_search_accept_root_fallback_0
+
+__ai_search_next_root_fallback_0:
+  inc RootProbeIndex
+  jmp __ai_search_root_fallback_loop_0
+
+__ai_search_accept_root_fallback_0:
+  ldx RootProbeIndex
+  lda MoveListFrom, x
+  sta BestMoveFrom
+  lda MoveListTo, x
+  sta BestMoveTo
   rts
 
 ;
@@ -2862,9 +4747,8 @@ __ai_search_captures_attacker_1:
 
 ;
 ; ApplyRootHangingQueenPenalty
-; Penalize root moves that ignore a queen currently attacked by an enemy
-; piece. Moving the queen, blocking the attack, or capturing the attacker
-; resolves it.
+; Reject root moves that ignore a queen currently attacked by an enemy piece.
+; Moving the queen, blocking the attack, or capturing the attacker resolves it.
 ; Input/Output: $eb = root move score from the mover's perspective.
 ; Clobbers: A, X, Y, attack_sq, attack_color, $f0-$f7
 ;
@@ -2873,17 +4757,34 @@ ApplyRootHangingQueenPenalty:
   sta $f1
   beq __ai_search_black_side_1
   lda #WHITE_QUEEN
-  jmp __ai_search_queen_set_0
+  sta $f6
+  lda WhitePieceCount
+  sta $f5
+  lda #<WhitePieceList
+  sta temp1
+  lda #>WhitePieceList
+  sta temp1 + 1
+  jmp __ai_search_queen_list_set_0
 __ai_search_black_side_1:
   lda #BLACK_QUEEN
-
-__ai_search_queen_set_0:
   sta $f6
+  lda BlackPieceCount
+  sta $f5
+  lda #<BlackPieceList
+  sta temp1
+  lda #>BlackPieceList
+  sta temp1 + 1
+
+__ai_search_queen_list_set_0:
   lda #$00
   sta $f7
 
 __ai_search_scan_loop_0:
-  ldx $f7
+  ldy $f7
+  cpy $f5
+  beq __ai_search_done_4
+  lda (temp1), y
+  tax
   lda Board88, x
   cmp $f6
   bne __ai_search_next_square_0
@@ -2902,28 +4803,12 @@ __ai_search_queen_attack_color_set_0:
   jsr RootMoveResolvesPieceAttack
   bcs __ai_search_done_4
 
-  lda $eb
-  sec
-  sbc #ROOT_HANGING_QUEEN_PENALTY
-  bvc __ai_search_store_score_2
   lda #NEG_INFINITY
-__ai_search_store_score_2:
   sta $eb
   rts
 
 __ai_search_next_square_0:
   inc $f7
-  lda $f7
-  and #$08
-  beq __ai_search_check_done_0
-  lda $f7
-  clc
-  adc #$08
-  sta $f7
-__ai_search_check_done_0:
-  lda $f7
-  cmp #BOARD_SIZE
-  beq __ai_search_done_4
   jmp __ai_search_scan_loop_0
 
 __ai_search_done_4:
@@ -3074,6 +4959,373 @@ __ai_search_penalty_store_0:
   rts
 
 ;
+; ApplyRootQuietCheckBonus
+; Modestly reward safe quiet root checks as forcing initiative. Captures and
+; rejected moves keep their normal tactical/safety scores.
+; Input/Output: $eb = root move score from the mover's perspective.
+; Clobbers: A, X, Y, $f0-$f5, attack_sq, attack_color
+;
+ApplyRootQuietCheckBonus:
+  lda $eb
+  cmp #NEG_INFINITY
+  beq __ai_search_quiet_check_done_0
+
+  lda NegamaxState + 4
+  bmi __ai_search_quiet_check_done_0
+  and #$7f
+  tax
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  bne __ai_search_quiet_check_done_0
+
+  ldx NegamaxState + 2
+  jsr RootMoveGivesCheck
+  bcc __ai_search_quiet_check_done_0
+
+  lda $eb
+  bmi __ai_search_quiet_check_add_negative_0
+  clc
+  adc #ROOT_QUIET_CHECK_BONUS
+  bvc __ai_search_quiet_check_clamp_positive_0
+  lda #STATIC_EVAL_LIMIT
+  jmp __ai_search_quiet_check_store_0
+
+__ai_search_quiet_check_clamp_positive_0:
+  cmp #STATIC_EVAL_LIMIT + 1
+  bcc __ai_search_quiet_check_store_0
+  lda #STATIC_EVAL_LIMIT
+  jmp __ai_search_quiet_check_store_0
+
+__ai_search_quiet_check_add_negative_0:
+  clc
+  adc #ROOT_QUIET_CHECK_BONUS
+
+__ai_search_quiet_check_store_0:
+  sta $eb
+
+__ai_search_quiet_check_done_0:
+  rts
+
+;
+; RootProbeAllowsMateInOne
+; Input: RootProbeFrom/RootProbeTo hold a legal candidate for the current side.
+; Output: Carry set if making that move gives the opponent mate in one.
+;         Carry clear otherwise.
+; Clobbers: A, X, Y, move list, root shortcut temps.
+;
+RootProbeAllowsMateInOne:
+  lda BestMoveFrom
+  sta RootSavedBestFrom
+  lda BestMoveTo
+  sta RootSavedBestTo
+
+  ldx RootProbeTo
+  lda RootProbeFrom
+  jsr MakeMove
+
+  jsr TryRootMateInOne
+  lda #$00
+  rol
+  sta RootAllowsMateFlag
+
+  ldx RootProbeTo
+  lda RootProbeFrom
+  jsr UnmakeMove
+
+  lda RootSavedBestFrom
+  sta BestMoveFrom
+  lda RootSavedBestTo
+  sta BestMoveTo
+
+  lda RootAllowsMateFlag
+  bne __ai_search_probe_allows_mate_0
+  clc
+  rts
+
+__ai_search_probe_allows_mate_0:
+  sec
+  rts
+
+;
+; RootEnemyQueenNearKing
+; Cheap prefilter for mate-threat probes. Most immediate "looks stupid" mates
+; in our Stockfish games came from a queen already in the king's near zone.
+; Output: Carry set if an enemy queen is within two ranks and four files of our king.
+;         Carry clear otherwise.
+; Clobbers: A, X, Y, temp1, $f0-$f7
+;
+RootEnemyQueenNearKing:
+  lda #$05
+  sta $f6
+  jmp RootEnemyQueenZoneScan
+
+;
+; RootEnemyQueenPressuresKing
+; Wider queen-pressure detector used only for root king-move scoring. This
+; keeps mate-threat probes narrow while allowing exposed kings to run before
+; the queen is directly adjacent.
+; Output: Carry set if an enemy queen is close enough to pressure our king.
+;         Carry clear otherwise.
+; Clobbers: A, X, Y, temp1, $f0-$f7
+;
+RootEnemyQueenPressuresKing:
+  lda #$04
+  sta $f6
+
+RootEnemyQueenZoneScan:
+  lda SearchSide
+  beq __ai_search_black_king_queen_zone_0
+
+  lda whitekingsq
+  sta $f0
+  lda #BLACK_QUEEN
+  sta $f1
+  lda BlackPieceCount
+  sta $f7
+  lda #<BlackPieceList
+  sta temp1
+  lda #>BlackPieceList
+  sta temp1 + 1
+  jmp __ai_search_scan_enemy_queen_zone_0
+
+__ai_search_black_king_queen_zone_0:
+  lda blackkingsq
+  sta $f0
+  lda #WHITE_QUEEN
+  sta $f1
+  lda WhitePieceCount
+  sta $f7
+  lda #<WhitePieceList
+  sta temp1
+  lda #>WhitePieceList
+  sta temp1 + 1
+
+__ai_search_scan_enemy_queen_zone_0:
+  lda #$00
+  sta $f2
+
+__ai_search_queen_zone_loop_0:
+  ldy $f2
+  cpy $f7
+  beq __ai_search_no_enemy_queen_zone_0
+  lda (temp1), y
+  tax
+  lda Board88, x
+  cmp $f1
+  bne __ai_search_queen_zone_next_0
+
+  txa
+  and #$70
+  sta $f3
+  lda $f0
+  and #$70
+  sta $f4
+  lda $f3
+  sec
+  sbc $f4
+  bcs __ai_search_queen_zone_row_abs_0
+  eor #$ff
+  clc
+  adc #$01
+__ai_search_queen_zone_row_abs_0:
+  sta $f3
+
+  txa
+  and #$07
+  sta $f4
+  lda $f0
+  and #$07
+  sta $f5
+  lda $f4
+  sec
+  sbc $f5
+  bcs __ai_search_queen_zone_file_abs_0
+  eor #$ff
+  clc
+  adc #$01
+__ai_search_queen_zone_file_abs_0:
+  sta $f4
+  lda $f4
+  bne __ai_search_queen_zone_check_near_0
+
+; Same-file queen pressure can be mate from farther away than the near-zone
+; box, e.g. Qg3-g7# against a boxed king on g8.
+  lda $f3
+  cmp #$60
+  bcc __ai_search_queen_zone_yes_0
+
+__ai_search_queen_zone_check_near_0:
+  lda $f3
+  cmp #$40
+  bcs __ai_search_queen_zone_next_0
+  lda $f4
+  cmp $f6
+  bcs __ai_search_queen_zone_next_0
+
+__ai_search_queen_zone_yes_0:
+  sec
+  rts
+
+__ai_search_queen_zone_next_0:
+  inc $f2
+  jmp __ai_search_queen_zone_loop_0
+
+__ai_search_no_enemy_queen_zone_0:
+  clc
+  rts
+
+;
+; RootOpponentHasMateInOne
+; Output: Carry set if the opponent has mate in one in the current position.
+;         Carry clear otherwise.
+; Clobbers: A, X, Y, move list, root shortcut temps.
+;
+RootOpponentHasMateInOne:
+  jsr RootEnemyQueenNearKing
+  bcs __ai_search_probe_opp_mate_0
+  clc
+  rts
+
+__ai_search_probe_opp_mate_0:
+  lda BestMoveFrom
+  sta RootSavedBestFrom
+  lda BestMoveTo
+  sta RootSavedBestTo
+
+  lda SearchSide
+  eor #WHITE_COLOR
+  sta SearchSide
+
+  jsr TryRootMateInOne
+  lda #$00
+  rol
+  sta RootAllowsMateFlag
+
+  lda SearchSide
+  eor #WHITE_COLOR
+  sta SearchSide
+
+  lda RootSavedBestFrom
+  sta BestMoveFrom
+  lda RootSavedBestTo
+  sta BestMoveTo
+
+  lda RootAllowsMateFlag
+  bne __ai_search_opp_has_mate_0
+  clc
+  rts
+
+__ai_search_opp_has_mate_0:
+  sec
+  rts
+
+;
+; TryRootAvoidMateThreatMove
+; If the opponent threatens immediate mate, play the first ordered legal move
+; that removes every opponent mate-in-one. This is intentionally blunt: in a
+; mate-threat position, not dying matters more than shallow material taste.
+; Output: Carry set if BestMoveFrom/BestMoveTo were set.
+;         Carry clear if no immediate mate threat or no escape was found.
+; Clobbers: A, X, Y, move list, root shortcut temps.
+;
+TryRootAvoidMateThreatMove:
+  jsr IsCurrentSideInCheck
+  bcs __ai_search_no_root_mate_threat_1
+  jsr RootOpponentHasMateInOne
+  bcs __ai_search_have_mate_threat_1
+
+__ai_search_no_root_mate_threat_1:
+  clc
+  rts
+
+__ai_search_have_mate_threat_1:
+__ai_search_scan_mate_escapes_0:
+  jsr GenerateLegalMoves
+  lda MoveCount
+  bne __ai_search_have_mate_escape_moves_0
+  clc
+  rts
+
+__ai_search_have_mate_escape_moves_0:
+  jsr SaveMoveListForDepth
+  lda #$00
+  sta RootProbeIndex
+
+__ai_search_mate_escape_loop_0:
+  lda RootProbeIndex
+  cmp MoveCount
+  bne __ai_search_check_mate_escape_0
+  clc
+  rts
+
+__ai_search_check_mate_escape_0:
+  tax
+  lda MoveListFrom, x
+  sta RootProbeFrom
+  lda MoveListTo, x
+  sta RootProbeTo
+
+  jsr RootProbeAllowsMateInOne
+  bcc __ai_search_found_mate_escape_0
+
+  jsr RestoreMoveListForDepth
+  inc RootProbeIndex
+  jmp __ai_search_mate_escape_loop_0
+
+__ai_search_found_mate_escape_0:
+  lda RootProbeFrom
+  sta BestMoveFrom
+  lda RootProbeTo
+  sta BestMoveTo
+  sec
+  rts
+
+;
+; ApplyRootAllowsMatePenalty
+; Reject root moves that hand the opponent an immediate mate. This is a
+; deliberate "do not look stupid" filter at the root only: the full search can
+; miss these when pruning/reductions hide a quiet mating follow-up.
+; Input/Output: $eb = root move score from the mover's perspective.
+; Clobbers: A, X, Y, move list, root shortcut temps.
+;
+ApplyRootAllowsMatePenalty:
+  lda SearchDepth
+  beq __ai_search_check_allows_mate_0
+  rts
+
+__ai_search_check_allows_mate_0:
+; Checked king evasions are few and tactically fragile, so verify they do not
+; walk into a one-move mate. Other moves keep the cheap queen-near prefilter.
+  ldx NegamaxState + 3
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_check_allows_mate_prefilter_0
+  and #$07
+  cmp #KING_TYPE
+  bne __ai_search_check_allows_mate_prefilter_0
+  jsr IsCurrentSideInCheck
+  bcs __ai_search_probe_candidate_mate_0
+
+__ai_search_check_allows_mate_prefilter_0:
+  jsr RootEnemyQueenNearKing
+  bcs __ai_search_probe_candidate_mate_0
+  rts
+
+__ai_search_probe_candidate_mate_0:
+  lda NegamaxState + 3
+  sta RootProbeFrom
+  lda NegamaxState + 4
+  sta RootProbeTo
+  jsr RootProbeAllowsMateInOne
+  bcs __ai_search_allows_mate_0
+  rts
+
+__ai_search_allows_mate_0:
+  lda #NEG_INFINITY
+  sta $eb
+  rts
+
+;
 ; ApplyRootHangingMinorPenalty
 ; Penalize root moves that ignore a minor/rook/queen currently attacked by an
 ; enemy pawn. Moving the piece or capturing the attacking pawn resolves it.
@@ -3083,19 +5335,36 @@ __ai_search_penalty_store_0:
 ApplyRootHangingMinorPenalty:
   lda SearchSide
   sta $f6
+  sta $f1
+  beq __ai_search_hanging_black_list_0
+  lda WhitePieceCount
+  sta $f5
+  lda #<WhitePieceList
+  sta temp1
+  lda #>WhitePieceList
+  sta temp1 + 1
+  jmp __ai_search_hanging_list_set_0
+
+__ai_search_hanging_black_list_0:
+  lda BlackPieceCount
+  sta $f5
+  lda #<BlackPieceList
+  sta temp1
+  lda #>BlackPieceList
+  sta temp1 + 1
+
+__ai_search_hanging_list_set_0:
   lda #$00
   sta $f7
 
 __ai_search_scan_loop_1:
-  ldx $f7
+  ldy $f7
+  cpy $f5
+  beq __ai_search_done_5
+  lda (temp1), y
+  tax
   lda Board88, x
-  cmp #EMPTY_PIECE
-  beq __ai_search_next_square_1
   sta $f3
-  and #WHITE_COLOR
-  cmp $f6
-  bne __ai_search_next_square_1
-  sta $f1
   lda $f3
   and #$07
   sta $f2
@@ -3126,17 +5395,7 @@ __ai_search_store_score_3:
 
 __ai_search_next_square_1:
   inc $f7
-  lda $f7
-  and #$08
-  beq __ai_search_check_done_1
-  lda $f7
-  clc
-  adc #$08
-  sta $f7
-__ai_search_check_done_1:
-  lda $f7
-  cmp #BOARD_SIZE
-  bne __ai_search_scan_loop_1
+  jmp __ai_search_scan_loop_1
 
 __ai_search_done_5:
   rts
@@ -3171,19 +5430,35 @@ __ai_search_loose_rook_skip_0:
 __ai_search_loose_rook_scan_0:
   lda SearchSide
   sta $f6
+  beq __ai_search_loose_black_list_0
+  lda WhitePieceCount
+  sta $f5
+  lda #<WhitePieceList
+  sta temp1
+  lda #>WhitePieceList
+  sta temp1 + 1
+  jmp __ai_search_loose_list_set_0
+
+__ai_search_loose_black_list_0:
+  lda BlackPieceCount
+  sta $f5
+  lda #<BlackPieceList
+  sta temp1
+  lda #>BlackPieceList
+  sta temp1 + 1
+
+__ai_search_loose_list_set_0:
   lda #$00
   sta $f7
 
 __ai_search_rook_scan_loop_1:
-  ldx $f7
+  ldy $f7
+  cpy $f5
+  beq __ai_search_done_14
+  lda (temp1), y
+  tax
   lda Board88, x
-  cmp #EMPTY_PIECE
-  beq __ai_search_rook_next_square_1
   sta $f3
-  and #WHITE_COLOR
-  cmp $f6
-  bne __ai_search_rook_next_square_1
-  sta $f1
   lda $f3
   and #$07
   cmp #KNIGHT_TYPE
@@ -3198,7 +5473,7 @@ __ai_search_rook_scan_loop_1:
   lda $f0
   sta attack_sq
   lda #BLACKS_TURN
-  ldx $f1
+  ldx $f6
   bne __ai_search_rook_enemy_color_set_0
   lda #WHITES_TURN
 __ai_search_rook_enemy_color_set_0:
@@ -3209,7 +5484,7 @@ __ai_search_rook_enemy_color_set_0:
   lda $f0
   sta attack_sq
   lda #WHITES_TURN
-  ldx $f1
+  ldx $f6
   bne __ai_search_rook_own_color_set_0
   lda #BLACKS_TURN
 __ai_search_rook_own_color_set_0:
@@ -3231,17 +5506,7 @@ __ai_search_store_rook_score_0:
 
 __ai_search_rook_next_square_1:
   inc $f7
-  lda $f7
-  and #$08
-  beq __ai_search_rook_check_done_1
-  lda $f7
-  clc
-  adc #$08
-  sta $f7
-__ai_search_rook_check_done_1:
-  lda $f7
-  cmp #BOARD_SIZE
-  bne __ai_search_rook_scan_loop_1
+  jmp __ai_search_rook_scan_loop_1
 
 __ai_search_done_14:
   rts
@@ -3287,18 +5552,35 @@ __ai_search_not_target_0:
 ApplyRootMissedPawnWinPenalty:
   lda SearchSide
   sta $f6
+  beq __ai_search_pawn_win_black_list_0
+  lda WhitePieceCount
+  sta $f2
+  lda #<WhitePieceList
+  sta temp1
+  lda #>WhitePieceList
+  sta temp1 + 1
+  jmp __ai_search_pawn_win_list_set_0
+
+__ai_search_pawn_win_black_list_0:
+  lda BlackPieceCount
+  sta $f2
+  lda #<BlackPieceList
+  sta temp1
+  lda #>BlackPieceList
+  sta temp1 + 1
+
+__ai_search_pawn_win_list_set_0:
   lda #$00
   sta $f7
 
 __ai_search_scan_loop_2:
-  ldx $f7
+  ldy $f7
+  cpy $f2
+  beq __ai_search_done_6
+  lda (temp1), y
+  tax
   lda Board88, x
-  cmp #EMPTY_PIECE
-  beq __ai_search_next_square_2
   sta $f3
-  and #WHITE_COLOR
-  cmp $f6
-  bne __ai_search_next_square_2
   lda $f3
   and #$07
   cmp #PAWN_TYPE
@@ -3317,8 +5599,7 @@ __ai_search_scan_loop_2:
   sec
   sbc #$0f
   jsr CheckRootPawnWinTarget
-  bcs __ai_search_found_pawn_win_0
-  jmp __ai_search_next_square_2
+  bcc __ai_search_next_square_2
 
 __ai_search_black_pawn_0:
   lda $f0
@@ -3330,8 +5611,7 @@ __ai_search_black_pawn_0:
   clc
   adc #$11
   jsr CheckRootPawnWinTarget
-  bcs __ai_search_found_pawn_win_0
-  jmp __ai_search_next_square_2
+  bcc __ai_search_next_square_2
 
 __ai_search_found_pawn_win_0:
   lda NegamaxState + 3
@@ -3366,20 +5646,412 @@ __ai_search_store_score_4:
 
 __ai_search_next_square_2:
   inc $f7
-  lda $f7
-  and #$08
-  beq __ai_search_check_done_2
-  lda $f7
-  clc
-  adc #$08
-  sta $f7
-__ai_search_check_done_2:
-  lda $f7
-  cmp #BOARD_SIZE
-  beq __ai_search_done_6
   jmp __ai_search_scan_loop_2
 
 __ai_search_done_6:
+  rts
+
+;
+; ApplyRootMissedCentralPawnKickPenalty
+; If a home f-pawn can quietly attack an enemy piece, discourage unrelated
+; quiet moves. This prefers useful piece kicks over rook-pawn pokes.
+; Input/Output: $eb = root move score from the mover's perspective.
+; Clobbers: A, X, $f3-$f6
+;
+ApplyRootMissedCentralPawnKickPenalty:
+  lda NegamaxState + 4
+  bmi __ai_search_pawn_kick_done_0
+  and #$7f
+  tax
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  bne __ai_search_pawn_kick_done_0
+
+  jsr IsCurrentSideInCheck
+  bcs __ai_search_pawn_kick_done_0
+
+  lda SearchSide
+  sta $f6
+  beq __ai_search_black_pawn_kick_0
+
+  lda Board88 + $65
+  cmp #WHITE_PAWN
+  bne __ai_search_pawn_kick_done_0
+  lda Board88 + $55
+  cmp #EMPTY_PIECE
+  bne __ai_search_pawn_kick_done_0
+  lda #$44
+  jsr CheckRootPawnWinTarget
+  bcs __ai_search_white_f_pawn_available_0
+  lda #$46
+  jsr CheckRootPawnWinTarget
+  bcc __ai_search_pawn_kick_done_0
+
+__ai_search_white_f_pawn_available_0:
+  lda NegamaxState + 3
+  cmp #$65
+  beq __ai_search_white_f_pawn_from_ok_0
+  jmp __ai_search_penalize_pawn_kick_0
+__ai_search_white_f_pawn_from_ok_0:
+  lda NegamaxState + 4
+  and #$7f
+  cmp #$55
+  beq __ai_search_pawn_kick_done_0
+  jmp __ai_search_penalize_pawn_kick_0
+
+__ai_search_black_pawn_kick_0:
+  lda Board88 + $15
+  cmp #BLACK_PAWN
+  bne __ai_search_pawn_kick_done_0
+  lda Board88 + $25
+  cmp #EMPTY_PIECE
+  bne __ai_search_pawn_kick_done_0
+  lda #$34
+  jsr CheckRootPawnWinTarget
+  bcs __ai_search_black_f_pawn_available_0
+  lda #$36
+  jsr CheckRootPawnWinTarget
+  bcc __ai_search_pawn_kick_done_0
+
+__ai_search_black_f_pawn_available_0:
+  lda NegamaxState + 3
+  cmp #$15
+  bne __ai_search_penalize_pawn_kick_0
+  lda NegamaxState + 4
+  and #$7f
+  cmp #$25
+  beq __ai_search_pawn_kick_done_0
+  jmp __ai_search_penalize_pawn_kick_0
+
+__ai_search_penalize_pawn_kick_0:
+  lda #ROOT_MISSED_CENTER_BREAK_PENALTY
+  jmp ApplyRootPenaltyAmount
+
+__ai_search_pawn_kick_done_0:
+  rts
+
+;
+; RootWhiteEnemyCenterPawn
+; Output: Carry set if black has a d/e center pawn far enough forward that
+;         White should challenge it with a home-pawn break.
+; Clobbers: A
+;
+RootWhiteEnemyCenterPawn:
+  lda Board88 + $33
+  cmp #BLACK_PAWN
+  beq __ai_search_center_pawn_found_0
+  lda Board88 + $34
+  cmp #BLACK_PAWN
+  beq __ai_search_center_pawn_found_0
+  clc
+  rts
+
+;
+; RootBlackEnemyCenterPawn
+; Output: Carry set if white has a d/e center pawn far enough forward that
+;         Black should challenge it with a home-pawn break.
+; Clobbers: A
+;
+RootBlackEnemyCenterPawn:
+  lda Board88 + $43
+  cmp #WHITE_PAWN
+  beq __ai_search_center_pawn_found_0
+  lda Board88 + $44
+  cmp #WHITE_PAWN
+  beq __ai_search_center_pawn_found_0
+  clc
+  rts
+
+__ai_search_center_pawn_found_0:
+  sec
+  rts
+
+;
+; RootWhiteDPawnBreakAvailable
+; Output: Carry set if the home pawn can make a two-square center break.
+; Clobbers: A
+;
+RootWhiteDPawnBreakAvailable:
+  jsr RootWhiteEnemyCenterPawn
+  bcc __ai_search_no_white_d_break_0
+  lda Board88 + $63
+  cmp #WHITE_PAWN
+  bne __ai_search_no_white_d_break_0
+  lda Board88 + $53
+  cmp #EMPTY_PIECE
+  bne __ai_search_no_white_d_break_0
+  lda Board88 + $43
+  cmp #EMPTY_PIECE
+  bne __ai_search_no_white_d_break_0
+  sec
+  rts
+__ai_search_no_white_d_break_0:
+  clc
+  rts
+
+;
+; RootBlackDPawnBreakAvailable
+; Output: Carry set if the home pawn can make a two-square center break.
+; Clobbers: A
+;
+RootBlackDPawnBreakAvailable:
+  jsr RootBlackEnemyCenterPawn
+  bcc __ai_search_no_black_d_break_0
+  lda Board88 + $13
+  cmp #BLACK_PAWN
+  bne __ai_search_no_black_d_break_0
+  lda Board88 + $23
+  cmp #EMPTY_PIECE
+  bne __ai_search_no_black_d_break_0
+  lda Board88 + $33
+  cmp #EMPTY_PIECE
+  bne __ai_search_no_black_d_break_0
+  sec
+  rts
+__ai_search_no_black_d_break_0:
+  clc
+  rts
+
+;
+; ApplyRootMissedOpeningCenterBreakPenalty
+; In the opening, if a home d/e pawn can challenge an enemy d/e center pawn,
+; discourage quiet drift. Keep this to the d-pawn break; e-pawn pushes are
+; more position-dependent and belong in full search unless tactically forced.
+; Input/Output: $eb = root move score from the mover's perspective.
+; Clobbers: A, X, attack_sq, attack_color, $f0
+;
+ApplyRootMissedOpeningCenterBreakPenalty:
+  lda NegamaxState + 4
+  bmi __ai_search_center_break_done_0
+  and #$7f
+  sta $f0
+  tax
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  bne __ai_search_center_break_done_0
+
+  jsr IsCurrentSideInCheck
+  bcs __ai_search_center_break_done_0
+
+  lda SearchSide
+  beq __ai_search_black_center_break_0
+
+  jsr RootWhiteDPawnBreakAvailable
+  bcc __ai_search_center_break_done_0
+  lda NegamaxState + 3
+  cmp #$63
+  bne __ai_search_penalize_center_break_0
+  lda $f0
+  cmp #$43
+  beq __ai_search_center_break_done_0
+  jmp __ai_search_penalize_center_break_0
+
+__ai_search_black_center_break_0:
+  jsr RootBlackDPawnBreakAvailable
+  bcc __ai_search_center_break_done_0
+  lda NegamaxState + 3
+  cmp #$13
+  bne __ai_search_penalize_center_break_0
+  lda $f0
+  cmp #$33
+  beq __ai_search_center_break_done_0
+
+__ai_search_penalize_center_break_0:
+  lda #ROOT_MISSED_CENTER_BREAK_PENALTY
+  jmp ApplyRootPenaltyAmount
+
+__ai_search_center_break_done_0:
+  rts
+
+;
+; RootEarlyQueenPawnRecapture
+; Output: Carry set if the root candidate is an early queen capture of an
+;         enemy pawn when a friendly pawn can make the same recapture.
+;         Carry clear otherwise.
+; Clobbers: A, X, Y, $f0-$f3
+;
+RootEarlyQueenPawnRecapture:
+  ldx NegamaxState + 3
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_not_queen_recapture_0
+  sta $f3
+  and #$07
+  cmp #QUEEN_TYPE
+  bne __ai_search_not_queen_recapture_0
+
+  lda $f3
+  and #WHITE_COLOR
+  sta $f1
+
+  lda NegamaxState + 4
+  and #$7f
+  sta $f0
+  tax
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_not_queen_recapture_0
+  sta $f2
+  and #$07
+  cmp #PAWN_TYPE
+  bne __ai_search_not_queen_recapture_0
+  lda $f2
+  and #WHITE_COLOR
+  cmp $f1
+  beq __ai_search_not_queen_recapture_0
+
+  jsr SideHasHomeMinor
+  bcc __ai_search_not_queen_recapture_0
+
+  lda $f1
+  beq __ai_search_black_queen_recapture_0
+
+  lda $f0
+  clc
+  adc #$0f
+  jsr CheckWhitePawnAt
+  bcs __ai_search_is_queen_recapture_0
+  lda $f0
+  clc
+  adc #$11
+  jsr CheckWhitePawnAt
+  bcs __ai_search_is_queen_recapture_0
+  clc
+  rts
+
+__ai_search_black_queen_recapture_0:
+  lda $f0
+  sec
+  sbc #$0f
+  jsr CheckBlackPawnAt
+  bcs __ai_search_is_queen_recapture_0
+  lda $f0
+  sec
+  sbc #$11
+  jsr CheckBlackPawnAt
+  bcs __ai_search_is_queen_recapture_0
+
+__ai_search_not_queen_recapture_0:
+  clc
+  rts
+
+__ai_search_is_queen_recapture_0:
+  sec
+  rts
+
+;
+; ApplyRootEarlyQueenRecapturePenalty
+; Penalize early queen captures of enemy pawns when a friendly pawn can make
+; the same recapture. This keeps the queen out of center tempi without exact
+; opening memory.
+; Input/Output: $eb = root move score from the mover's perspective.
+; Clobbers: A, X, Y, $f0-$f3
+;
+ApplyRootEarlyQueenRecapturePenalty:
+  jsr RootEarlyQueenPawnRecapture
+  bcc __ai_search_queen_recapture_done_0
+  lda #ROOT_EARLY_QUEEN_MOVE_PENALTY
+  jmp ApplyRootPenaltyAmount
+
+__ai_search_queen_recapture_done_0:
+  rts
+
+;
+; ApplyRootBlockedBishopRecapturePenalty
+; In the opening, do not spend a side pawn to recapture an advanced center pawn
+; when an undeveloped bishop can recapture the same pawn and develop.
+; Input/Output: $eb = root move score from the mover's perspective.
+; Clobbers: A, X, Y, $f0
+;
+ApplyRootBlockedBishopRecapturePenalty:
+  lda NegamaxState + 4
+  bmi __ai_search_blocked_bishop_exit_0
+  and #$7f
+  sta $f0
+  tax
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_blocked_bishop_exit_0
+  and #$07
+  cmp #PAWN_TYPE
+  bne __ai_search_blocked_bishop_exit_0
+
+  lda NegamaxState + 3
+  tay
+  lda Board88, y
+  and #$07
+  cmp #PAWN_TYPE
+  bne __ai_search_blocked_bishop_exit_0
+
+  lda SearchSide
+  beq __ai_search_black_blocked_bishop_recap_0
+  jmp __ai_search_white_blocked_bishop_recap_0
+
+__ai_search_blocked_bishop_exit_0:
+  jmp __ai_search_blocked_bishop_done_0
+
+__ai_search_white_blocked_bishop_recap_0:
+  lda $f0
+  cmp #$53
+  bne __ai_search_white_check_e3_recap_0
+  lda NegamaxState + 3
+  cmp #$62
+  bne __ai_search_blocked_bishop_done_0
+  lda Board88 + $75
+  cmp #WHITE_BISHOP
+  bne __ai_search_blocked_bishop_done_0
+  lda Board88 + $64
+  cmp #EMPTY_PIECE
+  bne __ai_search_blocked_bishop_done_0
+  jmp __ai_search_penalize_blocked_bishop_0
+
+__ai_search_white_check_e3_recap_0:
+  cmp #$54
+  bne __ai_search_blocked_bishop_done_0
+  lda NegamaxState + 3
+  cmp #$65
+  bne __ai_search_blocked_bishop_done_0
+  lda Board88 + $72
+  cmp #WHITE_BISHOP
+  bne __ai_search_blocked_bishop_done_0
+  lda Board88 + $63
+  cmp #EMPTY_PIECE
+  bne __ai_search_blocked_bishop_done_0
+  jmp __ai_search_penalize_blocked_bishop_0
+
+__ai_search_black_blocked_bishop_recap_0:
+  lda $f0
+  cmp #$23
+  bne __ai_search_black_check_e6_recap_0
+  lda NegamaxState + 3
+  cmp #$12
+  bne __ai_search_blocked_bishop_done_0
+  lda Board88 + $05
+  cmp #BLACK_BISHOP
+  bne __ai_search_blocked_bishop_done_0
+  lda Board88 + $14
+  cmp #EMPTY_PIECE
+  bne __ai_search_blocked_bishop_done_0
+  jmp __ai_search_penalize_blocked_bishop_0
+
+__ai_search_black_check_e6_recap_0:
+  cmp #$24
+  bne __ai_search_blocked_bishop_done_0
+  lda NegamaxState + 3
+  cmp #$15
+  bne __ai_search_blocked_bishop_done_0
+  lda Board88 + $02
+  cmp #BLACK_BISHOP
+  bne __ai_search_blocked_bishop_done_0
+  lda Board88 + $13
+  cmp #EMPTY_PIECE
+  bne __ai_search_blocked_bishop_done_0
+
+__ai_search_penalize_blocked_bishop_0:
+  lda #ROOT_BLOCKED_BISHOP_RECAPTURE_PENALTY
+  jmp ApplyRootPenaltyAmount
+
+__ai_search_blocked_bishop_done_0:
   rts
 
 ;
@@ -3405,6 +6077,10 @@ ApplyRootEarlyQueenPenalty:
   lda Board88, x
   cmp #EMPTY_PIECE
   bne __ai_search_done_7
+
+  ldx NegamaxState + 2
+  jsr RootMoveGivesCheck
+  bcs __ai_search_done_7
 
   lda NegamaxState + 3
   sta attack_sq
@@ -3437,8 +6113,8 @@ __ai_search_done_7:
 ;
 ; ApplyRootEarlyKingPenalty
 ; Penalize non-castling king moves when the side to move is not in check.
-; Opening king walks like Kd2 are usually catastrophic; evasions and castling
-; are exempt.
+; Opening king walks like Kd2 are usually catastrophic; evasions, castling, and
+; king escapes under direct queen pressure are exempt.
 ; Input/Output: $eb = root move score from the mover's perspective.
 ; Clobbers: A, X, Y, attack_sq, attack_color, $f0-$f3
 ;
@@ -3464,6 +6140,9 @@ ApplyRootEarlyKingPenalty:
   jsr IsCurrentSideInCheck
   bcs __ai_search_done_8
 
+  jsr RootEnemyQueenPressuresKing
+  bcs __ai_search_done_8
+
   lda $eb
   sec
   sbc #ROOT_EARLY_KING_MOVE_PENALTY
@@ -3473,6 +6152,95 @@ __ai_search_store_score_6:
   sta $eb
 
 __ai_search_done_8:
+  rts
+
+;
+; ApplyRootCheckedKingMovePenalty
+; In check, prefer blocking/capturing evasions over quiet king walks. If a king
+; move is the only viable escape it can still win on search score; this just
+; stops shallow search from casually losing castling/coordination.
+; Input/Output: $eb = root move score from the mover's perspective.
+; Clobbers: A, X
+;
+ApplyRootCheckedKingMovePenalty:
+  ldx NegamaxState + 3
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_checked_king_done_0
+  and #$07
+  cmp #KING_TYPE
+  bne __ai_search_checked_king_done_0
+
+  jsr IsCurrentSideInCheck
+  bcc __ai_search_checked_king_done_0
+
+  lda NegamaxState + 4
+  and #$7f
+  tax
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  bne __ai_search_checked_king_done_0
+
+  lda #ROOT_CHECKED_KING_MOVE_PENALTY
+  jmp ApplyRootPenaltyAmount
+
+__ai_search_checked_king_done_0:
+  rts
+
+;
+; ApplyRootExposedKingFlankPawnPenalty
+; Quiet rook-pawn pushes are rarely urgent after our king has left the back
+; rank. This targets Colossus-game pawn storms like a4/a5/h3 while leaving
+; captures, promotions, and normal castled/home-rank positions alone.
+; Input/Output: $eb = root move score from the mover's perspective.
+; Clobbers: A, X, $f1-$f3
+;
+ApplyRootExposedKingFlankPawnPenalty:
+  ldx NegamaxState + 3
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_flank_pawn_done_0
+  sta $f3
+  and #$07
+  cmp #PAWN_TYPE
+  bne __ai_search_flank_pawn_done_0
+
+  txa
+  and #$07
+  beq __ai_search_check_flank_pawn_quiet_0
+  cmp #$07
+  bne __ai_search_flank_pawn_done_0
+
+__ai_search_check_flank_pawn_quiet_0:
+  lda NegamaxState + 4
+  bmi __ai_search_flank_pawn_done_0
+  and #$7f
+  tax
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  bne __ai_search_flank_pawn_done_0
+
+  lda $f3
+  and #WHITE_COLOR
+  beq __ai_search_black_flank_king_0
+
+  lda whitekingsq
+  and #$70
+  cmp #$70
+  beq __ai_search_flank_pawn_done_0
+  jmp __ai_search_penalize_flank_pawn_0
+
+__ai_search_black_flank_king_0:
+  lda blackkingsq
+  and #$70
+  cmp #$00
+  beq __ai_search_flank_pawn_done_0
+
+__ai_search_penalize_flank_pawn_0:
+  lda #ROOT_EXPOSED_KING_FLANK_PAWN_PENALTY
+  jmp ApplyRootPenaltyAmount
+
+__ai_search_flank_pawn_done_0:
   rts
 
 ;
@@ -3585,19 +6353,26 @@ IsAdvancedEnemyPawn:
   lda $f6
   beq __ai_search_black_to_move_1
 
-; White to move: black pawns on ranks 1-3 (rows 5-7) are urgent.
+; White to move: black pawns on ranks 1-4 are always urgent. Fifth-rank
+; pawns are urgent while the black king is still on the home rank.
   txa
   and #$70
-  cmp #$50
-  bcc __ai_search_not_advanced_0
+  cmp #$40
+  bcs __ai_search_advanced_pawn_yes_0
+  cmp #$30
+  bne __ai_search_not_advanced_0
+  lda blackkingsq
+  and #$70
+  bne __ai_search_not_advanced_0
+__ai_search_advanced_pawn_yes_0:
   sec
   rts
 
 __ai_search_black_to_move_1:
-; Black to move: white pawns on ranks 6-8 (rows 0-2) are urgent.
+; Black to move: white pawns on ranks 4-8 (rows 0-4) are urgent.
   txa
   and #$70
-  cmp #$30
+  cmp #$50
   bcs __ai_search_not_advanced_0
   sec
   rts
@@ -3615,11 +6390,33 @@ __ai_search_not_advanced_0:
 ApplyRootMissedAdvancedPawnPenalty:
   lda SearchSide
   sta $f6
+  beq __ai_search_advanced_white_list_0
+  lda BlackPieceCount
+  sta $f2
+  lda #<BlackPieceList
+  sta temp1
+  lda #>BlackPieceList
+  sta temp1 + 1
+  jmp __ai_search_advanced_list_set_0
+
+__ai_search_advanced_white_list_0:
+  lda WhitePieceCount
+  sta $f2
+  lda #<WhitePieceList
+  sta temp1
+  lda #>WhitePieceList
+  sta temp1 + 1
+
+__ai_search_advanced_list_set_0:
   lda #$00
   sta $f7
 
 __ai_search_scan_loop_3:
-  ldx $f7
+  ldy $f7
+  cpy $f2
+  beq __ai_search_done_10
+  lda (temp1), y
+  tax
   jsr IsAdvancedEnemyPawn
   bcc __ai_search_next_square_3
 
@@ -3664,17 +6461,6 @@ __ai_search_store_score_8:
 
 __ai_search_next_square_3:
   inc $f7
-  lda $f7
-  and #$08
-  beq __ai_search_check_done_3
-  lda $f7
-  clc
-  adc #$08
-  sta $f7
-__ai_search_check_done_3:
-  lda $f7
-  cmp #BOARD_SIZE
-  beq __ai_search_done_10
   jmp __ai_search_scan_loop_3
 
 __ai_search_done_10:
@@ -3723,7 +6509,7 @@ __ai_search_search_0:
   sta NegamaxOrigAlpha, y
 
 ; Probe transposition table
-  jsr ComputeZobristHash
+  jsr ComputeSearchZobristHash
 
 ; Recalculate state offset (ComputeZobristHash clobbers X)
   lda SearchDepth
@@ -3731,6 +6517,11 @@ __ai_search_search_0:
   asl
   asl
   tax
+  ldy SearchDepth
+  lda ZobristHash
+  sta NegamaxHashLo, y
+  lda ZobristHash + 1
+  sta NegamaxHashHi, y
 
 ; Probe TT with current depth requirement
   lda NegamaxState + 5, x; depth remaining
@@ -3944,10 +6735,70 @@ __ai_search_continue_loop_0:
   cmp #EMPTY_PIECE
   bne __ai_search_search_current_move_0; Do not prune captures.
 
+  lda NegamaxState + 2, x
+  tax
+  jsr IsQuietMoveSearchForcing
+  bcc __ai_search_prune_futile_quiet_0
+  lda SearchDepth
+  asl
+  asl
+  asl
+  tax
+  jmp __ai_search_search_current_move_0
+
+__ai_search_prune_futile_quiet_0:
+  lda SearchDepth
+  asl
+  asl
+  asl
+  tax
   inc NegamaxState + 2, x
   jmp __ai_search_move_loop_0
 
 __ai_search_search_current_move_0:
+; Late-move pruning: at shallow non-root nodes, once ordered captures and the
+; first quiet tries have failed, skip ordinary quiets that do not create check
+; or a major threat. This is stricter than LMR and only fires after a real move
+; has already established a node score.
+  lda SearchDepth
+  beq __ai_search_lmp_done_0
+  lda NegamaxState + 5, x
+  cmp #LMP_MAX_DEPTH + 1
+  bcs __ai_search_lmp_done_0
+  lda NegamaxState + 1, x
+  cmp #NEG_INFINITY
+  beq __ai_search_lmp_done_0
+  lda NegamaxState + 2, x
+  cmp #LMP_FULL_MOVES
+  bcc __ai_search_lmp_done_0
+  lda NegamaxState + 4, x
+  bmi __ai_search_lmp_done_0; Promotions search normally.
+  and #$7f
+  tay
+  lda Board88, y
+  cmp #EMPTY_PIECE
+  bne __ai_search_lmp_done_0; Captures search normally.
+
+  lda NegamaxState + 2, x
+  tax
+  jsr IsQuietMoveSearchForcing
+  bcs __ai_search_lmp_restore_0
+  lda SearchDepth
+  asl
+  asl
+  asl
+  tax
+  inc NegamaxState + 2, x
+  jmp __ai_search_move_loop_0
+
+__ai_search_lmp_restore_0:
+  lda SearchDepth
+  asl
+  asl
+  asl
+  tax
+
+__ai_search_lmp_done_0:
 ; Late-move reduction: after ordering, quiet late moves are unlikely to be
 ; tactical. Search them one ply shallower so hard mode can afford depth 5.
   ldy SearchDepth
@@ -3974,6 +6825,23 @@ __ai_search_lmr_not_depth2_0:
   cmp #EMPTY_PIECE
   bne __ai_search_lmr_done_0; Captures search full depth.
 
+  lda NegamaxState + 2, x
+  tax
+  jsr IsQuietMoveMajorThreat
+  bcc __ai_search_lmr_reduce_quiet_0
+  lda SearchDepth
+  asl
+  asl
+  asl
+  tax
+  jmp __ai_search_lmr_done_0
+
+__ai_search_lmr_reduce_quiet_0:
+  lda SearchDepth
+  asl
+  asl
+  asl
+  tax
   ldy SearchDepth
   lda NegamaxChildDepth, y
   sec
@@ -4161,18 +7029,32 @@ __ai_search_pvs_research_done_0:
 
   lda SearchDepth
   bne __ai_search_skip_root_pawn_safety_0
+  jsr ApplyRootAllowsMatePenalty
+  jsr ApplyRootMajorSafetyPenalty
+  jsr ApplyRootHangingQueenPenalty
+  jsr ApplyRootQueenDangerPawnPenalty
+  jsr ApplyRootQueenPawnRaidPenalty
+
+  lda $eb
+  cmp #MATE_SCORE
+  beq __ai_search_skip_root_pawn_safety_0
+
   jsr ApplyRootPawnSafetyPenalty
   jsr ApplyRootHangingMinorPenalty
   jsr ApplyRootLoosePiecePenalty
   jsr ApplyRootMissedPawnWinPenalty
+  jsr ApplyRootMissedCentralPawnKickPenalty
   jsr ApplyRootMissedAdvancedPawnPenalty
+  jsr ApplyRootMissedOpeningCenterBreakPenalty
+  jsr ApplyRootBlockedBishopRecapturePenalty
   jsr ApplyRootMinorSafetyPenalty
-  jsr ApplyRootRookSafetyPenalty
-  jsr ApplyRootQueenSafetyPenalty
+  jsr ApplyRootEarlyQueenRecapturePenalty
   jsr ApplyRootEarlyQueenPenalty
   jsr ApplyRootEarlyRookPenalty
   jsr ApplyRootEarlyKingPenalty
-  jsr ApplyRootHangingQueenPenalty
+  jsr ApplyRootCheckedKingMovePenalty
+  jsr ApplyRootExposedKingFlankPawnPenalty
+  jsr ApplyRootQuietCheckBonus
   jsr ApplyRootLoopPenalty
 
 __ai_search_skip_root_pawn_safety_0:
@@ -4218,6 +7100,14 @@ __ai_search_score_better_0:
   sta BestMoveTo
 
 __ai_search_not_at_root_0:
+; Mate is the maximum meaningful score. Once a move proves mate, siblings
+; cannot improve it, so stop the node immediately.
+  lda $eb
+  cmp #MATE_SCORE
+  bne __ai_search_not_forced_mate_0
+  jmp __ai_search_return_best_no_tt_0
+
+__ai_search_not_forced_mate_0:
 ; Alpha-Beta: if best > alpha, update alpha
 ; Recalculate state offset (may have been clobbered)
   lda SearchDepth
@@ -4284,6 +7174,7 @@ __ai_search_no_overflow3_0:
   sta $f1
   lda NegamaxState + 5, x
   jsr StoreHistory
+  jsr StoreCounterMove
 
 __ai_search_not_killer_cutoff_0:
 ; Shallow beta-bound stores cost more than they save. Preserve TT bound
@@ -4394,6 +7285,10 @@ NegamaxState:
 ; avoid expanding the hot NegamaxState stride.
 NegamaxOrigAlpha:
   .res MAX_DEPTH
+NegamaxHashLo:
+  .res MAX_DEPTH
+NegamaxHashHi:
+  .res MAX_DEPTH
 NegamaxBestFrom:
   .res MAX_DEPTH
 NegamaxBestTo:
@@ -4432,7 +7327,7 @@ TryApplyRecaptureExtension:
 
   lda SearchDepth
   beq __ai_search_done_11
-  cmp #MAX_DEPTH - 2
+  cmp #MAX_DEPTH - 3
   bcs __ai_search_done_11
   tay
   lda RecaptureExtensionUsedByDepth, y
@@ -4520,11 +7415,11 @@ __ai_search_check_ext_done_0:
 .segment "BSS"
 
 MoveListSnapshotCount:
-  .res MAX_DEPTH
+  .res MOVE_LIST_SNAPSHOT_DEPTH
 MoveListSnapshotFrom:
-  .res MAX_DEPTH * MAX_MOVES
+  .res MOVE_LIST_SNAPSHOT_DEPTH * MAX_MOVES
 MoveListSnapshotTo:
-  .res MAX_DEPTH * MAX_MOVES
+  .res MOVE_LIST_SNAPSHOT_DEPTH * MAX_MOVES
 
 .segment "CODE"
 
@@ -4682,24 +7577,21 @@ __ai_search_unsafe_0:
 
 ;
 ; TryEngineOpeningSurvivalMove
-; Tiny built-in survival book for exact openings that our measured
-; Stockfish ladder repeatedly punished. These are engine-level corrections,
-; not platform book hits, so SearchUsedBook remains clear.
+; Exact survival rows are disabled. The engine should survive these shapes via
+; generic root tactics, mate safety, king pressure, and normal search instead
+; of memorized position-specific replies.
 ;
-; Output: Carry set if BestMoveFrom/BestMoveTo were set
+; Output: Carry clear.
 ;
 TryEngineOpeningSurvivalMove:
-  lda SearchSide
-  cmp #WHITE_COLOR
-  bne __ai_search_check_black_side_0
-  jmp __ai_search_white_to_move_0
-__ai_search_check_black_side_0:
-  cmp #BLACK_COLOR
-  bne __ai_search_no_survival_side_0
-  jmp __ai_search_black_to_move_2
-__ai_search_no_survival_side_0:
   clc
   rts
+
+.if 0
+  lda SearchSide
+  cmp #WHITE_COLOR
+  beq __ai_search_white_to_move_0
+  jmp __ai_search_black_to_move_2
 
 __ai_search_white_to_move_0:
 __ai_search_check_white_d5_in_qp_bishop_pin_0:
@@ -4714,289 +7606,379 @@ __ai_search_matched_0:
   rts
 
 WhiteOpeningSurvivalTableEarly:
+; check_white_d4_after_colossus_f6
+  .byte $28, $63, $43
+  .byte $44, WHITE_PAWN, $25, BLACK_PAWN, $15, EMPTY_PIECE, $71, WHITE_KNIGHT
+  .byte $76, WHITE_KNIGHT, $73, WHITE_QUEEN, $04, BLACK_KING, $74, WHITE_KING
+; check_white_exf5_after_colossus_f5
+  .byte $28, $c4, $35
+  .byte $43, WHITE_PAWN, $52, WHITE_KNIGHT, $24, BLACK_PAWN, $15, EMPTY_PIECE
+  .byte $25, EMPTY_PIECE, $73, WHITE_QUEEN, $04, BLACK_KING, $74, WHITE_KING
+; check_white_qh5_after_colossus_nc6
+  .byte $a8, $73, $37
+  .byte $35, WHITE_PAWN, $22, BLACK_KNIGHT, $24, BLACK_PAWN, $43, WHITE_PAWN
+  .byte $52, WHITE_KNIGHT, $05, BLACK_BISHOP, $04, BLACK_KING, $74, WHITE_KING
+; check_white_qh5_after_colossus_d5
+  .byte $a8, $73, $37
+  .byte $24, WHITE_PAWN, $33, BLACK_PAWN, $22, BLACK_KNIGHT, $43, WHITE_PAWN
+  .byte $52, WHITE_KNIGHT, $05, BLACK_BISHOP, $04, BLACK_KING, $74, WHITE_KING
+; check_white_qe2_before_colossus_castle
+  .byte $a8, $73, $64
+  .byte $24, BLACK_BISHOP, $25, BLACK_KNIGHT, $31, WHITE_BISHOP, $52, WHITE_KNIGHT
+  .byte $55, WHITE_KNIGHT, $43, WHITE_PAWN, $04, BLACK_KING, $74, WHITE_KING
+; check_white_qh5_after_colossus_fxe4
+  .byte $a8, $73, $37
+  .byte $44, BLACK_PAWN, $47, WHITE_KNIGHT, $52, WHITE_KNIGHT, $43, WHITE_PAWN
+  .byte $24, BLACK_PAWN, $06, BLACK_KNIGHT, $04, BLACK_KING, $74, WHITE_KING
+; check_white_c4_after_colossus_e6_e3
+  .byte $28, $62, $42
+  .byte $54, WHITE_PAWN, $24, BLACK_PAWN, $71, WHITE_KNIGHT, $76, WHITE_KNIGHT
+  .byte $73, WHITE_QUEEN, $03, BLACK_QUEEN, $04, BLACK_KING, $74, WHITE_KING
+; check_white_exd4_after_colossus_d4_e3_c4_nc3
+  .byte $28, $d4, $43
+  .byte $42, WHITE_PAWN, $24, BLACK_PAWN, $13, EMPTY_PIECE, $14, EMPTY_PIECE
+  .byte $52, WHITE_KNIGHT, $63, WHITE_PAWN, $73, WHITE_QUEEN, $04, BLACK_KING
+; check_white_nf3_after_colossus_nf6_e3_c4_exd4
+  .byte $48, $76, $55
+  .byte $43, WHITE_PAWN, $42, WHITE_PAWN, $52, WHITE_KNIGHT, $25, BLACK_KNIGHT
+  .byte $24, BLACK_PAWN, $13, EMPTY_PIECE, $71, EMPTY_PIECE, $04, BLACK_KING
+; check_white_qa4_after_colossus_nc6_e3_c4_exd4_nf3
+  .byte $a8, $73, $40
+  .byte $43, WHITE_PAWN, $42, WHITE_PAWN, $52, WHITE_KNIGHT, $55, WHITE_KNIGHT
+  .byte $22, BLACK_KNIGHT, $25, BLACK_KNIGHT, $24, BLACK_PAWN, $13, EMPTY_PIECE
+; check_white_qc2_after_colossus_bd7_e3_line
+  .byte $a8, $40, $62
+  .byte $13, BLACK_BISHOP, $42, WHITE_PAWN, $43, WHITE_PAWN, $52, WHITE_KNIGHT
+  .byte $55, WHITE_KNIGHT, $22, BLACK_KNIGHT, $25, BLACK_KNIGHT, $24, BLACK_PAWN
+; check_white_d4_after_colossus_qf6_e3
+  .byte $28, $63, $43
+  .byte $25, BLACK_QUEEN, $52, WHITE_KNIGHT, $24, BLACK_PAWN, $71, EMPTY_PIECE
+  .byte $76, WHITE_KNIGHT, $73, WHITE_QUEEN, $04, BLACK_KING, $74, WHITE_KING
+; check_white_c4_after_colossus_f5_nf3
+  .byte $28, $62, $42
+  .byte $55, WHITE_KNIGHT, $35, BLACK_PAWN, $71, WHITE_KNIGHT, $76, EMPTY_PIECE
+  .byte $73, WHITE_QUEEN, $03, BLACK_QUEEN, $04, BLACK_KING, $74, WHITE_KING
+; check_white_e3_after_colossus_qd6_f4
+  .byte $28, $64, $54
+  .byte $23, BLACK_QUEEN, $33, BLACK_PAWN, $45, WHITE_PAWN, $55, WHITE_KNIGHT
+  .byte $71, WHITE_KNIGHT, $73, WHITE_QUEEN, $04, BLACK_KING, $74, WHITE_KING
+; check_white_e4_after_colossus_e6_c3
+  .byte $28, $64, $44
+  .byte $52, WHITE_PAWN, $24, BLACK_PAWN, $71, WHITE_KNIGHT, $76, WHITE_KNIGHT
+  .byte $73, WHITE_QUEEN, $03, BLACK_QUEEN, $04, BLACK_KING, $74, WHITE_KING
+; check_white_bg2_after_colossus_a6_g3
+  .byte $68, $75, $66
+  .byte $56, WHITE_PAWN, $20, BLACK_PAWN, $10, EMPTY_PIECE, $71, WHITE_KNIGHT
+  .byte $76, WHITE_KNIGHT, $73, WHITE_QUEEN, $04, BLACK_KING, $74, WHITE_KING
+; check_white_nf3_after_colossus_a6_g3
+  .byte $48, $76, $55
+  .byte $56, WHITE_PAWN, $20, BLACK_PAWN, $10, EMPTY_PIECE, $71, WHITE_KNIGHT
+  .byte $73, WHITE_QUEEN, $03, BLACK_QUEEN, $04, BLACK_KING, $74, WHITE_KING
+; check_white_exd6_ep_colossus_advance
+  .byte $28, $34, $23
+  .byte $33, BLACK_PAWN, $21, BLACK_KNIGHT, $24, BLACK_PAWN, $52, WHITE_KNIGHT
+  .byte $55, WHITE_KNIGHT, $42, WHITE_PAWN, $04, BLACK_KING, $74, WHITE_KING
+; check_white_bg5_after_rde1_pressure
+  .byte $6f, $54, $36
+  .byte $45, EMPTY_PIECE, $43, WHITE_KNIGHT, $53, WHITE_QUEEN, $73, WHITE_ROOK
+  .byte $75, WHITE_ROOK, $76, WHITE_KING, $03, BLACK_QUEEN, $04, BLACK_ROOK
+  .byte $05, BLACK_BISHOP, $06, BLACK_KING, $02, BLACK_BISHOP, $25, BLACK_KNIGHT
+  .byte $33, BLACK_PAWN, $26, BLACK_PAWN, $00, BLACK_ROOK
+; check_white_bxd4_in_qc7_pressure
+  .byte $68, $54, $43
+  .byte $55, WHITE_KNIGHT, $53, WHITE_QUEEN, $33, BLACK_PAWN, $12, BLACK_QUEEN
+  .byte $14, BLACK_BISHOP, $25, BLACK_KNIGHT, $04, BLACK_ROOK, $06, BLACK_KING
+; check_white_nd3_against_qd2_mate_net
+  .byte $46, $34, $53
+  .byte $63, BLACK_QUEEN, $74, WHITE_ROOK, $55, WHITE_ROOK, $45, BLACK_PAWN
+  .byte $47, BLACK_PAWN, $76, WHITE_KING
+; check_white_rd4_against_qb2_mate_net
+  .byte $85, $73, $43
+  .byte $61, BLACK_QUEEN, $32, BLACK_BISHOP, $63, EMPTY_PIECE, $53, EMPTY_PIECE
+  .byte $75, WHITE_KING
+; check_white_nd2_against_back_rank_queen_trap
+  .byte $46, $63, $55
+  .byte $72, BLACK_QUEEN, $30, BLACK_BISHOP, $46, BLACK_BISHOP, $53, BLACK_PAWN
+  .byte $74, WHITE_BISHOP, $75, WHITE_KING
+; check_white_nd2_against_rook_knight_mate_net
+  .byte $46, $71, $63
+  .byte $73, BLACK_ROOK, $67, BLACK_KNIGHT, $56, WHITE_KING, $46, BLACK_KNIGHT
+  .byte $22, BLACK_BISHOP, $64, WHITE_KNIGHT
+; check_white_rd1_against_queen_rook_mate_net
+  .byte $86, $74, $73
+  .byte $65, BLACK_QUEEN, $46, BLACK_ROOK, $77, WHITE_KING, $11, WHITE_QUEEN
+  .byte $27, BLACK_KNIGHT, $05, BLACK_BISHOP
+; check_white_nxc6_against_double_knight_mate_net
+  .byte $46, $cb, $22
+  .byte $47, WHITE_KING, $46, BLACK_KNIGHT, $75, BLACK_KNIGHT, $16, BLACK_BISHOP
+  .byte $03, BLACK_ROOK, $04, BLACK_KING
+; check_white_nd4_against_rook_knight_net
+  .byte $46, $64, $43
+  .byte $67, BLACK_KNIGHT, $46, BLACK_KNIGHT, $56, WHITE_KING, $22, BLACK_BISHOP
+  .byte $32, WHITE_PAWN, $05, BLACK_BISHOP
+; check_white_qxd3_against_center_knight
+  .byte $a5, $7b, $53
+  .byte $33, WHITE_KNIGHT, $51, WHITE_KNIGHT, $16, BLACK_BISHOP, $03, BLACK_QUEEN
+  .byte $76, WHITE_KING
+; check_white_qf3_against_re8_bg7_d5
+  .byte $a5, $73, $55
+  .byte $33, BLACK_PAWN, $16, BLACK_BISHOP, $04, BLACK_ROOK, $63, WHITE_KNIGHT
+  .byte $76, WHITE_KING
+; check_white_nd2_against_early_na5_c5
+  .byte $46, $71, $63
+  .byte $30, BLACK_KNIGHT, $32, BLACK_PAWN, $34, BLACK_PAWN, $42, WHITE_BISHOP
+  .byte $64, WHITE_KNIGHT, $03, BLACK_QUEEN
+; check_white_nf4_against_d3_wedge
+  .byte $46, $64, $45
+  .byte $53, BLACK_PAWN, $44, WHITE_PAWN, $52, WHITE_PAWN, $22, BLACK_KNIGHT
+  .byte $03, BLACK_QUEEN, $04, BLACK_KING
+; check_white_qf3_against_d3_e5
+  .byte $a7, $73, $55
+  .byte $53, BLACK_PAWN, $56, WHITE_KNIGHT, $34, BLACK_PAWN, $44, WHITE_PAWN
+  .byte $52, WHITE_PAWN, $22, BLACK_KNIGHT, $04, BLACK_KING
+; check_white_nh5_against_h5_d3
+  .byte $27, $60, $50
+  .byte $56, WHITE_KNIGHT, $37, BLACK_PAWN, $53, BLACK_PAWN, $42, WHITE_PAWN
+  .byte $44, WHITE_PAWN, $34, BLACK_PAWN, $41, EMPTY_PIECE
+; check_white_qb3_against_nb4_d3
+  .byte $a7, $73, $51
+  .byte $41, BLACK_KNIGHT, $53, BLACK_PAWN, $42, WHITE_PAWN, $44, WHITE_PAWN
+  .byte $55, WHITE_KNIGHT, $56, WHITE_KNIGHT, $37, BLACK_PAWN
+; check_white_ne2_against_qd3_pressure
+  .byte $45, $56, $64
+  .byte $53, BLACK_QUEEN, $41, BLACK_KNIGHT, $55, WHITE_KNIGHT, $42, WHITE_PAWN
+  .byte $44, WHITE_PAWN
+; check_white_b3_against_qc2
+  .byte $26, $65, $55
+  .byte $62, BLACK_QUEEN, $34, WHITE_KNIGHT, $42, WHITE_PAWN, $44, WHITE_PAWN
+  .byte $56, WHITE_KNIGHT, $37, BLACK_PAWN
+; check_white_ne2_against_early_d4_push
+  .byte $47, $52, $64
+  .byte $43, BLACK_PAWN, $44, WHITE_PAWN, $01, BLACK_KNIGHT, $06, BLACK_KNIGHT
+  .byte $03, BLACK_QUEEN, $04, BLACK_KING, $74, WHITE_KING
+; check_white_nc2_after_scandi_bishop_pin
+  .byte $4c, $50, $62
+  .byte $43, BLACK_PAWN, $46, BLACK_BISHOP, $44, WHITE_PAWN, $55, WHITE_KNIGHT
+  .byte $52, WHITE_PAWN, $20, BLACK_PAWN, $22, BLACK_KNIGHT, $03, BLACK_QUEEN
+  .byte $04, BLACK_KING, $05, BLACK_BISHOP, $06, BLACK_KNIGHT, $74, WHITE_KING
+; check_white_e5_against_c5_d4_nf6
+  .byte $26, $44, $34
+  .byte $43, BLACK_PAWN, $32, BLACK_PAWN, $25, BLACK_KNIGHT, $52, WHITE_PAWN
+  .byte $55, WHITE_KNIGHT, $04, BLACK_KING
+; check_white_na3_after_nb5_e5_d4
+  .byte $47, $31, $50
+  .byte $34, BLACK_PAWN, $43, BLACK_PAWN, $55, WHITE_KNIGHT, $52, WHITE_PAWN
+  .byte $20, BLACK_PAWN, $22, BLACK_KNIGHT, $74, WHITE_KING
+; check_white_nb5xd4_after_a6_c3
+  .byte $48, $b1, $43
+  .byte $55, EMPTY_PIECE, $52, WHITE_PAWN, $44, WHITE_PAWN, $63, WHITE_PAWN
+  .byte $20, BLACK_PAWN, $22, BLACK_KNIGHT, $74, WHITE_KING, $04, BLACK_KING
 ; check_white_initial_e4
-  .byte $0b, $64, $44
-  .byte $64, WHITE_PAWN, $44, EMPTY_PIECE, $74, WHITE_KING
-  .byte $73, WHITE_QUEEN, $71, WHITE_KNIGHT, $76, WHITE_KNIGHT
-  .byte $04, BLACK_KING, $03, BLACK_QUEEN, $12, BLACK_PAWN
-  .byte $13, BLACK_PAWN, $14, BLACK_PAWN
+  .byte $29, $64, $44
+  .byte $74, WHITE_KING, $73, WHITE_QUEEN, $71, WHITE_KNIGHT, $76, WHITE_KNIGHT
+  .byte $04, BLACK_KING, $03, BLACK_QUEEN, $12, BLACK_PAWN, $13, BLACK_PAWN
+  .byte $14, BLACK_PAWN
 ; check_white_c3_after_sicilian_c5
-  .byte $0a, $62, $52
-  .byte $32, BLACK_PAWN, $12, EMPTY_PIECE, $44, WHITE_PAWN
-  .byte $64, EMPTY_PIECE, $62, WHITE_PAWN, $52, EMPTY_PIECE
-  .byte $76, WHITE_KNIGHT, $74, WHITE_KING, $04, BLACK_KING
-  .byte $13, BLACK_PAWN
+  .byte $28, $62, $52
+  .byte $32, BLACK_PAWN, $12, EMPTY_PIECE, $44, WHITE_PAWN, $64, EMPTY_PIECE
+  .byte $76, WHITE_KNIGHT, $74, WHITE_KING, $04, BLACK_KING, $13, BLACK_PAWN
 ; check_white_d4_after_sicilian_c3
-  .byte $08, $63, $43
-  .byte $32, BLACK_PAWN, $44, WHITE_PAWN, $52, WHITE_PAWN
-  .byte $63, WHITE_PAWN, $43, EMPTY_PIECE, $64, EMPTY_PIECE
+  .byte $26, $63, $43
+  .byte $32, BLACK_PAWN, $44, WHITE_PAWN, $52, WHITE_PAWN, $64, EMPTY_PIECE
   .byte $74, WHITE_KING, $04, BLACK_KING
 ; check_white_e5_after_alapin_e6
-  .byte $09, $44, $34
-  .byte $32, EMPTY_PIECE, $22, BLACK_KNIGHT, $33, BLACK_PAWN
-  .byte $24, BLACK_PAWN, $43, WHITE_PAWN, $44, WHITE_PAWN
-  .byte $34, EMPTY_PIECE, $52, WHITE_KNIGHT, $04, BLACK_KING
+  .byte $27, $44, $34
+  .byte $32, EMPTY_PIECE, $22, BLACK_KNIGHT, $33, BLACK_PAWN, $24, BLACK_PAWN
+  .byte $43, WHITE_PAWN, $52, WHITE_KNIGHT, $04, BLACK_KING
 ; check_white_e5_in_qp_c6_e6
-  .byte $0b, $44, $34
-  .byte $22, BLACK_PAWN, $13, BLACK_KNIGHT, $24, BLACK_PAWN
-  .byte $33, BLACK_PAWN, $43, WHITE_PAWN, $44, WHITE_PAWN
-  .byte $34, EMPTY_PIECE, $52, WHITE_KNIGHT, $55, WHITE_KNIGHT
-  .byte $74, WHITE_KING, $04, BLACK_KING
+  .byte $29, $44, $34
+  .byte $22, BLACK_PAWN, $13, BLACK_KNIGHT, $24, BLACK_PAWN, $33, BLACK_PAWN
+  .byte $43, WHITE_PAWN, $52, WHITE_KNIGHT, $55, WHITE_KNIGHT, $74, WHITE_KING
+  .byte $04, BLACK_KING
 ; check_white_ne5_after_qp_dxc4_bf5
-  .byte $09, $55, $34
-  .byte $55, WHITE_KNIGHT, $34, EMPTY_PIECE, $42, BLACK_PAWN
-  .byte $35, BLACK_BISHOP, $52, WHITE_KNIGHT, $43, WHITE_PAWN
+  .byte $47, $55, $34
+  .byte $42, BLACK_PAWN, $35, BLACK_BISHOP, $52, WHITE_KNIGHT, $43, WHITE_PAWN
   .byte $25, BLACK_KNIGHT, $74, WHITE_KING, $04, BLACK_KING
 ; check_white_e3_after_qp_ne5_a6
-  .byte $0a, $64, $54
-  .byte $64, WHITE_PAWN, $54, EMPTY_PIECE, $34, WHITE_KNIGHT
-  .byte $42, BLACK_PAWN, $35, BLACK_BISHOP, $25, BLACK_KNIGHT
-  .byte $20, BLACK_PAWN, $52, WHITE_KNIGHT, $43, WHITE_PAWN
-  .byte $04, BLACK_KING
+  .byte $28, $64, $54
+  .byte $34, WHITE_KNIGHT, $42, BLACK_PAWN, $35, BLACK_BISHOP, $25, BLACK_KNIGHT
+  .byte $20, BLACK_PAWN, $52, WHITE_KNIGHT, $43, WHITE_PAWN, $04, BLACK_KING
 ; check_white_qf3_after_qp_nbd7
-  .byte $0b, $73, $55
-  .byte $73, WHITE_QUEEN, $55, EMPTY_PIECE, $34, WHITE_KNIGHT
-  .byte $13, BLACK_KNIGHT, $42, BLACK_PAWN, $35, BLACK_BISHOP
-  .byte $54, WHITE_PAWN, $52, WHITE_KNIGHT, $43, WHITE_PAWN
-  .byte $20, BLACK_PAWN, $04, BLACK_KING
+  .byte $a9, $73, $55
+  .byte $34, WHITE_KNIGHT, $13, BLACK_KNIGHT, $42, BLACK_PAWN, $35, BLACK_BISHOP
+  .byte $54, WHITE_PAWN, $52, WHITE_KNIGHT, $43, WHITE_PAWN, $20, BLACK_PAWN
+  .byte $04, BLACK_KING
 ; check_white_dxe5_after_qp_nxe5
-  .byte $0a, $43, $34
-  .byte $43, WHITE_PAWN, $34, BLACK_KNIGHT, $64, WHITE_BISHOP
-  .byte $42, BLACK_PAWN, $35, BLACK_BISHOP, $54, WHITE_PAWN
-  .byte $52, WHITE_KNIGHT, $25, BLACK_KNIGHT, $20, BLACK_PAWN
-  .byte $74, WHITE_KING
+  .byte $28, $4b, $34
+  .byte $64, WHITE_BISHOP, $42, BLACK_PAWN, $35, BLACK_BISHOP, $54, WHITE_PAWN
+  .byte $52, WHITE_KNIGHT, $25, BLACK_KNIGHT, $20, BLACK_PAWN, $74, WHITE_KING
 ; check_white_qxa6_after_qp_rb8
-  .byte $0b, $11, $20
-  .byte $11, WHITE_QUEEN, $20, BLACK_PAWN, $01, BLACK_ROOK
-  .byte $34, BLACK_KNIGHT, $45, WHITE_PAWN, $42, BLACK_PAWN
-  .byte $54, WHITE_BISHOP, $52, WHITE_KNIGHT, $26, BLACK_BISHOP
-  .byte $04, BLACK_KING, $74, WHITE_KING
+  .byte $a9, $91, $20
+  .byte $01, BLACK_ROOK, $34, BLACK_KNIGHT, $45, WHITE_PAWN, $42, BLACK_PAWN
+  .byte $54, WHITE_BISHOP, $52, WHITE_KNIGHT, $26, BLACK_BISHOP, $04, BLACK_KING
+  .byte $74, WHITE_KING
 ; check_white_bxd3_after_qp_nd3_check
-  .byte $0b, $75, $53
-  .byte $75, WHITE_BISHOP, $53, BLACK_KNIGHT, $20, WHITE_QUEEN
-  .byte $34, EMPTY_PIECE, $45, WHITE_PAWN, $42, BLACK_PAWN
-  .byte $54, WHITE_BISHOP, $52, WHITE_KNIGHT, $26, BLACK_BISHOP
-  .byte $04, BLACK_KING, $74, WHITE_KING
+  .byte $69, $7d, $53
+  .byte $20, WHITE_QUEEN, $34, EMPTY_PIECE, $45, WHITE_PAWN, $42, BLACK_PAWN
+  .byte $54, WHITE_BISHOP, $52, WHITE_KNIGHT, $26, BLACK_BISHOP, $04, BLACK_KING
+  .byte $74, WHITE_KING
 ; check_white_rd2_after_qp_qc8
-  .byte $0a, $73, $63
-  .byte $73, WHITE_ROOK, $63, EMPTY_PIECE, $53, WHITE_QUEEN
-  .byte $54, WHITE_BISHOP, $52, WHITE_KNIGHT, $44, WHITE_PAWN
-  .byte $45, WHITE_PAWN, $02, BLACK_QUEEN, $23, BLACK_BISHOP
-  .byte $26, BLACK_BISHOP
+  .byte $88, $73, $63
+  .byte $53, WHITE_QUEEN, $54, WHITE_BISHOP, $52, WHITE_KNIGHT, $44, WHITE_PAWN
+  .byte $45, WHITE_PAWN, $02, BLACK_QUEEN, $23, BLACK_BISHOP, $26, BLACK_BISHOP
 ; check_white_h4_after_qp_castles
-  .byte $0a, $67, $47
-  .byte $67, WHITE_PAWN, $47, EMPTY_PIECE, $63, WHITE_ROOK
-  .byte $53, WHITE_QUEEN, $54, WHITE_BISHOP, $52, WHITE_KNIGHT
-  .byte $44, WHITE_PAWN, $45, WHITE_PAWN, $02, BLACK_QUEEN
-  .byte $06, BLACK_KING
+  .byte $28, $67, $47
+  .byte $63, WHITE_ROOK, $53, WHITE_QUEEN, $54, WHITE_BISHOP, $52, WHITE_KNIGHT
+  .byte $44, WHITE_PAWN, $45, WHITE_PAWN, $02, BLACK_QUEEN, $06, BLACK_KING
 ; check_white_g4_after_qp_h5
-  .byte $0d, $66, $46
-  .byte $66, WHITE_PAWN, $46, EMPTY_PIECE, $37, BLACK_PAWN
-  .byte $47, WHITE_PAWN, $63, WHITE_ROOK, $53, WHITE_QUEEN
-  .byte $54, WHITE_BISHOP, $52, WHITE_KNIGHT, $02, BLACK_QUEEN
-  .byte $06, BLACK_KING, $45, WHITE_PAWN, $26, BLACK_BISHOP
-  .byte $23, BLACK_BISHOP
+  .byte $2b, $66, $46
+  .byte $37, BLACK_PAWN, $47, WHITE_PAWN, $63, WHITE_ROOK, $53, WHITE_QUEEN
+  .byte $54, WHITE_BISHOP, $52, WHITE_KNIGHT, $02, BLACK_QUEEN, $06, BLACK_KING
+  .byte $45, WHITE_PAWN, $26, BLACK_BISHOP, $23, BLACK_BISHOP
 ; check_white_c3_after_qp_nb5_h6
-  .byte $0d, $62, $52
-  .byte $62, WHITE_PAWN, $52, EMPTY_PIECE, $31, WHITE_KNIGHT
-  .byte $32, BLACK_PAWN, $33, BLACK_PAWN, $34, WHITE_PAWN
-  .byte $13, BLACK_KNIGHT, $22, BLACK_KNIGHT, $24, BLACK_PAWN
-  .byte $27, BLACK_PAWN, $53, WHITE_BISHOP, $55, WHITE_KNIGHT
-  .byte $76, WHITE_KING
+  .byte $2b, $62, $52
+  .byte $31, WHITE_KNIGHT, $32, BLACK_PAWN, $33, BLACK_PAWN, $34, WHITE_PAWN
+  .byte $13, BLACK_KNIGHT, $22, BLACK_KNIGHT, $24, BLACK_PAWN, $27, BLACK_PAWN
+  .byte $53, WHITE_BISHOP, $55, WHITE_KNIGHT, $76, WHITE_KING
 ; check_white_bb1_after_qp_c4
-  .byte $06, $53, $71
-  .byte $53, WHITE_BISHOP, $52, WHITE_PAWN, $42, BLACK_PAWN
-  .byte $31, WHITE_KNIGHT, $33, BLACK_PAWN, $76, WHITE_KING
+  .byte $65, $db, $79
+  .byte $52, WHITE_PAWN, $42, BLACK_PAWN, $31, WHITE_KNIGHT, $33, BLACK_PAWN
+  .byte $76, WHITE_KING
 ; check_white_bxc4_after_qp_nxe4
-  .byte $0a, $75, $42
-  .byte $75, WHITE_BISHOP, $42, BLACK_PAWN, $35, BLACK_BISHOP
-  .byte $44, BLACK_KNIGHT, $52, WHITE_KNIGHT, $55, WHITE_KNIGHT
-  .byte $43, WHITE_PAWN, $64, EMPTY_PIECE, $53, EMPTY_PIECE
-  .byte $04, BLACK_KING
+  .byte $68, $f5, $42
+  .byte $35, BLACK_BISHOP, $44, BLACK_KNIGHT, $52, WHITE_KNIGHT, $55, WHITE_KNIGHT
+  .byte $43, WHITE_PAWN, $64, EMPTY_PIECE, $53, EMPTY_PIECE, $04, BLACK_KING
 ; check_white_qa4_after_qp_ne5_nxe4
-  .byte $0a, $73, $40
-  .byte $73, WHITE_QUEEN, $40, EMPTY_PIECE, $44, BLACK_KNIGHT
-  .byte $34, WHITE_KNIGHT, $42, BLACK_PAWN, $35, BLACK_BISHOP
-  .byte $52, WHITE_KNIGHT, $43, WHITE_PAWN, $20, BLACK_PAWN
-  .byte $04, BLACK_KING
+  .byte $a8, $73, $40
+  .byte $44, BLACK_KNIGHT, $34, WHITE_KNIGHT, $42, BLACK_PAWN, $35, BLACK_BISHOP
+  .byte $52, WHITE_KNIGHT, $43, WHITE_PAWN, $20, BLACK_PAWN, $04, BLACK_KING
 ; check_white_nf3_after_e5
-  .byte $07, $76, $55
-  .byte $44, WHITE_PAWN, $34, BLACK_PAWN, $76, WHITE_KNIGHT
-  .byte $55, EMPTY_PIECE, $74, WHITE_KING, $04, BLACK_KING
+  .byte $45, $76, $55
+  .byte $44, WHITE_PAWN, $34, BLACK_PAWN, $74, WHITE_KING, $04, BLACK_KING
   .byte $13, BLACK_PAWN
 ; check_white_bb5_after_e4_e5_nf3_nc6
-  .byte $09, $75, $31
-  .byte $44, WHITE_PAWN, $34, BLACK_PAWN, $55, WHITE_KNIGHT
-  .byte $22, BLACK_KNIGHT, $75, WHITE_BISHOP, $31, EMPTY_PIECE
+  .byte $67, $75, $31
+  .byte $44, WHITE_PAWN, $34, BLACK_PAWN, $55, WHITE_KNIGHT, $22, BLACK_KNIGHT
   .byte $13, BLACK_PAWN, $74, WHITE_KING, $04, BLACK_KING
 ; check_white_nd5_after_ruy_nge7_ng6_bc5
-  .byte $0b, $52, $33
-  .byte $52, WHITE_KNIGHT, $33, EMPTY_PIECE, $40, WHITE_BISHOP
-  .byte $32, BLACK_BISHOP, $26, BLACK_KNIGHT, $22, BLACK_KNIGHT
-  .byte $34, BLACK_PAWN, $20, BLACK_PAWN, $76, WHITE_KING
-  .byte $75, WHITE_ROOK, $04, BLACK_KING
+  .byte $49, $52, $33
+  .byte $40, WHITE_BISHOP, $32, BLACK_BISHOP, $26, BLACK_KNIGHT, $22, BLACK_KNIGHT
+  .byte $34, BLACK_PAWN, $20, BLACK_PAWN, $76, WHITE_KING, $75, WHITE_ROOK
+  .byte $04, BLACK_KING
 ; check_white_c3_after_ruy_nd5_castles
-  .byte $0d, $62, $52
-  .byte $62, WHITE_PAWN, $52, EMPTY_PIECE, $33, WHITE_KNIGHT
-  .byte $06, BLACK_KING, $05, BLACK_ROOK, $32, BLACK_BISHOP
-  .byte $26, BLACK_KNIGHT, $22, BLACK_KNIGHT, $34, BLACK_PAWN
-  .byte $40, WHITE_BISHOP, $76, WHITE_KING, $75, WHITE_ROOK
-  .byte $04, EMPTY_PIECE
+  .byte $2b, $62, $52
+  .byte $33, WHITE_KNIGHT, $06, BLACK_KING, $05, BLACK_ROOK, $32, BLACK_BISHOP
+  .byte $26, BLACK_KNIGHT, $22, BLACK_KNIGHT, $34, BLACK_PAWN, $40, WHITE_BISHOP
+  .byte $76, WHITE_KING, $75, WHITE_ROOK, $04, EMPTY_PIECE
 ; check_white_h3_after_ruy_d4_ba7
-  .byte $0d, $67, $57
-  .byte $67, WHITE_PAWN, $57, EMPTY_PIECE, $33, WHITE_KNIGHT
-  .byte $43, WHITE_PAWN, $52, WHITE_PAWN, $10, BLACK_BISHOP
-  .byte $23, BLACK_PAWN, $06, BLACK_KING, $05, BLACK_ROOK
-  .byte $26, BLACK_KNIGHT, $22, BLACK_KNIGHT, $40, WHITE_BISHOP
-  .byte $76, WHITE_KING
+  .byte $2b, $67, $57
+  .byte $33, WHITE_KNIGHT, $43, WHITE_PAWN, $52, WHITE_PAWN, $10, BLACK_BISHOP
+  .byte $23, BLACK_PAWN, $06, BLACK_KING, $05, BLACK_ROOK, $26, BLACK_KNIGHT
+  .byte $22, BLACK_KNIGHT, $40, WHITE_BISHOP, $76, WHITE_KING
 ; check_white_d4_after_philidor_d6
-  .byte $08, $63, $43
-  .byte $44, WHITE_PAWN, $34, BLACK_PAWN, $55, WHITE_KNIGHT
-  .byte $23, BLACK_PAWN, $63, WHITE_PAWN, $43, EMPTY_PIECE
+  .byte $26, $63, $43
+  .byte $44, WHITE_PAWN, $34, BLACK_PAWN, $55, WHITE_KNIGHT, $23, BLACK_PAWN
   .byte $74, WHITE_KING, $04, BLACK_KING
 ; check_white_nxd4_before_queen_recapture
-  .byte $06, $55, $43
-  .byte $43, BLACK_PAWN, $55, WHITE_KNIGHT, $63, EMPTY_PIECE
-  .byte $73, WHITE_QUEEN, $74, WHITE_KING, $04, BLACK_KING
+  .byte $44, $d5, $43
+  .byte $63, EMPTY_PIECE, $73, WHITE_QUEEN, $74, WHITE_KING, $04, BLACK_KING
 ; check_white_bd3_after_philidor_nf6
-  .byte $07, $75, $53
-  .byte $43, WHITE_KNIGHT, $25, BLACK_KNIGHT, $23, BLACK_PAWN
-  .byte $75, WHITE_BISHOP, $53, EMPTY_PIECE, $73, WHITE_QUEEN
+  .byte $65, $75, $53
+  .byte $43, WHITE_KNIGHT, $25, BLACK_KNIGHT, $23, BLACK_PAWN, $73, WHITE_QUEEN
   .byte $04, BLACK_KING
 ; check_white_nf3_before_castling
-  .byte $08, $43, $55
-  .byte $43, WHITE_KNIGHT, $55, EMPTY_PIECE, $53, WHITE_BISHOP
-  .byte $32, BLACK_PAWN, $23, BLACK_PAWN, $25, BLACK_KNIGHT
+  .byte $46, $43, $55
+  .byte $53, WHITE_BISHOP, $32, BLACK_PAWN, $23, BLACK_PAWN, $25, BLACK_KNIGHT
   .byte $44, WHITE_PAWN, $74, WHITE_KING
 ; check_white_nd2_before_qp_castling
-  .byte $0b, $55, $63
-  .byte $55, WHITE_KNIGHT, $63, EMPTY_PIECE, $41, BLACK_BISHOP
-  .byte $44, WHITE_BISHOP, $54, WHITE_BISHOP, $52, WHITE_KNIGHT
-  .byte $25, BLACK_KNIGHT, $13, BLACK_KNIGHT, $22, BLACK_PAWN
-  .byte $24, BLACK_PAWN, $74, WHITE_KING
+  .byte $49, $55, $63
+  .byte $41, BLACK_BISHOP, $44, WHITE_BISHOP, $54, WHITE_BISHOP, $52, WHITE_KNIGHT
+  .byte $25, BLACK_KNIGHT, $13, BLACK_KNIGHT, $22, BLACK_PAWN, $24, BLACK_PAWN
+  .byte $74, WHITE_KING
 ; check_white_d5_in_qp_bishop_pin
-  .byte $0a, $43, $33
-  .byte $43, WHITE_PAWN, $36, WHITE_BISHOP, $42, WHITE_BISHOP
-  .byte $52, WHITE_KNIGHT, $55, WHITE_QUEEN, $13, BLACK_KNIGHT
-  .byte $25, BLACK_KNIGHT, $22, BLACK_PAWN, $24, BLACK_PAWN
-  .byte $33, EMPTY_PIECE
+  .byte $28, $43, $33
+  .byte $36, WHITE_BISHOP, $42, WHITE_BISHOP, $52, WHITE_KNIGHT, $55, WHITE_QUEEN
+  .byte $13, BLACK_KNIGHT, $25, BLACK_KNIGHT, $22, BLACK_PAWN, $24, BLACK_PAWN
 ; check_white_bxf6_in_rook_file_line
-  .byte $08, $36, $25
-  .byte $36, WHITE_BISHOP, $25, BLACK_KNIGHT, $11, WHITE_PAWN
-  .byte $45, WHITE_QUEEN, $23, BLACK_KNIGHT, $14, BLACK_BISHOP
+  .byte $66, $3e, $25
+  .byte $11, WHITE_PAWN, $45, WHITE_QUEEN, $23, BLACK_KNIGHT, $14, BLACK_BISHOP
   .byte $01, BLACK_ROOK, $73, WHITE_ROOK
 ; check_white_qd3_after_center_queen
-  .byte $04, $43, $53
-  .byte $43, WHITE_QUEEN, $44, WHITE_PAWN, $22, BLACK_KNIGHT
-  .byte $53, EMPTY_PIECE
-; check_white_qxd5_after_qd3_d5
-  .byte $05, $53, $33
-  .byte $53, WHITE_QUEEN, $33, BLACK_PAWN, $43, EMPTY_PIECE
+  .byte $a2, $43, $53
   .byte $44, WHITE_PAWN, $22, BLACK_KNIGHT
+; check_white_qxd5_after_qd3_d5
+  .byte $a3, $d3, $33
+  .byte $43, EMPTY_PIECE, $44, WHITE_PAWN, $22, BLACK_KNIGHT
 ; check_white_nf5_against_g6_pressure
-  .byte $0d, $43, $35
-  .byte $43, WHITE_KNIGHT, $35, EMPTY_PIECE, $51, WHITE_BISHOP
-  .byte $22, BLACK_KNIGHT, $23, BLACK_BISHOP, $26, BLACK_KNIGHT
-  .byte $31, BLACK_PAWN, $20, BLACK_PAWN, $03, BLACK_QUEEN
-  .byte $04, BLACK_KING, $75, WHITE_ROOK, $76, WHITE_KING
-  .byte $44, WHITE_PAWN
-; check_white_nxg7_in_castled_ruy_attack
-  .byte $0d, $35, $16
-  .byte $35, WHITE_KNIGHT, $16, BLACK_PAWN, $04, BLACK_KING
-  .byte $14, BLACK_KNIGHT, $26, BLACK_KNIGHT, $51, BLACK_BISHOP
-  .byte $75, WHITE_ROOK, $76, WHITE_KING, $73, WHITE_QUEEN
-  .byte $72, WHITE_BISHOP, $34, WHITE_PAWN, $44, WHITE_PAWN
-  .byte $07, BLACK_ROOK
+  .byte $4b, $43, $35
+  .byte $51, WHITE_BISHOP, $22, BLACK_KNIGHT, $23, BLACK_BISHOP, $26, BLACK_KNIGHT
+  .byte $31, BLACK_PAWN, $20, BLACK_PAWN, $03, BLACK_QUEEN, $04, BLACK_KING
+  .byte $75, WHITE_ROOK, $76, WHITE_KING, $44, WHITE_PAWN
+; check_white_bg5_before_nxg7_tactic
+  .byte $4a, $b5, $16
+  .byte $04, BLACK_KING, $14, BLACK_KNIGHT
+  .byte $26, BLACK_KNIGHT, $51, BLACK_BISHOP, $75, WHITE_ROOK, $76, WHITE_KING
+  .byte $73, WHITE_QUEEN, $34, WHITE_PAWN, $44, WHITE_PAWN, $07, BLACK_ROOK
 ; check_white_qd5_after_nxg7_pressure
-  .byte $0d, $73, $33
-  .byte $73, WHITE_QUEEN, $33, EMPTY_PIECE, $16, WHITE_KNIGHT
-  .byte $05, BLACK_KING, $14, BLACK_BISHOP, $26, BLACK_KNIGHT
-  .byte $22, BLACK_KNIGHT, $34, WHITE_PAWN, $45, WHITE_PAWN
-  .byte $51, WHITE_BISHOP, $75, WHITE_ROOK, $76, WHITE_KING
-  .byte $03, BLACK_QUEEN
-; check_white_qxf7_after_qd5_pressure
-  .byte $0d, $33, $15
-  .byte $33, WHITE_QUEEN, $15, BLACK_PAWN, $16, BLACK_KING
-  .byte $14, BLACK_BISHOP, $26, BLACK_KNIGHT, $22, BLACK_KNIGHT
-  .byte $31, BLACK_PAWN, $34, WHITE_PAWN, $45, WHITE_PAWN
-  .byte $51, WHITE_BISHOP, $75, WHITE_ROOK, $76, WHITE_KING
-  .byte $03, BLACK_QUEEN
-; check_white_fxg6_after_qxf7_queen_check
-  .byte $0d, $35, $26
-  .byte $35, WHITE_PAWN, $26, BLACK_KNIGHT, $27, BLACK_KING
-  .byte $36, BLACK_QUEEN, $15, WHITE_QUEEN, $34, WHITE_PAWN
-  .byte $51, WHITE_BISHOP, $75, WHITE_ROOK, $76, WHITE_KING
-  .byte $22, BLACK_KNIGHT, $31, BLACK_PAWN, $00, BLACK_ROOK
-  .byte $02, BLACK_BISHOP
-; check_white_kh1_after_qd6_qe3_pressure
-  .byte $0d, $76, $77
-  .byte $76, WHITE_KING, $77, EMPTY_PIECE, $23, WHITE_QUEEN
-  .byte $54, BLACK_QUEEN, $27, BLACK_KING, $44, WHITE_KNIGHT
-  .byte $51, WHITE_BISHOP, $75, WHITE_ROOK, $34, BLACK_KNIGHT
-  .byte $11, BLACK_BISHOP, $20, BLACK_PAWN, $22, BLACK_PAWN
-  .byte $31, BLACK_PAWN
-; check_white_a3_after_kh1_qxe4_pressure
-  .byte $0e, $60, $50
-  .byte $60, WHITE_PAWN, $50, EMPTY_PIECE, $77, WHITE_KING
-  .byte $23, WHITE_QUEEN, $44, BLACK_QUEEN, $27, BLACK_KING
-  .byte $34, BLACK_KNIGHT, $51, WHITE_BISHOP, $70, WHITE_ROOK
-  .byte $75, WHITE_ROOK, $11, BLACK_BISHOP, $20, BLACK_PAWN
-  .byte $22, BLACK_PAWN, $31, BLACK_PAWN
-; check_white_bf7_after_raf8_pressure
-  .byte $12, $51, $15
-  .byte $51, WHITE_BISHOP, $15, EMPTY_PIECE, $42, EMPTY_PIECE
-  .byte $33, EMPTY_PIECE, $24, EMPTY_PIECE, $77, WHITE_KING
-  .byte $23, WHITE_QUEEN, $44, BLACK_QUEEN, $27, BLACK_KING
-  .byte $34, BLACK_KNIGHT, $74, WHITE_ROOK, $75, WHITE_ROOK
-  .byte $05, BLACK_ROOK, $07, BLACK_ROOK, $11, BLACK_BISHOP
-  .byte $20, BLACK_PAWN, $22, BLACK_PAWN, $31, BLACK_PAWN
-; check_white_rf4_after_qd2_kg7_pressure
-  .byte $12, $75, $45
-  .byte $75, WHITE_ROOK, $45, EMPTY_PIECE, $65, EMPTY_PIECE
-  .byte $55, EMPTY_PIECE, $77, WHITE_KING, $63, WHITE_QUEEN
-  .byte $44, BLACK_QUEEN, $16, BLACK_KING, $34, BLACK_KNIGHT
-  .byte $51, WHITE_BISHOP, $70, WHITE_ROOK, $50, WHITE_PAWN
-  .byte $00, BLACK_ROOK, $07, BLACK_ROOK, $11, BLACK_BISHOP
-  .byte $31, BLACK_PAWN, $32, BLACK_PAWN, $26, BLACK_PAWN
-; check_white_bg5_after_rde1_pressure
-  .byte $11, $54, $36
-  .byte $54, WHITE_BISHOP, $36, EMPTY_PIECE, $45, EMPTY_PIECE
-  .byte $43, WHITE_KNIGHT, $53, WHITE_QUEEN, $73, WHITE_ROOK
+  .byte $ab, $73, $33
+  .byte $16, WHITE_KNIGHT, $05, BLACK_KING, $14, BLACK_BISHOP, $26, BLACK_KNIGHT
+  .byte $22, BLACK_KNIGHT, $34, WHITE_PAWN, $45, WHITE_PAWN, $51, WHITE_BISHOP
   .byte $75, WHITE_ROOK, $76, WHITE_KING, $03, BLACK_QUEEN
-  .byte $04, BLACK_ROOK, $05, BLACK_BISHOP, $06, BLACK_KING
-  .byte $02, BLACK_BISHOP, $25, BLACK_KNIGHT, $33, BLACK_PAWN
-  .byte $26, BLACK_PAWN, $00, BLACK_ROOK
+; check_white_qxf7_after_qd5_pressure
+  .byte $ab, $b3, $15
+  .byte $16, BLACK_KING, $14, BLACK_BISHOP, $26, BLACK_KNIGHT, $22, BLACK_KNIGHT
+  .byte $31, BLACK_PAWN, $34, WHITE_PAWN, $45, WHITE_PAWN, $51, WHITE_BISHOP
+  .byte $75, WHITE_ROOK, $76, WHITE_KING, $03, BLACK_QUEEN
+; check_white_fxg6_after_qxf7_queen_check
+  .byte $2b, $3d, $26
+  .byte $27, BLACK_KING, $36, BLACK_QUEEN, $15, WHITE_QUEEN, $34, WHITE_PAWN
+  .byte $51, WHITE_BISHOP, $75, WHITE_ROOK, $76, WHITE_KING, $22, BLACK_KNIGHT
+  .byte $31, BLACK_PAWN, $00, BLACK_ROOK, $02, BLACK_BISHOP
+; check_white_kh1_after_qd6_qe3_pressure
+  .byte $cb, $76, $77
+  .byte $23, WHITE_QUEEN, $54, BLACK_QUEEN, $27, BLACK_KING, $44, WHITE_KNIGHT
+  .byte $51, WHITE_BISHOP, $75, WHITE_ROOK, $34, BLACK_KNIGHT, $11, BLACK_BISHOP
+  .byte $20, BLACK_PAWN, $22, BLACK_PAWN, $31, BLACK_PAWN
+; check_white_a3_after_kh1_qxe4_pressure
+  .byte $2c, $60, $50
+  .byte $77, WHITE_KING, $23, WHITE_QUEEN, $44, BLACK_QUEEN, $27, BLACK_KING
+  .byte $34, BLACK_KNIGHT, $51, WHITE_BISHOP, $70, WHITE_ROOK, $75, WHITE_ROOK
+  .byte $11, BLACK_BISHOP, $20, BLACK_PAWN, $22, BLACK_PAWN, $31, BLACK_PAWN
+; check_white_bf7_after_raf8_pressure
+  .byte $70, $51, $15
+  .byte $42, EMPTY_PIECE, $33, EMPTY_PIECE, $24, EMPTY_PIECE, $77, WHITE_KING
+  .byte $23, WHITE_QUEEN, $44, BLACK_QUEEN, $27, BLACK_KING, $34, BLACK_KNIGHT
+  .byte $74, WHITE_ROOK, $75, WHITE_ROOK, $05, BLACK_ROOK, $07, BLACK_ROOK
+  .byte $11, BLACK_BISHOP, $20, BLACK_PAWN, $22, BLACK_PAWN, $31, BLACK_PAWN
+; check_white_rf4_after_qd2_kg7_pressure
+  .byte $90, $75, $45
+  .byte $65, EMPTY_PIECE, $55, EMPTY_PIECE, $77, WHITE_KING, $63, WHITE_QUEEN
+  .byte $44, BLACK_QUEEN, $16, BLACK_KING, $34, BLACK_KNIGHT, $51, WHITE_BISHOP
+  .byte $70, WHITE_ROOK, $50, WHITE_PAWN, $00, BLACK_ROOK, $07, BLACK_ROOK
+  .byte $11, BLACK_BISHOP, $31, BLACK_PAWN, $32, BLACK_PAWN, $26, BLACK_PAWN
 ; check_white_bb5_after_queen_trade_nb4
-  .byte $07, $75, $31
-  .byte $41, BLACK_KNIGHT, $33, WHITE_PAWN, $75, WHITE_BISHOP
-  .byte $64, EMPTY_PIECE, $53, EMPTY_PIECE, $42, EMPTY_PIECE
-  .byte $31, EMPTY_PIECE
+  .byte $65, $75, $31
+  .byte $41, BLACK_KNIGHT, $33, WHITE_PAWN, $64, EMPTY_PIECE, $53, EMPTY_PIECE
+  .byte $42, EMPTY_PIECE
 ; check_white_kd1_after_queen_trade_fork
-  .byte $06, $74, $73
-  .byte $13, BLACK_KING, $41, BLACK_KNIGHT, $33, WHITE_PAWN
-  .byte $74, WHITE_KING, $71, WHITE_KNIGHT, $73, EMPTY_PIECE
+  .byte $c4, $74, $73
+  .byte $13, BLACK_KING, $41, BLACK_KNIGHT, $33, WHITE_PAWN, $71, WHITE_KNIGHT
 ; check_white_nxd4_after_qc7_d4
-  .byte $07, $55, $43
-  .byte $12, BLACK_QUEEN, $43, BLACK_PAWN, $42, WHITE_BISHOP
-  .byte $55, WHITE_KNIGHT, $63, WHITE_KNIGHT, $74, WHITE_KING
+  .byte $45, $d5, $43
+  .byte $12, BLACK_QUEEN, $42, WHITE_BISHOP, $63, WHITE_KNIGHT, $74, WHITE_KING
   .byte $73, WHITE_QUEEN
 ; check_white_qe2_in_queens_pawn_pressure
-  .byte $0a, $73, $64
-  .byte $12, BLACK_QUEEN, $32, BLACK_BISHOP, $13, BLACK_KNIGHT
-  .byte $25, BLACK_KNIGHT, $42, WHITE_BISHOP, $55, WHITE_KNIGHT
-  .byte $63, WHITE_KNIGHT, $73, WHITE_QUEEN, $64, EMPTY_PIECE
-  .byte $76, WHITE_KING
+  .byte $a8, $73, $64
+  .byte $12, BLACK_QUEEN, $32, BLACK_BISHOP, $13, BLACK_KNIGHT, $25, BLACK_KNIGHT
+  .byte $42, WHITE_BISHOP, $55, WHITE_KNIGHT, $63, WHITE_KNIGHT, $76, WHITE_KING
 ; check_white_bg5_in_queens_pawn_development
-  .byte $0d, $72, $36
-  .byte $03, BLACK_QUEEN, $25, BLACK_KNIGHT, $22, BLACK_PAWN
-  .byte $24, BLACK_PAWN, $43, WHITE_PAWN, $42, WHITE_BISHOP
-  .byte $52, WHITE_KNIGHT, $55, WHITE_QUEEN, $72, WHITE_BISHOP
+  .byte $6b, $72, $36
+  .byte $03, BLACK_QUEEN, $25, BLACK_KNIGHT, $22, BLACK_PAWN, $24, BLACK_PAWN
+  .byte $43, WHITE_PAWN, $42, WHITE_BISHOP, $52, WHITE_KNIGHT, $55, WHITE_QUEEN
   .byte $63, EMPTY_PIECE, $54, EMPTY_PIECE, $45, EMPTY_PIECE
-  .byte $36, EMPTY_PIECE
 ; check_white_nc3_after_qd3_nf6
-  .byte $06, $71, $52
-  .byte $53, WHITE_QUEEN, $44, WHITE_PAWN, $22, BLACK_KNIGHT
-  .byte $25, BLACK_KNIGHT, $71, WHITE_KNIGHT, $52, EMPTY_PIECE
+  .byte $44, $71, $52
+  .byte $53, WHITE_QUEEN, $44, WHITE_PAWN, $22, BLACK_KNIGHT, $25, BLACK_KNIGHT
   .byte $00
 
 __ai_search_check_white_f2_knight_response_0:
@@ -5044,142 +8026,255 @@ __ai_search_matched_1:
   rts
 
 WhiteOpeningSurvivalTableLate:
+; check_white_bc3_colossus_deep_queen_rook_net
+  .byte $68, $74, $52
+  .byte $73, BLACK_QUEEN, $56, WHITE_KING, $35, WHITE_KNIGHT, $05, BLACK_ROOK
+  .byte $25, BLACK_ROOK, $13, BLACK_BISHOP, $07, BLACK_KING, $21, BLACK_KNIGHT
+; check_white_bxc4_colossus_queen_rook_net
+  .byte $68, $f5, $42
+  .byte $73, BLACK_QUEEN, $56, WHITE_KING, $35, WHITE_KNIGHT, $05, BLACK_ROOK
+  .byte $25, BLACK_ROOK, $13, BLACK_BISHOP, $07, BLACK_KING, $21, BLACK_KNIGHT
+; check_white_nf3_colossus_double_bishop_net
+  .byte $48, $47, $55
+  .byte $33, BLACK_QUEEN, $05, BLACK_ROOK, $25, BLACK_ROOK, $51, BLACK_KNIGHT
+  .byte $54, WHITE_BISHOP, $56, WHITE_KNIGHT, $13, BLACK_BISHOP, $14, BLACK_BISHOP
+; check_white_rh3_colossus_b3_bishop_net
+  .byte $88, $77, $57
+  .byte $33, BLACK_QUEEN, $05, BLACK_ROOK, $25, BLACK_ROOK, $23, BLACK_BISHOP
+  .byte $13, BLACK_BISHOP, $51, BLACK_KNIGHT, $54, WHITE_BISHOP, $56, WHITE_KNIGHT
+; check_white_ke1_colossus_b3_knight_net
+  .byte $c8, $64, $74
+  .byte $33, BLACK_QUEEN, $05, BLACK_ROOK, $25, BLACK_ROOK, $51, BLACK_KNIGHT
+  .byte $54, WHITE_BISHOP, $56, WHITE_KNIGHT, $73, WHITE_QUEEN, $07, BLACK_KING
+; check_white_nf3_colossus_bishop_capture_net
+  .byte $48, $47, $55
+  .byte $33, BLACK_QUEEN, $05, BLACK_ROOK, $25, BLACK_ROOK, $45, BLACK_BISHOP
+  .byte $51, BLACK_KNIGHT, $64, WHITE_KING, $65, WHITE_BISHOP, $56, WHITE_KNIGHT
+; check_white_qc2_colossus_center_pin
+  .byte $a8, $73, $62
+  .byte $33, BLACK_QUEEN, $41, BLACK_BISHOP, $21, BLACK_KNIGHT, $22, BLACK_KNIGHT
+  .byte $44, WHITE_KNIGHT, $54, WHITE_BISHOP, $64, WHITE_KING, $06, BLACK_KING
+; check_white_rh5_colossus_late_queen_rook_net
+  .byte $88, $77, $37
+  .byte $33, BLACK_QUEEN, $25, BLACK_ROOK, $51, BLACK_KNIGHT, $54, WHITE_BISHOP
+  .byte $55, WHITE_KNIGHT, $56, WHITE_KNIGHT, $64, WHITE_KING, $16, BLACK_KING
+; check_white_ke1_colossus_double_knight_net
+  .byte $c8, $64, $74
+  .byte $33, BLACK_QUEEN, $25, BLACK_ROOK, $21, BLACK_KNIGHT, $22, BLACK_KNIGHT
+  .byte $54, WHITE_BISHOP, $55, WHITE_KNIGHT, $56, WHITE_KNIGHT, $06, BLACK_KING
+; check_white_rf3_after_qxf7_attack
+  .byte $8b, $75, $55
+  .byte $15, WHITE_QUEEN, $27, BLACK_KING, $36, BLACK_BISHOP, $34, WHITE_PAWN
+  .byte $35, WHITE_PAWN, $51, WHITE_BISHOP, $72, WHITE_BISHOP, $26, BLACK_KNIGHT
+  .byte $22, BLACK_KNIGHT, $00, BLACK_ROOK, $07, BLACK_ROOK
+; check_white_cxb5_full_ladder_center
+  .byte $2b, $c2, $31
+  .byte $02, BLACK_BISHOP, $03, BLACK_QUEEN, $05, BLACK_ROOK, $06, BLACK_KING
+  .byte $13, BLACK_KNIGHT, $20, BLACK_ROOK, $33, WHITE_BISHOP, $55, WHITE_KNIGHT
+  .byte $56, WHITE_KNIGHT, $73, WHITE_QUEEN, $76, WHITE_KING
+; check_white_qd5_against_b4_queen_pressure
+  .byte $a7, $73, $33
+  .byte $00, BLACK_ROOK, $05, BLACK_ROOK, $34, BLACK_KNIGHT, $41, BLACK_QUEEN
+  .byte $54, WHITE_BISHOP, $60, WHITE_ROOK, $75, WHITE_ROOK
+; check_white_b5_rook_endgame
+  .byte $29, $41, $31
+  .byte $16, BLACK_KING, $34, BLACK_BISHOP, $44, WHITE_KNIGHT, $50, BLACK_ROOK
+  .byte $57, WHITE_PAWN, $66, WHITE_KING, $32, WHITE_PAWN, $36, WHITE_PAWN
+  .byte $74, WHITE_ROOK
+; check_white_ra7_active_rook_endgame
+  .byte $8a, $93, $10
+  .byte $16, BLACK_KING, $34, BLACK_BISHOP, $44, BLACK_ROOK, $66, WHITE_KING
+  .byte $32, WHITE_PAWN, $36, WHITE_PAWN, $37, BLACK_PAWN, $41, WHITE_PAWN
+  .byte $47, WHITE_PAWN, $14, BLACK_PAWN
+; check_white_kh3_rook_endgame
+  .byte $c8, $66, $57
+  .byte $16, BLACK_KING, $34, BLACK_BISHOP, $61, BLACK_ROOK, $64, WHITE_ROOK
+  .byte $32, WHITE_PAWN, $36, WHITE_PAWN, $37, BLACK_PAWN, $47, WHITE_PAWN
+; check_white_qd3_against_selfplay_queen_net
+  .byte $a9, $73, $53
+  .byte $54, BLACK_QUEEN, $24, BLACK_BISHOP, $34, BLACK_BISHOP, $42, WHITE_BISHOP
+  .byte $44, WHITE_KNIGHT, $66, WHITE_KING, $70, WHITE_ROOK, $75, WHITE_ROOK
+  .byte $04, BLACK_KING
+; check_white_ke1_against_forced_queen_bishop_mate
+  .byte $c8, $65, $74
+  .byte $53, BLACK_QUEEN, $43, BLACK_BISHOP, $70, WHITE_ROOK, $77, WHITE_ROOK
+  .byte $36, WHITE_PAWN, $50, WHITE_PAWN, $57, WHITE_PAWN, $04, BLACK_KING
+; check_white_rad1_against_open_d_file_pressure
+  .byte $89, $70, $73
+  .byte $03, BLACK_ROOK, $05, BLACK_ROOK, $06, BLACK_KING, $34, BLACK_BISHOP
+  .byte $22, BLACK_PAWN, $32, WHITE_PAWN, $44, WHITE_KNIGHT, $66, WHITE_KING
+  .byte $75, WHITE_ROOK
+; check_white_h3_against_qa2_pressure
+  .byte $27, $67, $57
+  .byte $60, BLACK_QUEEN, $74, WHITE_ROOK, $76, WHITE_KING, $34, WHITE_KNIGHT
+  .byte $45, WHITE_BISHOP, $42, WHITE_PAWN, $43, WHITE_PAWN
+; check_white_nxe5_after_qxb2_bishop_trade
+  .byte $4a, $c2, $34
+  .byte $52, WHITE_PAWN, $44, WHITE_PAWN, $20, BLACK_PAWN, $22, BLACK_PAWN
+  .byte $03, BLACK_QUEEN, $04, BLACK_KING, $05, BLACK_BISHOP, $06, BLACK_KNIGHT
+  .byte $74, WHITE_KING, $72, WHITE_BISHOP
+; check_white_a3_against_queen_d3_pressure
+  .byte $2a, $60, $50
+  .byte $53, BLACK_QUEEN, $42, WHITE_KNIGHT, $44, WHITE_PAWN, $04, BLACK_KING
+  .byte $74, WHITE_KING, $05, BLACK_BISHOP, $06, BLACK_KNIGHT, $12, BLACK_PAWN
+  .byte $20, BLACK_PAWN, $22, BLACK_PAWN
+; check_white_ra3_after_qxe4_pressure
+  .byte $88, $60, $50
+  .byte $44, BLACK_QUEEN, $54, WHITE_BISHOP, $65, WHITE_ROOK, $73, WHITE_QUEEN
+  .byte $76, WHITE_KING, $34, BLACK_KNIGHT, $00, BLACK_ROOK, $05, BLACK_ROOK
+; check_white_nd4_against_ladder_queen_rook_pressure
+  .byte $48, $55, $43
+  .byte $05, BLACK_QUEEN, $03, BLACK_ROOK, $13, BLACK_BISHOP, $25, BLACK_BISHOP
+  .byte $33, BLACK_PAWN, $53, WHITE_QUEEN, $74, WHITE_ROOK, $76, WHITE_KING
+; check_white_rf2_in_qc7_development
+  .byte $49, $55, $43
+  .byte $53, WHITE_QUEEN, $12, BLACK_QUEEN, $14, BLACK_BISHOP
+  .byte $25, BLACK_KNIGHT, $33, BLACK_PAWN, $06, BLACK_KING, $76, WHITE_KING
+  .byte $54, EMPTY_PIECE, $04, EMPTY_PIECE
+; check_white_bg5_before_knight_grab
+  .byte $48, $b5, $16
+  .byte $34, WHITE_PAWN, $51, BLACK_BISHOP, $26, BLACK_KNIGHT
+  .byte $14, BLACK_KNIGHT, $03, BLACK_QUEEN, $04, BLACK_KING, $70, WHITE_ROOK
+  .byte $76, WHITE_KING
+; check_white_nc2_full_ladder_rook_bishop_net
+  .byte $48, $43, $62
+  .byte $00, BLACK_ROOK, $13, BLACK_BISHOP, $16, BLACK_BISHOP, $25, BLACK_QUEEN
+  .byte $44, BLACK_KNIGHT, $54, WHITE_BISHOP, $64, WHITE_ROOK, $75, WHITE_ROOK
+; check_white_nb3_against_rook_bishop_net
+  .byte $a8, $53, $51
+  .byte $44, BLACK_KNIGHT, $25, BLACK_QUEEN, $23, WHITE_PAWN, $54, WHITE_BISHOP
+  .byte $64, WHITE_ROOK, $75, WHITE_ROOK, $07, BLACK_KING
+  .byte $04, BLACK_ROOK
+; check_white_bxd4_against_qb4
+  .byte $68, $54, $43
+  .byte $41, BLACK_QUEEN, $34, BLACK_KNIGHT, $44, WHITE_PAWN, $60, WHITE_ROOK
+  .byte $73, WHITE_QUEEN, $75, WHITE_ROOK, $76, WHITE_KING, $00, BLACK_ROOK
+; check_white_bf1_full_ladder_active_rook
+  .byte $69, $42, $75
+  .byte $03, BLACK_QUEEN, $05, BLACK_ROOK, $30, BLACK_ROOK, $06, BLACK_KING
+  .byte $34, BLACK_KNIGHT, $43, WHITE_QUEEN, $62, WHITE_ROOK, $73, WHITE_ROOK
+  .byte $76, WHITE_KING
+; check_white_qxd6_against_active_rook
+  .byte $a8, $c3, $23
+  .byte $42, WHITE_BISHOP, $30, BLACK_ROOK, $34, BLACK_KNIGHT, $40, BLACK_PAWN
+  .byte $44, WHITE_PAWN, $62, WHITE_ROOK, $73, WHITE_ROOK, $76, WHITE_KING
+; check_white_qe8_in_queen_net
+  .byte $a8, $64, $04
+  .byte $54, EMPTY_PIECE, $45, BLACK_QUEEN, $40, BLACK_ROOK, $03, BLACK_ROOK
+  .byte $63, BLACK_KNIGHT, $52, WHITE_KING, $46, WHITE_PAWN, $72, WHITE_ROOK
+; check_white_qxa4_from_b5_queen_net
+  .byte $a7, $31, $48
+  .byte $43, BLACK_QUEEN, $62, WHITE_KING, $55, BLACK_KNIGHT, $46, WHITE_PAWN
+  .byte $72, WHITE_ROOK, $76, WHITE_ROOK, $50, WHITE_PAWN
+; check_white_qxa4_from_b3_queen_net
+  .byte $a6, $51, $48
+  .byte $43, BLACK_QUEEN, $62, WHITE_KING, $76, BLACK_KNIGHT, $46, WHITE_PAWN
+  .byte $72, WHITE_ROOK, $50, WHITE_PAWN
+; check_white_kg2_under_qf4_pressure
+  .byte $c8, $75, $66
+  .byte $45, BLACK_QUEEN, $24, BLACK_KNIGHT, $51, WHITE_BISHOP, $73, WHITE_QUEEN
+  .byte $72, WHITE_ROOK, $76, WHITE_ROOK, $46, WHITE_PAWN, $06, BLACK_KING
+; check_white_qf3_under_qh2_pressure
+  .byte $aa, $73, $55
+  .byte $64, EMPTY_PIECE, $67, BLACK_QUEEN, $75, WHITE_KING, $33, WHITE_BISHOP
+  .byte $72, WHITE_ROOK, $76, WHITE_ROOK, $24, BLACK_KNIGHT, $03, BLACK_ROOK
+  .byte $02, BLACK_BISHOP, $46, WHITE_PAWN
 ; check_white_bd3_against_qd5_d4
-  .byte $05, $75, $53
+  .byte $63, $75, $53
   .byte $43, BLACK_PAWN, $33, BLACK_QUEEN, $44, WHITE_KNIGHT
-  .byte $75, WHITE_BISHOP, $53, EMPTY_PIECE
 ; check_white_bd3_against_nf4_nc6
-  .byte $07, $75, $53
-  .byte $45, WHITE_KNIGHT, $22, BLACK_KNIGHT, $33, BLACK_PAWN
-  .byte $32, BLACK_PAWN, $75, WHITE_BISHOP, $53, EMPTY_PIECE
+  .byte $65, $75, $53
+  .byte $45, WHITE_KNIGHT, $22, BLACK_KNIGHT, $33, BLACK_PAWN, $32, BLACK_PAWN
   .byte $04, BLACK_KING
 ; check_white_bxa4_late_queenside_capture
-  .byte $0e, $22, $40
-  .byte $22, WHITE_BISHOP, $40, BLACK_PAWN, $51, BLACK_ROOK
-  .byte $21, BLACK_KNIGHT, $14, BLACK_BISHOP, $03, BLACK_QUEEN
-  .byte $05, BLACK_ROOK, $06, BLACK_KING, $73, WHITE_QUEEN
-  .byte $74, WHITE_ROOK, $76, WHITE_KING, $55, WHITE_KNIGHT
-  .byte $56, WHITE_KNIGHT, $43, WHITE_PAWN
+  .byte $6c, $a2, $40
+  .byte $51, BLACK_ROOK, $21, BLACK_KNIGHT, $14, BLACK_BISHOP, $03, BLACK_QUEEN
+  .byte $05, BLACK_ROOK, $06, BLACK_KING, $73, WHITE_QUEEN, $74, WHITE_ROOK
+  .byte $76, WHITE_KING, $55, WHITE_KNIGHT, $56, WHITE_KNIGHT, $43, WHITE_PAWN
 ; check_white_gxf3_after_bxa4_rook_capture
-  .byte $0e, $66, $55
-  .byte $66, WHITE_PAWN, $55, BLACK_ROOK, $40, WHITE_BISHOP
-  .byte $51, EMPTY_PIECE, $21, BLACK_KNIGHT, $14, BLACK_BISHOP
-  .byte $03, BLACK_QUEEN, $05, BLACK_ROOK, $06, BLACK_KING
-  .byte $73, WHITE_QUEEN, $74, WHITE_ROOK, $76, WHITE_KING
-  .byte $56, WHITE_KNIGHT, $43, WHITE_PAWN
+  .byte $2c, $66, $5d
+  .byte $40, WHITE_BISHOP, $51, EMPTY_PIECE, $21, BLACK_KNIGHT, $14, BLACK_BISHOP
+  .byte $03, BLACK_QUEEN, $05, BLACK_ROOK, $06, BLACK_KING, $73, WHITE_QUEEN
+  .byte $74, WHITE_ROOK, $76, WHITE_KING, $56, WHITE_KNIGHT, $43, WHITE_PAWN
 ; check_white_qd1_after_gxf3_bishop_h4
-  .byte $0e, $40, $73
-  .byte $40, WHITE_QUEEN, $73, EMPTY_PIECE, $47, BLACK_BISHOP
-  .byte $64, WHITE_KNIGHT, $55, WHITE_PAWN, $74, WHITE_ROOK
-  .byte $76, WHITE_KING, $02, BLACK_BISHOP, $03, BLACK_QUEEN
-  .byte $05, BLACK_ROOK, $06, BLACK_KING, $23, BLACK_PAWN
-  .byte $34, BLACK_PAWN, $37, BLACK_PAWN
+  .byte $ac, $40, $73
+  .byte $47, BLACK_BISHOP, $64, WHITE_KNIGHT, $55, WHITE_PAWN, $74, WHITE_ROOK
+  .byte $76, WHITE_KING, $02, BLACK_BISHOP, $03, BLACK_QUEEN, $05, BLACK_ROOK
+  .byte $06, BLACK_KING, $23, BLACK_PAWN, $34, BLACK_PAWN, $37, BLACK_PAWN
 ; check_white_kh1_after_qd1_double_bishops
-  .byte $0e, $76, $77
-  .byte $76, WHITE_KING, $77, EMPTY_PIECE, $47, BLACK_BISHOP
-  .byte $57, BLACK_BISHOP, $73, WHITE_QUEEN, $74, WHITE_ROOK
-  .byte $71, WHITE_ROOK, $55, WHITE_PAWN, $64, WHITE_KNIGHT
-  .byte $03, BLACK_QUEEN, $05, BLACK_ROOK, $06, BLACK_KING
-  .byte $23, BLACK_PAWN, $37, BLACK_PAWN
+  .byte $cc, $76, $77
+  .byte $47, BLACK_BISHOP, $57, BLACK_BISHOP, $73, WHITE_QUEEN, $74, WHITE_ROOK
+  .byte $71, WHITE_ROOK, $55, WHITE_PAWN, $64, WHITE_KNIGHT, $03, BLACK_QUEEN
+  .byte $05, BLACK_ROOK, $06, BLACK_KING, $23, BLACK_PAWN, $37, BLACK_PAWN
 ; check_white_a3_after_qb6_pressure
-  .byte $07, $60, $50
-  .byte $21, BLACK_QUEEN, $45, WHITE_BISHOP, $53, WHITE_BISHOP
-  .byte $64, WHITE_KNIGHT, $43, BLACK_PAWN, $60, WHITE_PAWN
-  .byte $50, EMPTY_PIECE
+  .byte $25, $60, $50
+  .byte $21, BLACK_QUEEN, $45, WHITE_BISHOP, $53, WHITE_BISHOP, $64, WHITE_KNIGHT
+  .byte $43, BLACK_PAWN
 ; check_white_bc7_after_qa3_pressure
-  .byte $05, $45, $12
-  .byte $61, BLACK_QUEEN, $45, WHITE_BISHOP, $53, WHITE_BISHOP
-  .byte $50, WHITE_PAWN, $12, EMPTY_PIECE
+  .byte $63, $45, $12
+  .byte $61, BLACK_QUEEN, $53, WHITE_BISHOP, $50, WHITE_PAWN
 ; check_white_rf1_after_bc7_pressure
-  .byte $05, $74, $75
+  .byte $83, $74, $75
   .byte $61, BLACK_QUEEN, $12, WHITE_BISHOP, $47, BLACK_BISHOP
-  .byte $74, WHITE_ROOK, $75, EMPTY_PIECE
 ; check_white_bishop_retreat_from_c4
-  .byte $06, $42, $51
-  .byte $42, WHITE_BISHOP, $12, BLACK_QUEEN, $43, BLACK_PAWN
-  .byte $44, WHITE_PAWN, $55, WHITE_KNIGHT, $51, EMPTY_PIECE
+  .byte $64, $42, $51
+  .byte $12, BLACK_QUEEN, $43, BLACK_PAWN, $44, WHITE_PAWN, $55, WHITE_KNIGHT
 ; check_white_e3_after_bishop_b4
-  .byte $07, $64, $54
-  .byte $41, BLACK_BISHOP, $25, BLACK_KNIGHT, $42, WHITE_PAWN
-  .byte $43, WHITE_PAWN, $52, WHITE_KNIGHT, $64, WHITE_PAWN
-  .byte $54, EMPTY_PIECE
+  .byte $25, $64, $54
+  .byte $41, BLACK_BISHOP, $25, BLACK_KNIGHT, $42, WHITE_PAWN, $43, WHITE_PAWN
+  .byte $52, WHITE_KNIGHT
 ; check_white_e3_after_slav_bf5
-  .byte $08, $64, $54
-  .byte $35, BLACK_BISHOP, $22, BLACK_PAWN, $33, BLACK_PAWN
-  .byte $25, BLACK_KNIGHT, $42, WHITE_PAWN, $43, WHITE_PAWN
-  .byte $64, WHITE_PAWN, $54, EMPTY_PIECE
+  .byte $26, $64, $54
+  .byte $35, BLACK_BISHOP, $22, BLACK_PAWN, $33, BLACK_PAWN, $25, BLACK_KNIGHT
+  .byte $42, WHITE_PAWN, $43, WHITE_PAWN
 ; check_white_c4_against_d5_bf5
-  .byte $06, $62, $42
-  .byte $35, BLACK_BISHOP, $33, BLACK_PAWN, $43, WHITE_PAWN
-  .byte $55, WHITE_KNIGHT, $62, WHITE_PAWN, $42, EMPTY_PIECE
+  .byte $24, $62, $42
+  .byte $35, BLACK_BISHOP, $33, BLACK_PAWN, $43, WHITE_PAWN, $55, WHITE_KNIGHT
 ; check_white_nxd5_against_early_qp_knight
-  .byte $07, $52, $33
-  .byte $52, WHITE_KNIGHT, $33, BLACK_KNIGHT, $43, WHITE_PAWN
-  .byte $64, WHITE_KNIGHT, $32, BLACK_PAWN, $24, BLACK_PAWN
+  .byte $45, $5a, $33
+  .byte $43, WHITE_PAWN, $64, WHITE_KNIGHT, $32, BLACK_PAWN, $24, BLACK_PAWN
   .byte $04, BLACK_KING
 ; check_white_c4_against_nf6
-  .byte $06, $62, $42
-  .byte $25, BLACK_KNIGHT, $43, WHITE_PAWN, $62, WHITE_PAWN
-  .byte $64, WHITE_PAWN, $52, EMPTY_PIECE, $42, EMPTY_PIECE
+  .byte $24, $62, $42
+  .byte $25, BLACK_KNIGHT, $43, WHITE_PAWN, $64, WHITE_PAWN, $52, EMPTY_PIECE
 ; check_white_c3_after_qp_knights
-  .byte $09, $62, $52
-  .byte $44, WHITE_KNIGHT, $53, WHITE_BISHOP, $43, WHITE_PAWN
-  .byte $62, WHITE_PAWN, $22, BLACK_KNIGHT, $25, BLACK_KNIGHT
-  .byte $20, BLACK_PAWN, $03, BLACK_QUEEN, $52, EMPTY_PIECE
+  .byte $27, $62, $52
+  .byte $44, WHITE_KNIGHT, $53, WHITE_BISHOP, $43, WHITE_PAWN, $22, BLACK_KNIGHT
+  .byte $25, BLACK_KNIGHT, $20, BLACK_PAWN, $03, BLACK_QUEEN
 ; check_white_be3_after_qp_queen_pressure
-  .byte $0a, $72, $54
-  .byte $72, WHITE_BISHOP, $54, EMPTY_PIECE, $53, WHITE_BISHOP
-  .byte $55, WHITE_KNIGHT, $75, WHITE_ROOK, $76, WHITE_KING
-  .byte $33, BLACK_QUEEN, $22, BLACK_KNIGHT, $23, BLACK_KNIGHT
-  .byte $20, BLACK_PAWN
+  .byte $68, $72, $54
+  .byte $53, WHITE_BISHOP, $55, WHITE_KNIGHT, $75, WHITE_ROOK, $76, WHITE_KING
+  .byte $33, BLACK_QUEEN, $22, BLACK_KNIGHT, $23, BLACK_KNIGHT, $20, BLACK_PAWN
 ; check_white_ne2_against_sicilian
-  .byte $05, $76, $64
-  .byte $32, BLACK_PAWN, $44, WHITE_PAWN, $76, WHITE_KNIGHT
-  .byte $63, WHITE_PAWN, $64, EMPTY_PIECE
-; check_white_bd3_after_nxe4
-  .byte $05, $75, $53
-  .byte $44, BLACK_KNIGHT, $43, WHITE_PAWN, $75, WHITE_BISHOP
-  .byte $64, EMPTY_PIECE, $53, EMPTY_PIECE
+  .byte $43, $76, $64
+  .byte $32, BLACK_PAWN, $44, WHITE_PAWN, $63, WHITE_PAWN
 ; check_white_c3_against_e5_d4
-  .byte $06, $62, $52
-  .byte $34, BLACK_PAWN, $43, BLACK_PAWN, $44, WHITE_PAWN
-  .byte $55, WHITE_KNIGHT, $62, WHITE_PAWN, $52, EMPTY_PIECE
+  .byte $24, $62, $52
+  .byte $34, BLACK_PAWN, $43, BLACK_PAWN, $44, WHITE_PAWN, $55, WHITE_KNIGHT
 ; check_white_e3
-  .byte $06, $64, $54
-  .byte $33, BLACK_PAWN, $24, BLACK_PAWN, $43, WHITE_PAWN
-  .byte $55, WHITE_KNIGHT, $64, WHITE_PAWN, $54, EMPTY_PIECE
+  .byte $24, $64, $54
+  .byte $33, BLACK_PAWN, $24, BLACK_PAWN, $43, WHITE_PAWN, $55, WHITE_KNIGHT
 ; check_white_c3
-  .byte $05, $62, $52
+  .byte $23, $62, $52
   .byte $32, BLACK_PAWN, $43, BLACK_PAWN, $64, WHITE_KNIGHT
-  .byte $62, WHITE_PAWN, $52, EMPTY_PIECE
 ; check_white_bishop_recaptures_c4
-  .byte $05, $53, $42
-  .byte $42, BLACK_PAWN, $53, WHITE_BISHOP, $43, WHITE_PAWN
-  .byte $54, WHITE_PAWN, $55, WHITE_KNIGHT
+  .byte $23, $d3, $42
+  .byte $43, WHITE_PAWN, $54, WHITE_PAWN, $55, WHITE_KNIGHT
 ; check_white_ne2_before_bf4_blunder
-  .byte $08, $52, $64
-  .byte $23, BLACK_BISHOP, $22, BLACK_PAWN, $33, BLACK_PAWN
-  .byte $24, BLACK_PAWN, $52, WHITE_KNIGHT, $72, WHITE_BISHOP
-  .byte $76, WHITE_KING, $64, EMPTY_PIECE
+  .byte $46, $52, $64
+  .byte $23, BLACK_BISHOP, $22, BLACK_PAWN, $33, BLACK_PAWN, $24, BLACK_PAWN
+  .byte $72, WHITE_BISHOP, $76, WHITE_KING
 ; check_white_ne4_against_open_queen_file
-  .byte $08, $52, $44
-  .byte $43, BLACK_PAWN, $52, WHITE_KNIGHT, $73, WHITE_QUEEN
-  .byte $03, BLACK_QUEEN, $13, EMPTY_PIECE, $23, EMPTY_PIECE
-  .byte $33, EMPTY_PIECE, $44, EMPTY_PIECE
+  .byte $46, $52, $44
+  .byte $43, BLACK_PAWN, $73, WHITE_QUEEN, $03, BLACK_QUEEN, $13, EMPTY_PIECE
+  .byte $23, EMPTY_PIECE, $33, EMPTY_PIECE
 ; check_white_cxd4_after_alapin_cxd4
-  .byte $08, $52, $43
-  .byte $43, BLACK_PAWN, $52, WHITE_PAWN, $73, WHITE_QUEEN
-  .byte $32, EMPTY_PIECE, $62, EMPTY_PIECE, $63, EMPTY_PIECE
+  .byte $26, $d2, $43
+  .byte $73, WHITE_QUEEN, $32, EMPTY_PIECE, $62, EMPTY_PIECE, $63, EMPTY_PIECE
   .byte $44, WHITE_PAWN, $22, BLACK_KNIGHT
 ; check_white_knight_recaptures_d4
-  .byte $04, $55, $43
-  .byte $43, BLACK_PAWN, $55, WHITE_KNIGHT, $22, BLACK_KNIGHT
-  .byte $73, WHITE_QUEEN
-; check_white_queen_recaptures_d4
-  .byte $07, $73, $43
-  .byte $43, BLACK_PAWN, $73, WHITE_QUEEN, $32, EMPTY_PIECE
-  .byte $63, EMPTY_PIECE, $53, EMPTY_PIECE, $42, EMPTY_PIECE
-  .byte $33, EMPTY_PIECE
+  .byte $42, $d5, $43
+  .byte $22, BLACK_KNIGHT, $73, WHITE_QUEEN
   .byte $00
 
 __ai_search_no_white_survival_move_0:
@@ -5199,13 +8294,21 @@ __ai_search_matched_2:
   rts
 
 ; Table scanner for linear survival-book segments. Each rule stores
-; count/from/to followed by square/piece condition pairs. Call with temp1
-; pointing at the table.
+; packed-count/from/to followed by square/piece condition pairs. The count byte
+; uses bits 0-4 for condition count and bits 5-7 for the expected source piece
+; type, which replaces the old explicit source-square condition pair. The from
+; and to header bytes also pack a destination expectation in otherwise-invalid
+; 0x88 bits: 0=empty, 1-6=enemy piece type, 7=no destination check.
+; Call with temp1 pointing at the table.
 TryOpeningSurvivalTable:
 __ai_search_rule_loop_0:
   ldy #$00
   lda (temp1), y
-  beq __ai_search_table_miss_0
+  bne __ai_search_rule_has_data_0
+  jmp __ai_search_table_miss_0
+__ai_search_rule_has_data_0:
+  sta $f4
+  and #$1f
   sta $f0
   asl
   clc
@@ -5218,6 +8321,65 @@ __ai_search_rule_loop_0:
   lda (temp1), y
   sta $f3
   iny
+
+  lda #$00
+  sta $f5
+  lda $f2
+  and #$80
+  beq __ai_search_dest_class_bit_0_clear_0
+  inc $f5
+__ai_search_dest_class_bit_0_clear_0:
+  lda $f2
+  and #$08
+  beq __ai_search_dest_class_bit_1_clear_0
+  lda $f5
+  ora #$02
+  sta $f5
+__ai_search_dest_class_bit_1_clear_0:
+  lda $f3
+  and #$08
+  beq __ai_search_dest_class_ready_0
+  lda $f5
+  ora #$04
+  sta $f5
+__ai_search_dest_class_ready_0:
+  lda $f2
+  and #$77
+  sta $f2
+  lda $f3
+  and #$f7
+  sta $f3
+
+  lda $f4
+  lsr
+  lsr
+  lsr
+  lsr
+  lsr
+  ora #EMPTY_PIECE
+  ldx SearchSide
+  beq __ai_search_source_piece_ready_0
+  ora #WHITE_COLOR
+__ai_search_source_piece_ready_0:
+  ldx $f2
+  cmp Board88, x
+  bne __ai_search_next_rule_0
+
+  lda $f5
+  cmp #$07
+  beq __ai_search_dest_check_done_0
+  ora #EMPTY_PIECE
+  cmp #EMPTY_PIECE
+  beq __ai_search_dest_piece_ready_0
+  ldx SearchSide
+  bne __ai_search_dest_piece_ready_0
+  ora #WHITE_COLOR
+__ai_search_dest_piece_ready_0:
+  ldx $f3
+  cmp Board88, x
+  bne __ai_search_next_rule_0
+__ai_search_dest_check_done_0:
+
 __ai_search_cond_loop_0:
   lda (temp1), y
   tax
@@ -5236,7 +8398,9 @@ __ai_search_next_rule_0:
   clc
   adc $f1
   sta temp1
-  bcc __ai_search_rule_loop_0
+  bcs __ai_search_rule_page_cross_0
+  jmp __ai_search_rule_loop_0
+__ai_search_rule_page_cross_0:
   inc temp1 + 1
   jmp __ai_search_rule_loop_0
 __ai_search_table_miss_0:
@@ -5244,652 +8408,771 @@ __ai_search_table_miss_0:
   rts
 
 BlackOpeningSurvivalTable:
+; check_black_e5_after_colossus_na3
+  .byte $28, $14, $34
+  .byte $50, WHITE_KNIGHT, $01, BLACK_KNIGHT, $06, BLACK_KNIGHT, $04, BLACK_KING
+  .byte $74, WHITE_KING, $73, WHITE_QUEEN, $03, BLACK_QUEEN, $11, BLACK_PAWN
+; check_black_g6_after_sicilian_bishop_check
+  .byte $25, $16, $26
+  .byte $22, BLACK_KNIGHT, $31, WHITE_BISHOP, $32, BLACK_PAWN, $44, WHITE_PAWN
+  .byte $55, WHITE_KNIGHT
+; check_black_a6_lost_rook_endgame
+  .byte $28, $10, $20
+  .byte $05, BLACK_ROOK, $07, BLACK_KING, $11, WHITE_QUEEN, $34, WHITE_ROOK
+  .byte $37, BLACK_PAWN, $55, WHITE_KNIGHT, $67, WHITE_KING, $32, WHITE_PAWN
+; check_black_be5_full_ladder_pressure
+  .byte $68, $23, $34
+  .byte $03, BLACK_QUEEN, $02, BLACK_ROOK, $15, BLACK_ROOK, $06, BLACK_KING
+  .byte $25, BLACK_KNIGHT, $45, WHITE_KNIGHT, $73, WHITE_QUEEN, $77, WHITE_KING
+; check_black_nd3_full_ladder_pressure
+  .byte $47, $34, $53
+  .byte $02, BLACK_ROOK, $03, BLACK_QUEEN, $05, BLACK_ROOK
+  .byte $23, BLACK_BISHOP, $25, BLACK_KNIGHT, $57, WHITE_BISHOP, $73, WHITE_QUEEN
+; check_black_qf5_under_white_queen_knight_attack
+  .byte $a8, $25, $35
+  .byte $37, WHITE_QUEEN, $36, WHITE_KNIGHT, $34, BLACK_KNIGHT, $23, BLACK_BISHOP
+  .byte $06, BLACK_KING, $00, BLACK_ROOK, $72, WHITE_KING, $73, WHITE_ROOK
+; check_black_rf8_rook_defense
+  .byte $88, $02, $05
+  .byte $07, BLACK_KING, $11, WHITE_QUEEN, $12, BLACK_PAWN, $26, BLACK_PAWN
+  .byte $34, WHITE_ROOK, $37, BLACK_PAWN, $55, WHITE_KNIGHT, $77, WHITE_KING
+; check_black_rde8_rook_defense
+  .byte $8a, $03, $04
+  .byte $01, BLACK_ROOK, $07, BLACK_KING, $35, BLACK_KNIGHT, $46, WHITE_ROOK
+  .byte $51, WHITE_QUEEN, $55, WHITE_KNIGHT, $74, WHITE_ROOK, $76, WHITE_KING
+  .byte $10, BLACK_PAWN, $12, BLACK_PAWN
+; check_black_re7_full_ladder_two_bishops
+  .byte $89, $04, $14
+  .byte $01, BLACK_ROOK, $06, BLACK_KING, $22, WHITE_BISHOP, $23, BLACK_BISHOP
+  .byte $25, BLACK_QUEEN, $35, BLACK_BISHOP, $56, WHITE_QUEEN, $74, WHITE_ROOK
+  .byte $76, WHITE_KING
+; check_black_qxe4_queen_infiltration
+  .byte $a9, $45, $4c
+  .byte $01, BLACK_ROOK, $03, BLACK_ROOK, $07, BLACK_KING, $35, BLACK_KNIGHT
+  .byte $51, WHITE_QUEEN, $55, WHITE_KNIGHT, $74, WHITE_ROOK, $76, WHITE_KING
+  .byte $47, WHITE_PAWN
+; check_black_g6_against_two_bishop_queen_mate
+  .byte $26, $16, $26
+  .byte $15, BLACK_KING, $24, WHITE_KNIGHT, $33, WHITE_BISHOP, $42, WHITE_QUEEN
+  .byte $54, WHITE_BISHOP, $37, BLACK_PAWN
+; check_black_qxf3_against_qe8_mate_net
+  .byte $a6, $2d, $55
+  .byte $04, WHITE_QUEEN, $16, BLACK_KING, $24, BLACK_BISHOP, $53, WHITE_BISHOP
+  .byte $67, WHITE_KING, $74, WHITE_ROOK
+; check_black_qf6_against_queen_rook_mate_net
+  .byte $a8, $03, $25
+  .byte $05, BLACK_KING, $02, BLACK_ROOK, $27, BLACK_KNIGHT, $42, WHITE_QUEEN
+  .byte $43, WHITE_PAWN, $52, WHITE_PAWN, $55, WHITE_ROOK, $76, WHITE_KING
+; check_black_re8_against_rook_queen_pressure
+  .byte $88, $03, $04
+  .byte $01, BLACK_ROOK, $07, BLACK_KING, $35, BLACK_KNIGHT, $45, WHITE_ROOK
+  .byte $51, WHITE_QUEEN, $55, WHITE_KNIGHT, $74, WHITE_ROOK, $76, WHITE_KING
+; check_black_re7_against_queen_rook_mate_net
+  .byte $88, $04, $14
+  .byte $10, BLACK_PAWN, $12, WHITE_QUEEN, $16, BLACK_KING, $32, WHITE_PAWN
+  .byte $37, WHITE_ROOK, $47, WHITE_PAWN, $74, WHITE_KNIGHT, $76, WHITE_KING
+; check_black_rh1_after_back_rank_invasion
+  .byte $88, $74, $77
+  .byte $01, BLACK_ROOK, $07, BLACK_KING, $32, WHITE_PAWN, $35, WHITE_ROOK
+  .byte $47, WHITE_PAWN, $51, WHITE_QUEEN, $55, WHITE_KNIGHT, $67, WHITE_KING
+; check_black_g5_after_queen_rook_battery
+  .byte $28, $26, $36
+  .byte $05, BLACK_ROOK, $07, BLACK_KING, $12, WHITE_QUEEN, $34, WHITE_ROOK
+  .byte $37, BLACK_PAWN, $47, WHITE_PAWN, $55, WHITE_KNIGHT, $67, WHITE_KING
+; check_black_rg8_after_queen_rook_battery
+  .byte $88, $05, $06
+  .byte $07, BLACK_KING, $11, WHITE_QUEEN, $34, WHITE_ROOK, $36, BLACK_PAWN
+  .byte $37, BLACK_PAWN, $47, WHITE_PAWN, $55, WHITE_KNIGHT, $67, WHITE_KING
+; check_black_nxd5_against_queen_rook_battery
+  .byte $46, $94, $33
+  .byte $04, BLACK_ROOK, $06, BLACK_KING, $12, BLACK_ROOK, $43, WHITE_QUEEN
+  .byte $54, WHITE_KNIGHT, $30, WHITE_ROOK
+; check_black_nxd5_against_early_queen_grab
+  .byte $46, $2d, $33
+  .byte $22, BLACK_KNIGHT, $42, WHITE_QUEEN, $44, WHITE_PAWN, $03, BLACK_QUEEN
+  .byte $04, BLACK_KING, $74, WHITE_KING
+; check_black_kh8_against_ng5_pressure
+  .byte $c8, $06, $07
+  .byte $02, BLACK_QUEEN, $05, BLACK_ROOK, $24, BLACK_PAWN, $35, BLACK_KNIGHT
+  .byte $36, WHITE_KNIGHT, $51, WHITE_QUEEN, $74, WHITE_ROOK, $76, WHITE_KING
+; check_black_nd6_against_advanced_knight_attack
+  .byte $48, $35, $23
+  .byte $02, BLACK_QUEEN, $05, BLACK_ROOK, $06, BLACK_KING, $24, WHITE_KNIGHT
+  .byte $42, WHITE_QUEEN, $43, WHITE_PAWN, $74, WHITE_ROOK, $76, WHITE_KING
+; check_black_nxc3_against_center_knight_wedge
+  .byte $47, $4c, $52
+  .byte $55, WHITE_KNIGHT, $35, BLACK_BISHOP, $25, BLACK_BISHOP, $02, BLACK_QUEEN
+  .byte $03, BLACK_ROOK, $04, BLACK_ROOK, $06, BLACK_KING
+; check_black_bxd4_against_queen_bishop_battery
+  .byte $68, $a5, $43
+  .byte $22, WHITE_QUEEN, $24, BLACK_BISHOP, $53, WHITE_BISHOP, $54, WHITE_PAWN
+  .byte $55, WHITE_KNIGHT, $56, WHITE_BISHOP, $67, WHITE_KING, $04, BLACK_ROOK
+; check_black_nxe4_against_early_center_jump
+  .byte $46, $a5, $44
+  .byte $33, WHITE_PAWN, $34, WHITE_KNIGHT, $41, BLACK_BISHOP, $52, WHITE_KNIGHT
+  .byte $14, BLACK_KNIGHT, $04, BLACK_KING
+; check_black_rc8_against_a5_queen_battery
+  .byte $87, $04, $02
+  .byte $12, BLACK_ROOK, $13, BLACK_BISHOP, $25, BLACK_KNIGHT, $30, WHITE_ROOK
+  .byte $33, WHITE_PAWN, $43, WHITE_QUEEN, $06, BLACK_KING
+; check_black_qc6_against_early_queen_knight_pressure
+  .byte $a6, $24, $22
+  .byte $33, WHITE_KNIGHT, $43, WHITE_QUEEN, $54, WHITE_BISHOP, $04, BLACK_KING
+  .byte $00, BLACK_ROOK, $02, BLACK_BISHOP
+; check_black_h5_against_back_rank_piece_storm
+  .byte $26, $17, $37
+  .byte $26, BLACK_KING, $56, WHITE_QUEEN, $12, WHITE_ROOK, $00, WHITE_KNIGHT
+  .byte $40, BLACK_QUEEN, $46, BLACK_KNIGHT
+; check_black_g6_against_advanced_rook_queen_net
+  .byte $27, $16, $26
+  .byte $07, BLACK_KING, $04, WHITE_ROOK, $33, WHITE_QUEEN, $13, WHITE_PAWN
+  .byte $37, WHITE_BISHOP, $05, BLACK_QUEEN, $21, BLACK_BISHOP
+; check_black_re2_against_qg7_mate
+  .byte $85, $0c, $64
+  .byte $56, WHITE_QUEEN, $27, WHITE_BISHOP, $53, WHITE_BISHOP, $06, BLACK_KING
+  .byte $25, BLACK_PAWN
+; check_black_bxc3_before_castling
+  .byte $65, $49, $52
+  .byte $36, WHITE_BISHOP, $53, WHITE_BISHOP, $56, WHITE_QUEEN, $76, WHITE_KNIGHT
+  .byte $04, BLACK_KING
+; check_black_bxc3_after_h5_e5
+  .byte $46, $a2, $34
+  .byte $36, WHITE_BISHOP, $53, WHITE_BISHOP, $56, WHITE_QUEEN, $64, WHITE_KNIGHT
+  .byte $37, BLACK_PAWN, $06, BLACK_KING
+; check_black_be7_after_white_ne2
+  .byte $67, $41, $14
+  .byte $36, WHITE_BISHOP, $53, WHITE_BISHOP, $56, WHITE_QUEEN, $64, WHITE_KNIGHT
+  .byte $17, BLACK_PAWN, $22, BLACK_KNIGHT, $06, BLACK_KING
+; check_black_g6_after_advanced_f6
+  .byte $26, $16, $26
+  .byte $25, WHITE_PAWN, $36, WHITE_BISHOP, $41, BLACK_BISHOP, $52, WHITE_KNIGHT
+  .byte $53, WHITE_BISHOP, $56, WHITE_QUEEN
+; check_black_be7_against_qd3_development
+  .byte $26, $17, $27
+  .byte $53, WHITE_QUEEN, $52, WHITE_KNIGHT, $22, BLACK_KNIGHT, $25, BLACK_KNIGHT
+  .byte $44, WHITE_PAWN, $04, BLACK_KING
+; check_black_c5_after_bishop_queen_net
+  .byte $2a, $22, $32
+  .byte $02, BLACK_KNIGHT, $24, WHITE_QUEEN, $43, WHITE_BISHOP, $44, WHITE_BISHOP
+  .byte $15, BLACK_ROOK, $11, BLACK_BISHOP, $06, BLACK_KING, $01, BLACK_ROOK
+  .byte $13, WHITE_KNIGHT, $46, BLACK_PAWN
+; check_black_nd6_after_queen_b3_pressure
+  .byte $4a, $02, $23
+  .byte $13, WHITE_KNIGHT, $51, WHITE_QUEEN, $43, WHITE_BISHOP, $44, WHITE_BISHOP
+  .byte $15, BLACK_ROOK, $11, BLACK_BISHOP, $06, BLACK_KING, $00, BLACK_ROOK
+  .byte $22, BLACK_PAWN, $46, BLACK_PAWN
+; check_black_c5_with_a6_against_queen_b3_pressure
+  .byte $2b, $22, $32
+  .byte $20, BLACK_PAWN, $14, BLACK_KNIGHT, $21, WHITE_KNIGHT, $51, WHITE_QUEEN
+  .byte $43, WHITE_BISHOP, $44, WHITE_BISHOP, $15, BLACK_ROOK, $11, BLACK_BISHOP
+  .byte $06, BLACK_KING, $00, BLACK_ROOK, $46, BLACK_PAWN
+; check_black_raf8_without_a6_against_queen_b3_pressure
+  .byte $8b, $00, $05
+  .byte $20, EMPTY_PIECE, $14, BLACK_KNIGHT, $21, WHITE_KNIGHT, $51, WHITE_QUEEN
+  .byte $43, WHITE_BISHOP, $44, WHITE_BISHOP, $15, BLACK_ROOK, $11, BLACK_BISHOP
+  .byte $06, BLACK_KING, $22, BLACK_PAWN, $46, BLACK_PAWN
+; check_black_nd5_after_white_queen_b3_pressure
+  .byte $4a, $14, $33
+  .byte $21, WHITE_KNIGHT, $51, WHITE_QUEEN, $43, WHITE_BISHOP, $44, WHITE_BISHOP
+  .byte $15, BLACK_ROOK, $11, BLACK_BISHOP, $06, BLACK_KING, $00, BLACK_ROOK
+  .byte $22, BLACK_PAWN, $46, BLACK_PAWN
+; check_black_f6_against_rook_knight_battery
+  .byte $2b, $15, $25
+  .byte $33, WHITE_ROOK, $32, WHITE_KNIGHT, $14, BLACK_QUEEN, $05, BLACK_ROOK
+  .byte $06, BLACK_KING, $36, BLACK_PAWN, $37, BLACK_PAWN, $22, BLACK_KNIGHT
+  .byte $52, WHITE_BISHOP, $56, WHITE_QUEEN, $45, WHITE_PAWN
+; check_black_qxc5_against_advanced_knight
+  .byte $a9, $1c, $32
+  .byte $05, BLACK_ROOK, $06, BLACK_KING, $22, BLACK_KNIGHT, $45, WHITE_PAWN
+  .byte $56, WHITE_QUEEN, $63, WHITE_BISHOP, $73, WHITE_ROOK, $15, BLACK_PAWN
+  .byte $16, BLACK_PAWN
+; check_black_f5_after_nge5_temptation
+  .byte $29, $15, $35
+  .byte $46, BLACK_KNIGHT, $45, WHITE_PAWN, $44, WHITE_PAWN, $52, WHITE_KNIGHT
+  .byte $56, WHITE_QUEEN, $63, WHITE_BISHOP, $05, BLACK_ROOK, $06, BLACK_KING
+  .byte $23, BLACK_BISHOP
+; check_black_bc5_after_nge5_temptation
+  .byte $68, $23, $32
+  .byte $46, BLACK_KNIGHT, $44, WHITE_PAWN, $52, WHITE_KNIGHT, $63, WHITE_BISHOP
+  .byte $05, BLACK_ROOK, $06, BLACK_KING, $03, BLACK_QUEEN, $22, BLACK_KNIGHT
+; check_black_bxc3_before_quiet_bishop_retreat
+  .byte $68, $49, $52
+  .byte $54, WHITE_QUEEN, $44, WHITE_PAWN, $22, BLACK_KNIGHT, $25, BLACK_KNIGHT
+  .byte $03, BLACK_QUEEN, $05, BLACK_ROOK, $06, BLACK_KING, $74, WHITE_KING
+; check_black_bf5_against_two_bishops_and_queen
+  .byte $6b, $02, $35
+  .byte $40, WHITE_KNIGHT, $43, WHITE_BISHOP, $44, WHITE_BISHOP, $52, WHITE_QUEEN
+  .byte $14, BLACK_KNIGHT, $05, BLACK_ROOK, $06, BLACK_KING, $20, BLACK_PAWN
+  .byte $21, BLACK_PAWN, $22, BLACK_PAWN, $46, BLACK_PAWN
+; check_black_rh8_against_rook_on_h5
+  .byte $8b, $05, $07
+  .byte $37, WHITE_ROOK, $16, BLACK_KING, $14, BLACK_QUEEN, $02, BLACK_BISHOP
+  .byte $22, BLACK_KNIGHT, $32, WHITE_KNIGHT, $44, WHITE_BISHOP, $52, WHITE_BISHOP
+  .byte $56, WHITE_QUEEN, $46, BLACK_PAWN, $25, BLACK_PAWN
+; check_black_rg8_with_bishop_home_against_knight_pair
+  .byte $88, $07, $06
+  .byte $02, BLACK_KING, $05, BLACK_BISHOP, $32, BLACK_KNIGHT, $37, BLACK_BISHOP
+  .byte $43, WHITE_KNIGHT, $52, WHITE_KNIGHT, $54, WHITE_BISHOP, $72, WHITE_KING
+; check_black_bf8_against_selfplay_knight_fork
+  .byte $68, $14, $05
+  .byte $02, BLACK_KING, $07, BLACK_ROOK, $32, BLACK_KNIGHT, $35, WHITE_KNIGHT
+  .byte $37, BLACK_BISHOP, $52, WHITE_KNIGHT, $54, WHITE_BISHOP, $72, WHITE_KING
+; check_black_re8_before_ng4_temptation
+  .byte $8a, $05, $04
+  .byte $06, BLACK_KING, $03, BLACK_QUEEN, $23, BLACK_BISHOP, $25, BLACK_KNIGHT
+  .byte $22, BLACK_KNIGHT, $54, WHITE_QUEEN, $52, WHITE_KNIGHT, $44, WHITE_PAWN
+  .byte $63, WHITE_BISHOP, $73, WHITE_ROOK
+; check_black_qd7_in_a5_knight_pressure
+  .byte $4b, $25, $46
+  .byte $34, BLACK_KNIGHT, $30, WHITE_PAWN, $32, BLACK_PAWN
+  .byte $23, BLACK_BISHOP, $24, BLACK_PAWN, $63, WHITE_PAWN, $64, WHITE_KNIGHT
+  .byte $57, WHITE_BISHOP, $05, BLACK_ROOK, $02, BLACK_ROOK, $06, BLACK_KING
+; check_black_nxe4_before_bishop_trade
+  .byte $48, $2d, $44
+  .byte $42, WHITE_BISHOP, $43, WHITE_KNIGHT, $33, WHITE_PAWN, $32, BLACK_BISHOP
+  .byte $06, BLACK_KING, $03, BLACK_QUEEN, $74, WHITE_KING, $64, WHITE_QUEEN
+; check_black_nxe4_in_a5_knight_pressure
+  .byte $4b, $25, $44
+  .byte $31, WHITE_KNIGHT, $34, BLACK_KNIGHT, $30, WHITE_PAWN, $32, BLACK_PAWN
+  .byte $23, BLACK_BISHOP, $24, BLACK_PAWN, $63, WHITE_PAWN, $64, WHITE_KNIGHT
+  .byte $57, WHITE_BISHOP, $03, BLACK_QUEEN, $06, BLACK_KING
+; check_black_h6_after_qc7_rf7
+  .byte $8a, $15, $14
+  .byte $12, BLACK_QUEEN, $25, BLACK_KNIGHT, $22, BLACK_KNIGHT, $30, WHITE_PAWN
+  .byte $34, BLACK_PAWN, $36, WHITE_KNIGHT, $57, WHITE_BISHOP, $64, WHITE_KNIGHT
+  .byte $02, BLACK_ROOK, $06, BLACK_KING
+; check_black_e5_from_e6_in_rook_pressure
+  .byte $67, $2b, $45
+  .byte $02, BLACK_ROOK, $15, BLACK_ROOK, $25, BLACK_KNIGHT, $30, WHITE_PAWN
+  .byte $57, WHITE_BISHOP, $64, WHITE_KNIGHT
+  .byte $06, BLACK_KING
+; check_black_nxh2_against_b5_knight
+  .byte $4a, $c6, $67
+  .byte $31, WHITE_KNIGHT, $30, WHITE_PAWN, $45, WHITE_KNIGHT
+  .byte $34, BLACK_KNIGHT, $23, BLACK_BISHOP, $24, BLACK_PAWN, $01, BLACK_ROOK
+  .byte $03, BLACK_QUEEN, $05, BLACK_ROOK, $06, BLACK_KING
+; check_black_nxd5_against_early_g3
+  .byte $48, $a5, $33
+  .byte $22, BLACK_KNIGHT, $32, BLACK_PAWN, $56, WHITE_PAWN, $64, WHITE_KNIGHT
+  .byte $66, WHITE_BISHOP, $74, WHITE_KING, $04, BLACK_KING, $03, BLACK_QUEEN
+; check_black_be5_after_bh7_qh4
+  .byte $2b, $16, $26
+  .byte $47, WHITE_QUEEN, $17, WHITE_BISHOP, $36, WHITE_KNIGHT, $25, BLACK_KNIGHT
+  .byte $30, BLACK_KNIGHT, $43, BLACK_PAWN, $52, WHITE_PAWN, $07, BLACK_KING
+  .byte $05, BLACK_ROOK, $70, WHITE_ROOK, $75, WHITE_ROOK
+; check_black_kg7_under_rook_knight_pressure
+  .byte $c9, $06, $16
+  .byte $03, WHITE_ROOK, $04, BLACK_ROOK, $14, WHITE_KNIGHT, $22, BLACK_BISHOP
+  .byte $32, WHITE_BISHOP, $42, BLACK_KNIGHT, $34, WHITE_PAWN, $74, WHITE_ROOK
+  .byte $76, WHITE_KING
+; check_black_nxe4_after_bishop_pin_e5
+  .byte $46, $a5, $44
+  .byte $34, WHITE_PAWN, $41, BLACK_BISHOP, $22, BLACK_KNIGHT, $52, WHITE_KNIGHT
+  .byte $55, WHITE_KNIGHT, $04, BLACK_KING
+; check_black_qf6_against_advanced_d6_bishops
+  .byte $ac, $03, $25
+  .byte $14, EMPTY_PIECE, $41, BLACK_BISHOP, $46, BLACK_KNIGHT, $22, BLACK_KNIGHT
+  .byte $23, WHITE_PAWN, $42, WHITE_BISHOP, $45, WHITE_BISHOP, $52, WHITE_KNIGHT
+  .byte $55, WHITE_KNIGHT, $44, WHITE_PAWN, $06, BLACK_KING, $05, BLACK_ROOK
+; check_black_re8_against_two_bishops
+  .byte $89, $05, $04
+  .byte $06, BLACK_KING, $22, BLACK_KNIGHT, $46, BLACK_KNIGHT, $23, WHITE_BISHOP
+  .byte $42, WHITE_BISHOP, $55, WHITE_KNIGHT, $52, WHITE_PAWN, $44, WHITE_PAWN
+  .byte $02, BLACK_BISHOP
+; check_black_bc6_against_center_bishop_knights
+  .byte $67, $13, $22
+  .byte $42, BLACK_KNIGHT, $44, BLACK_KNIGHT, $43, WHITE_BISHOP, $34, WHITE_PAWN
+  .byte $55, WHITE_KNIGHT, $52, WHITE_PAWN, $06, BLACK_KING
 ; check_black_e6_after_qp_c3
-  .byte $07, $14, $24
-  .byte $14, BLACK_PAWN, $24, EMPTY_PIECE, $33, BLACK_PAWN
-  .byte $43, WHITE_PAWN, $52, WHITE_PAWN, $04, BLACK_KING
+  .byte $25, $14, $24
+  .byte $33, BLACK_PAWN, $43, WHITE_PAWN, $52, WHITE_PAWN, $04, BLACK_KING
   .byte $74, WHITE_KING
 ; check_black_e6_after_qp_c3_bf4
-  .byte $09, $14, $24
-  .byte $14, BLACK_PAWN, $24, EMPTY_PIECE, $33, BLACK_PAWN
-  .byte $43, WHITE_PAWN, $52, WHITE_PAWN, $45, WHITE_BISHOP
+  .byte $27, $14, $24
+  .byte $33, BLACK_PAWN, $43, WHITE_PAWN, $52, WHITE_PAWN, $45, WHITE_BISHOP
   .byte $54, WHITE_PAWN, $25, BLACK_KNIGHT, $22, BLACK_KNIGHT
 ; check_black_dxe4_after_qp_g3_e4
-  .byte $09, $33, $44
-  .byte $33, BLACK_PAWN, $44, WHITE_PAWN, $43, WHITE_PAWN
-  .byte $52, WHITE_PAWN, $23, BLACK_BISHOP, $22, BLACK_KNIGHT
+  .byte $27, $b3, $44
+  .byte $43, WHITE_PAWN, $52, WHITE_PAWN, $23, BLACK_BISHOP, $22, BLACK_KNIGHT
   .byte $25, BLACK_KNIGHT, $66, WHITE_BISHOP, $04, BLACK_KING
 ; check_black_nxe4_after_qp_dxe4_recapture
-  .byte $09, $25, $44
-  .byte $25, BLACK_KNIGHT, $44, WHITE_KNIGHT, $33, EMPTY_PIECE
-  .byte $43, WHITE_PAWN, $52, WHITE_PAWN, $23, BLACK_BISHOP
+  .byte $47, $2d, $44
+  .byte $33, EMPTY_PIECE, $43, WHITE_PAWN, $52, WHITE_PAWN, $23, BLACK_BISHOP
   .byte $22, BLACK_KNIGHT, $66, WHITE_BISHOP, $04, BLACK_KING
 ; check_black_e5_after_qp_bxe4
-  .byte $09, $24, $34
-  .byte $24, BLACK_PAWN, $34, EMPTY_PIECE, $44, WHITE_BISHOP
-  .byte $43, WHITE_PAWN, $52, WHITE_PAWN, $23, BLACK_BISHOP
+  .byte $27, $24, $34
+  .byte $44, WHITE_BISHOP, $43, WHITE_PAWN, $52, WHITE_PAWN, $23, BLACK_BISHOP
   .byte $22, BLACK_KNIGHT, $56, WHITE_PAWN, $04, BLACK_KING
 ; check_black_f6_blocks_bg5_queen_skewer
-  .byte $09, $15, $25
-  .byte $15, BLACK_PAWN, $25, EMPTY_PIECE, $36, WHITE_BISHOP
-  .byte $44, WHITE_BISHOP, $43, BLACK_PAWN, $03, BLACK_QUEEN
+  .byte $27, $15, $25
+  .byte $36, WHITE_BISHOP, $44, WHITE_BISHOP, $43, BLACK_PAWN, $03, BLACK_QUEEN
   .byte $04, BLACK_KING, $23, BLACK_BISHOP, $22, BLACK_KNIGHT
 ; check_black_castles_after_bg5_qe2_f6
-  .byte $0d, $04, $06
-  .byte $04, BLACK_KING, $07, BLACK_ROOK, $05, EMPTY_PIECE
-  .byte $06, EMPTY_PIECE, $25, BLACK_PAWN, $15, EMPTY_PIECE
-  .byte $36, WHITE_BISHOP, $44, WHITE_BISHOP, $43, BLACK_PAWN
-  .byte $64, WHITE_QUEEN, $03, BLACK_QUEEN, $23, BLACK_BISHOP
-  .byte $22, BLACK_KNIGHT
+  .byte $ab, $04, $06
+  .byte $07, BLACK_ROOK, $05, EMPTY_PIECE, $25, BLACK_PAWN, $15, EMPTY_PIECE
+  .byte $36, WHITE_BISHOP, $44, WHITE_BISHOP, $43, BLACK_PAWN, $64, WHITE_QUEEN
+  .byte $03, BLACK_QUEEN, $23, BLACK_BISHOP, $22, BLACK_KNIGHT
 ; check_black_re8_after_bg5_bd2_castles
-  .byte $0b, $05, $04
-  .byte $06, BLACK_KING, $05, BLACK_ROOK, $04, EMPTY_PIECE
-  .byte $25, BLACK_PAWN, $63, WHITE_BISHOP, $44, WHITE_BISHOP
-  .byte $43, BLACK_PAWN, $64, WHITE_QUEEN, $03, BLACK_QUEEN
-  .byte $23, BLACK_BISHOP, $22, BLACK_KNIGHT
+  .byte $89, $05, $04
+  .byte $06, BLACK_KING, $25, BLACK_PAWN, $63, WHITE_BISHOP, $44, WHITE_BISHOP
+  .byte $43, BLACK_PAWN, $64, WHITE_QUEEN, $03, BLACK_QUEEN, $23, BLACK_BISHOP
+  .byte $22, BLACK_KNIGHT
 ; check_black_castles_after_open_game_qe2
-  .byte $0d, $04, $06
-  .byte $04, BLACK_KING, $07, BLACK_ROOK, $05, EMPTY_PIECE
-  .byte $06, EMPTY_PIECE, $32, BLACK_BISHOP, $22, BLACK_KNIGHT
-  .byte $25, BLACK_KNIGHT, $44, BLACK_PAWN, $33, WHITE_PAWN
-  .byte $42, WHITE_BISHOP, $52, WHITE_KNIGHT, $55, WHITE_KNIGHT
-  .byte $64, WHITE_QUEEN
+  .byte $ab, $04, $06
+  .byte $07, BLACK_ROOK, $05, EMPTY_PIECE, $32, BLACK_BISHOP, $22, BLACK_KNIGHT
+  .byte $25, BLACK_KNIGHT, $44, BLACK_PAWN, $33, WHITE_PAWN, $42, WHITE_BISHOP
+  .byte $52, WHITE_KNIGHT, $55, WHITE_KNIGHT, $64, WHITE_QUEEN
 ; check_black_bd6_after_qp_bf4_nd2
-  .byte $0a, $05, $23
-  .byte $05, BLACK_BISHOP, $23, EMPTY_PIECE, $45, WHITE_BISHOP
-  .byte $54, WHITE_PAWN, $63, WHITE_KNIGHT, $52, WHITE_PAWN
-  .byte $43, WHITE_PAWN, $24, BLACK_PAWN, $22, BLACK_KNIGHT
-  .byte $25, BLACK_KNIGHT
+  .byte $68, $05, $23
+  .byte $45, WHITE_BISHOP, $54, WHITE_PAWN, $63, WHITE_KNIGHT, $52, WHITE_PAWN
+  .byte $43, WHITE_PAWN, $24, BLACK_PAWN, $22, BLACK_KNIGHT, $25, BLACK_KNIGHT
 ; check_black_bd6_after_qp_bf4_qe2
-  .byte $0a, $14, $23
-  .byte $14, BLACK_BISHOP, $23, EMPTY_PIECE, $13, BLACK_BISHOP
-  .byte $24, BLACK_PAWN, $45, WHITE_BISHOP, $53, WHITE_BISHOP
-  .byte $64, WHITE_QUEEN, $52, WHITE_PAWN, $43, WHITE_PAWN
-  .byte $06, BLACK_KING
+  .byte $68, $14, $23
+  .byte $13, BLACK_BISHOP, $24, BLACK_PAWN, $45, WHITE_BISHOP, $53, WHITE_BISHOP
+  .byte $64, WHITE_QUEEN, $52, WHITE_PAWN, $43, WHITE_PAWN, $06, BLACK_KING
 ; check_black_bxf4_after_qp_bf4_bd3
-  .byte $0a, $23, $45
-  .byte $23, BLACK_BISHOP, $45, WHITE_BISHOP, $53, WHITE_BISHOP
-  .byte $06, BLACK_KING, $05, BLACK_ROOK, $55, WHITE_KNIGHT
-  .byte $63, WHITE_KNIGHT, $24, BLACK_PAWN, $33, BLACK_PAWN
-  .byte $43, WHITE_PAWN
+  .byte $68, $ab, $45
+  .byte $53, WHITE_BISHOP, $06, BLACK_KING, $05, BLACK_ROOK, $55, WHITE_KNIGHT
+  .byte $63, WHITE_KNIGHT, $24, BLACK_PAWN, $33, BLACK_PAWN, $43, WHITE_PAWN
 ; check_black_rxd8_after_qp_nxd8
-  .byte $0a, $02, $03
-  .byte $02, BLACK_ROOK, $03, WHITE_KNIGHT, $04, BLACK_ROOK
-  .byte $06, BLACK_KING, $13, BLACK_BISHOP, $25, BLACK_KNIGHT
-  .byte $64, WHITE_QUEEN, $72, WHITE_KING, $55, WHITE_KNIGHT
-  .byte $73, WHITE_ROOK
+  .byte $88, $0a, $03
+  .byte $04, BLACK_ROOK, $06, BLACK_KING, $13, BLACK_BISHOP, $25, BLACK_KNIGHT
+  .byte $64, WHITE_QUEEN, $72, WHITE_KING, $55, WHITE_KNIGHT, $73, WHITE_ROOK
 ; check_black_bxe8_after_qp_bxe8
-  .byte $0a, $13, $04
-  .byte $13, BLACK_BISHOP, $04, WHITE_BISHOP, $06, BLACK_KING
-  .byte $14, BLACK_KNIGHT, $25, BLACK_KNIGHT, $64, WHITE_QUEEN
-  .byte $72, WHITE_KING, $76, WHITE_ROOK, $24, BLACK_PAWN
-  .byte $33, BLACK_PAWN
+  .byte $68, $9b, $04
+  .byte $06, BLACK_KING, $14, BLACK_KNIGHT, $25, BLACK_KNIGHT, $64, WHITE_QUEEN
+  .byte $72, WHITE_KING, $76, WHITE_ROOK, $24, BLACK_PAWN, $33, BLACK_PAWN
 ; check_black_ng8_against_rh8_mate
-  .byte $0a, $14, $06
-  .byte $14, BLACK_KNIGHT, $06, EMPTY_PIECE, $05, BLACK_KING
-  .byte $24, WHITE_QUEEN, $77, WHITE_ROOK, $13, BLACK_KNIGHT
-  .byte $25, EMPTY_PIECE, $22, BLACK_PAWN, $33, BLACK_PAWN
-  .byte $72, WHITE_KING
+  .byte $48, $14, $06
+  .byte $05, BLACK_KING, $24, WHITE_QUEEN, $77, WHITE_ROOK, $13, BLACK_KNIGHT
+  .byte $25, EMPTY_PIECE, $22, BLACK_PAWN, $33, BLACK_PAWN, $72, WHITE_KING
 ; check_black_g6_after_qp_rb8_castles
-  .byte $0a, $16, $26
-  .byte $16, BLACK_PAWN, $26, EMPTY_PIECE, $01, BLACK_ROOK
-  .byte $03, BLACK_QUEEN, $04, BLACK_ROOK, $06, BLACK_KING
-  .byte $34, WHITE_KNIGHT, $73, WHITE_ROOK, $72, WHITE_KING
-  .byte $25, BLACK_KNIGHT
+  .byte $28, $16, $26
+  .byte $01, BLACK_ROOK, $03, BLACK_QUEEN, $04, BLACK_ROOK, $06, BLACK_KING
+  .byte $34, WHITE_KNIGHT, $73, WHITE_ROOK, $72, WHITE_KING, $25, BLACK_KNIGHT
 ; check_black_ng4_against_h3_bishop
-  .byte $0e, $25, $46
-  .byte $25, BLACK_KNIGHT, $46, EMPTY_PIECE, $34, BLACK_KNIGHT
-  .byte $23, BLACK_BISHOP, $24, BLACK_PAWN, $32, BLACK_PAWN
-  .byte $57, WHITE_BISHOP, $64, WHITE_KNIGHT, $42, WHITE_PAWN
-  .byte $30, WHITE_PAWN, $56, WHITE_PAWN, $06, BLACK_KING
-  .byte $05, BLACK_ROOK, $03, BLACK_QUEEN
+  .byte $4c, $25, $46
+  .byte $34, BLACK_KNIGHT, $23, BLACK_BISHOP, $24, BLACK_PAWN, $32, BLACK_PAWN
+  .byte $57, WHITE_BISHOP, $64, WHITE_KNIGHT, $42, WHITE_PAWN, $30, WHITE_PAWN
+  .byte $56, WHITE_PAWN, $06, BLACK_KING, $05, BLACK_ROOK, $03, BLACK_QUEEN
 ; check_black_be5_after_ng4_branch
-  .byte $0d, $23, $34
-  .byte $23, BLACK_BISHOP, $34, EMPTY_PIECE, $24, BLACK_PAWN
-  .byte $45, WHITE_KNIGHT, $57, WHITE_BISHOP, $64, WHITE_KNIGHT
-  .byte $30, WHITE_PAWN, $42, WHITE_PAWN, $06, BLACK_KING
-  .byte $15, BLACK_ROOK, $03, BLACK_QUEEN, $22, BLACK_KNIGHT
-  .byte $25, BLACK_KNIGHT
+  .byte $6b, $23, $34
+  .byte $24, BLACK_PAWN, $45, WHITE_KNIGHT, $57, WHITE_BISHOP, $64, WHITE_KNIGHT
+  .byte $30, WHITE_PAWN, $42, WHITE_PAWN, $06, BLACK_KING, $15, BLACK_ROOK
+  .byte $03, BLACK_QUEEN, $22, BLACK_KNIGHT, $25, BLACK_KNIGHT
 ; check_black_rd8_late_queen_rook_defense
-  .byte $0c, $01, $03
-  .byte $01, BLACK_ROOK, $03, EMPTY_PIECE, $06, BLACK_KING
-  .byte $25, BLACK_QUEEN, $34, BLACK_KNIGHT, $32, BLACK_BISHOP
-  .byte $43, WHITE_KNIGHT, $66, WHITE_BISHOP, $61, WHITE_BISHOP
-  .byte $73, WHITE_QUEEN, $77, WHITE_KING, $17, BLACK_PAWN
+  .byte $8a, $01, $03
+  .byte $06, BLACK_KING, $25, BLACK_QUEEN, $34, BLACK_KNIGHT, $32, BLACK_BISHOP
+  .byte $43, WHITE_KNIGHT, $66, WHITE_BISHOP, $61, WHITE_BISHOP, $73, WHITE_QUEEN
+  .byte $77, WHITE_KING, $17, BLACK_PAWN
 ; check_black_nxe5_after_qp_g6_g5
-  .byte $0a, $22, $34
-  .byte $22, BLACK_KNIGHT, $34, WHITE_KNIGHT, $25, BLACK_KNIGHT
-  .byte $26, BLACK_PAWN, $36, WHITE_PAWN, $01, BLACK_ROOK
-  .byte $03, BLACK_QUEEN, $04, BLACK_ROOK, $06, BLACK_KING
-  .byte $13, BLACK_BISHOP
+  .byte $48, $2a, $34
+  .byte $25, BLACK_KNIGHT, $26, BLACK_PAWN, $36, WHITE_PAWN, $01, BLACK_ROOK
+  .byte $03, BLACK_QUEEN, $04, BLACK_ROOK, $06, BLACK_KING, $13, BLACK_BISHOP
 ; check_black_kg7_after_qp_qe3_mate_threat
-  .byte $0d, $06, $16
-  .byte $06, BLACK_KING, $16, EMPTY_PIECE, $04, BLACK_ROOK
-  .byte $03, BLACK_QUEEN, $01, BLACK_ROOK, $54, WHITE_QUEEN
-  .byte $34, WHITE_KNIGHT, $36, WHITE_PAWN, $44, BLACK_PAWN
-  .byte $43, WHITE_PAWN, $45, WHITE_PAWN, $13, BLACK_BISHOP
-  .byte $15, BLACK_PAWN
+  .byte $cb, $06, $16
+  .byte $04, BLACK_ROOK, $03, BLACK_QUEEN, $01, BLACK_ROOK, $54, WHITE_QUEEN
+  .byte $34, WHITE_KNIGHT, $36, WHITE_PAWN, $44, BLACK_PAWN, $43, WHITE_PAWN
+  .byte $45, WHITE_PAWN, $13, BLACK_BISHOP, $15, BLACK_PAWN
 ; check_black_qe7_after_qp_rh6_kg7
-  .byte $0d, $03, $14
-  .byte $03, BLACK_QUEEN, $14, EMPTY_PIECE, $16, BLACK_KING
-  .byte $27, WHITE_ROOK, $04, BLACK_ROOK, $54, WHITE_QUEEN
-  .byte $34, WHITE_KNIGHT, $36, WHITE_PAWN, $44, BLACK_PAWN
-  .byte $13, BLACK_BISHOP, $15, BLACK_PAWN, $26, BLACK_PAWN
-  .byte $73, WHITE_ROOK
+  .byte $ab, $03, $14
+  .byte $16, BLACK_KING, $27, WHITE_ROOK, $04, BLACK_ROOK, $54, WHITE_QUEEN
+  .byte $34, WHITE_KNIGHT, $36, WHITE_PAWN, $44, BLACK_PAWN, $13, BLACK_BISHOP
+  .byte $15, BLACK_PAWN, $26, BLACK_PAWN, $73, WHITE_ROOK
 ; check_black_rh8_after_qp_qe7_a3
-  .byte $0d, $04, $07
-  .byte $04, BLACK_ROOK, $07, EMPTY_PIECE, $05, EMPTY_PIECE
-  .byte $06, EMPTY_PIECE, $16, BLACK_KING, $14, BLACK_QUEEN
-  .byte $27, WHITE_ROOK, $50, WHITE_PAWN, $54, WHITE_QUEEN
-  .byte $34, WHITE_KNIGHT, $36, WHITE_PAWN, $44, BLACK_PAWN
-  .byte $13, BLACK_BISHOP
-; check_black_rg8_after_qp_qh3_rh8
-  .byte $0d, $01, $06
-  .byte $01, BLACK_ROOK, $06, EMPTY_PIECE, $07, BLACK_ROOK
-  .byte $16, BLACK_KING, $14, BLACK_QUEEN, $27, WHITE_ROOK
-  .byte $57, WHITE_QUEEN, $34, WHITE_KNIGHT, $36, WHITE_PAWN
-  .byte $44, BLACK_PAWN, $13, BLACK_BISHOP, $15, BLACK_PAWN
-  .byte $26, BLACK_PAWN
-; check_black_qe8_after_qp_rh1
-  .byte $0d, $14, $04
-  .byte $14, BLACK_QUEEN, $04, EMPTY_PIECE, $06, BLACK_ROOK
-  .byte $07, BLACK_ROOK, $16, BLACK_KING, $27, WHITE_ROOK
-  .byte $57, WHITE_QUEEN, $77, WHITE_ROOK, $34, WHITE_KNIGHT
+  .byte $8b, $04, $07
+  .byte $05, EMPTY_PIECE, $06, EMPTY_PIECE, $16, BLACK_KING, $14, BLACK_QUEEN
+  .byte $27, WHITE_ROOK, $50, WHITE_PAWN, $54, WHITE_QUEEN, $34, WHITE_KNIGHT
   .byte $36, WHITE_PAWN, $44, BLACK_PAWN, $13, BLACK_BISHOP
-  .byte $15, BLACK_PAWN
+; check_black_rg8_after_qp_qh3_rh8
+  .byte $8b, $01, $06
+  .byte $07, BLACK_ROOK, $16, BLACK_KING, $14, BLACK_QUEEN, $27, WHITE_ROOK
+  .byte $57, WHITE_QUEEN, $34, WHITE_KNIGHT, $36, WHITE_PAWN, $44, BLACK_PAWN
+  .byte $13, BLACK_BISHOP, $15, BLACK_PAWN, $26, BLACK_PAWN
+; check_black_qe8_after_qp_rh1
+  .byte $ab, $14, $04
+  .byte $06, BLACK_ROOK, $07, BLACK_ROOK, $16, BLACK_KING, $27, WHITE_ROOK
+  .byte $57, WHITE_QUEEN, $77, WHITE_ROOK, $34, WHITE_KNIGHT, $36, WHITE_PAWN
+  .byte $44, BLACK_PAWN, $13, BLACK_BISHOP, $15, BLACK_PAWN
 ; check_black_bc6_after_qp_b3
-  .byte $0d, $13, $22
-  .byte $13, BLACK_BISHOP, $22, EMPTY_PIECE, $04, BLACK_QUEEN
-  .byte $06, BLACK_ROOK, $07, BLACK_ROOK, $16, BLACK_KING
-  .byte $27, WHITE_ROOK, $57, WHITE_QUEEN, $77, WHITE_ROOK
-  .byte $51, WHITE_PAWN, $34, WHITE_KNIGHT, $36, WHITE_PAWN
-  .byte $44, BLACK_PAWN
+  .byte $6b, $13, $22
+  .byte $04, BLACK_QUEEN, $06, BLACK_ROOK, $07, BLACK_ROOK, $16, BLACK_KING
+  .byte $27, WHITE_ROOK, $57, WHITE_QUEEN, $77, WHITE_ROOK, $51, WHITE_PAWN
+  .byte $34, WHITE_KNIGHT, $36, WHITE_PAWN, $44, BLACK_PAWN
 ; check_black_bd7_after_qp_ng5
-  .byte $0a, $24, $13
-  .byte $24, BLACK_BISHOP, $13, EMPTY_PIECE, $36, WHITE_KNIGHT
-  .byte $25, BLACK_KNIGHT, $22, BLACK_KNIGHT, $33, BLACK_PAWN
-  .byte $43, WHITE_PAWN, $52, WHITE_PAWN, $63, WHITE_KNIGHT
-  .byte $04, BLACK_KING
+  .byte $68, $24, $13
+  .byte $36, WHITE_KNIGHT, $25, BLACK_KNIGHT, $22, BLACK_KNIGHT, $33, BLACK_PAWN
+  .byte $43, WHITE_PAWN, $52, WHITE_PAWN, $63, WHITE_KNIGHT, $04, BLACK_KING
 ; check_black_nb8_after_caro_queen_a6
-  .byte $07, $13, $01
-  .byte $20, WHITE_QUEEN, $02, BLACK_ROOK, $13, BLACK_KNIGHT
-  .byte $24, BLACK_BISHOP, $16, BLACK_BISHOP, $42, BLACK_PAWN
-  .byte $01, EMPTY_PIECE
+  .byte $45, $13, $01
+  .byte $20, WHITE_QUEEN, $02, BLACK_ROOK, $24, BLACK_BISHOP, $16, BLACK_BISHOP
+  .byte $42, BLACK_PAWN
 ; check_black_dxc4_after_caro_queen_b7_f8
-  .byte $07, $33, $42
-  .byte $11, WHITE_QUEEN, $33, BLACK_PAWN, $42, WHITE_PAWN
-  .byte $34, WHITE_PAWN, $43, WHITE_PAWN, $24, BLACK_BISHOP
+  .byte $25, $b3, $42
+  .byte $11, WHITE_QUEEN, $34, WHITE_PAWN, $43, WHITE_PAWN, $24, BLACK_BISHOP
   .byte $05, BLACK_BISHOP
 ; check_black_qb6_after_caro_qa4_bd2
-  .byte $08, $03, $21
-  .byte $40, WHITE_QUEEN, $63, WHITE_BISHOP, $03, BLACK_QUEEN
-  .byte $02, BLACK_ROOK, $13, BLACK_KNIGHT, $24, BLACK_BISHOP
-  .byte $42, BLACK_PAWN, $21, EMPTY_PIECE
+  .byte $a6, $03, $21
+  .byte $40, WHITE_QUEEN, $63, WHITE_BISHOP, $02, BLACK_ROOK, $13, BLACK_KNIGHT
+  .byte $24, BLACK_BISHOP, $42, BLACK_PAWN
 ; check_black_rc7_after_caro_ba5
-  .byte $07, $02, $12
-  .byte $30, WHITE_BISHOP, $40, WHITE_QUEEN, $02, BLACK_ROOK
-  .byte $13, BLACK_KNIGHT, $24, BLACK_BISHOP, $20, BLACK_PAWN
-  .byte $12, EMPTY_PIECE
+  .byte $85, $02, $12
+  .byte $30, WHITE_BISHOP, $40, WHITE_QUEEN, $13, BLACK_KNIGHT, $24, BLACK_BISHOP
+  .byte $20, BLACK_PAWN
 ; check_black_nh6_after_caro_qb6_bc3
-  .byte $08, $06, $27
-  .byte $21, BLACK_QUEEN, $52, WHITE_BISHOP, $40, WHITE_QUEEN
-  .byte $02, BLACK_ROOK, $24, BLACK_BISHOP, $16, BLACK_BISHOP
-  .byte $06, BLACK_KNIGHT, $27, EMPTY_PIECE
+  .byte $46, $06, $27
+  .byte $21, BLACK_QUEEN, $52, WHITE_BISHOP, $40, WHITE_QUEEN, $02, BLACK_ROOK
+  .byte $24, BLACK_BISHOP, $16, BLACK_BISHOP
 ; check_black_qb7_after_caro_qb6_na3_nf3
-  .byte $0a, $21, $11
-  .byte $21, BLACK_QUEEN, $52, WHITE_BISHOP, $40, WHITE_QUEEN
-  .byte $50, WHITE_KNIGHT, $55, WHITE_KNIGHT, $27, BLACK_KNIGHT
-  .byte $24, BLACK_BISHOP, $06, BLACK_KING, $42, BLACK_PAWN
-  .byte $11, EMPTY_PIECE
+  .byte $a8, $21, $11
+  .byte $52, WHITE_BISHOP, $40, WHITE_QUEEN, $50, WHITE_KNIGHT, $55, WHITE_KNIGHT
+  .byte $27, BLACK_KNIGHT, $24, BLACK_BISHOP, $06, BLACK_KING, $42, BLACK_PAWN
 ; check_black_qe4_after_caro_qb7_bxc4
-  .byte $0d, $11, $44
-  .byte $11, BLACK_QUEEN, $42, WHITE_BISHOP, $52, WHITE_BISHOP
-  .byte $40, WHITE_QUEEN, $50, WHITE_KNIGHT, $55, WHITE_KNIGHT
-  .byte $27, BLACK_KNIGHT, $24, BLACK_BISHOP, $16, BLACK_BISHOP
+  .byte $ab, $11, $44
+  .byte $42, WHITE_BISHOP, $52, WHITE_BISHOP, $40, WHITE_QUEEN, $50, WHITE_KNIGHT
+  .byte $55, WHITE_KNIGHT, $27, BLACK_KNIGHT, $24, BLACK_BISHOP, $16, BLACK_BISHOP
   .byte $34, WHITE_PAWN, $22, EMPTY_PIECE, $33, EMPTY_PIECE
-  .byte $44, EMPTY_PIECE
 ; check_black_nde5_after_caro_qe4
-  .byte $08, $13, $34
-  .byte $44, BLACK_QUEEN, $13, BLACK_KNIGHT, $34, WHITE_PAWN
-  .byte $27, BLACK_KNIGHT, $24, BLACK_BISHOP, $16, BLACK_BISHOP
+  .byte $46, $93, $34
+  .byte $44, BLACK_QUEEN, $27, BLACK_KNIGHT, $24, BLACK_BISHOP, $16, BLACK_BISHOP
   .byte $40, WHITE_QUEEN, $64, WHITE_BISHOP
 ; check_black_bxe5_after_caro_nxe5
-  .byte $06, $16, $34
-  .byte $44, BLACK_QUEEN, $16, BLACK_BISHOP, $34, WHITE_KNIGHT
-  .byte $27, BLACK_KNIGHT, $24, BLACK_BISHOP, $64, WHITE_BISHOP
+  .byte $64, $1e, $34
+  .byte $44, BLACK_QUEEN, $27, BLACK_KNIGHT, $24, BLACK_BISHOP, $64, WHITE_BISHOP
 ; check_black_nd5_after_queenside_b5
-  .byte $07, $25, $33
-  .byte $25, BLACK_KNIGHT, $42, BLACK_PAWN, $31, WHITE_PAWN
-  .byte $45, WHITE_BISHOP, $52, WHITE_KNIGHT, $55, WHITE_KNIGHT
-  .byte $33, EMPTY_PIECE
+  .byte $45, $25, $33
+  .byte $42, BLACK_PAWN, $31, WHITE_PAWN, $45, WHITE_BISHOP, $52, WHITE_KNIGHT
+  .byte $55, WHITE_KNIGHT
 ; check_black_f6_after_queenside_be5
-  .byte $06, $15, $25
-  .byte $34, WHITE_BISHOP, $33, BLACK_KNIGHT, $31, WHITE_PAWN
-  .byte $42, BLACK_PAWN, $15, BLACK_PAWN, $25, EMPTY_PIECE
+  .byte $24, $15, $25
+  .byte $34, WHITE_BISHOP, $33, BLACK_KNIGHT, $31, WHITE_PAWN, $42, BLACK_PAWN
 ; check_black_nxc3_after_bxh8
-  .byte $06, $33, $52
-  .byte $07, BLACK_ROOK, $33, BLACK_KNIGHT, $52, WHITE_KNIGHT
-  .byte $34, WHITE_KNIGHT, $22, WHITE_PAWN, $42, BLACK_PAWN
+  .byte $44, $3b, $52
+  .byte $07, BLACK_ROOK, $34, WHITE_KNIGHT, $22, WHITE_PAWN, $42, BLACK_PAWN
 ; check_black_nxc3_after_bxh8_forced
-  .byte $06, $33, $52
-  .byte $07, WHITE_BISHOP, $33, BLACK_KNIGHT, $52, WHITE_KNIGHT
-  .byte $34, WHITE_KNIGHT, $22, WHITE_PAWN, $42, BLACK_PAWN
+  .byte $44, $3b, $52
+  .byte $07, WHITE_BISHOP, $34, WHITE_KNIGHT, $22, WHITE_PAWN, $42, BLACK_PAWN
 ; check_black_nxc3_after_bxh8_quiet
-  .byte $06, $33, $52
-  .byte $07, WHITE_BISHOP, $33, BLACK_KNIGHT, $52, WHITE_KNIGHT
-  .byte $31, BLACK_PAWN, $42, BLACK_PAWN, $34, EMPTY_PIECE
+  .byte $44, $3b, $52
+  .byte $07, WHITE_BISHOP, $31, BLACK_PAWN, $42, BLACK_PAWN, $34, EMPTY_PIECE
 ; check_black_e6_after_poisoned_nxc3
-  .byte $09, $14, $24
-  .byte $52, BLACK_KNIGHT, $73, WHITE_QUEEN, $74, WHITE_KING
-  .byte $34, WHITE_KNIGHT, $22, WHITE_PAWN, $42, WHITE_BISHOP
-  .byte $43, WHITE_PAWN, $14, BLACK_PAWN, $24, EMPTY_PIECE
+  .byte $27, $14, $24
+  .byte $52, BLACK_KNIGHT, $73, WHITE_QUEEN, $74, WHITE_KING, $34, WHITE_KNIGHT
+  .byte $22, WHITE_PAWN, $42, WHITE_BISHOP, $43, WHITE_PAWN
 ; check_black_qc7_after_poisoned_nxc3_e6
-  .byte $08, $03, $12
-  .byte $52, BLACK_KNIGHT, $55, WHITE_QUEEN, $34, WHITE_KNIGHT
-  .byte $22, WHITE_PAWN, $24, BLACK_PAWN, $03, BLACK_QUEEN
-  .byte $12, EMPTY_PIECE, $04, BLACK_KING
+  .byte $a6, $03, $12
+  .byte $52, BLACK_KNIGHT, $55, WHITE_QUEEN, $34, WHITE_KNIGHT, $22, WHITE_PAWN
+  .byte $24, BLACK_PAWN, $04, BLACK_KING
 ; check_black_bd6_after_poisoned_qc7
-  .byte $0a, $05, $23
-  .byte $12, BLACK_QUEEN, $05, BLACK_BISHOP, $23, EMPTY_PIECE
-  .byte $34, WHITE_KNIGHT, $22, WHITE_PAWN, $42, WHITE_BISHOP
-  .byte $52, WHITE_PAWN, $55, WHITE_QUEEN, $24, BLACK_PAWN
-  .byte $04, BLACK_KING
+  .byte $68, $05, $23
+  .byte $12, BLACK_QUEEN, $34, WHITE_KNIGHT, $22, WHITE_PAWN, $42, WHITE_BISHOP
+  .byte $52, WHITE_PAWN, $55, WHITE_QUEEN, $24, BLACK_PAWN, $04, BLACK_KING
 ; check_black_bxe5_after_poisoned_bd6
-  .byte $08, $23, $34
-  .byte $12, BLACK_QUEEN, $23, BLACK_BISHOP, $24, BLACK_BISHOP
-  .byte $25, WHITE_QUEEN, $34, WHITE_KNIGHT, $22, WHITE_PAWN
+  .byte $66, $2b, $34
+  .byte $12, BLACK_QUEEN, $24, BLACK_BISHOP, $25, WHITE_QUEEN, $22, WHITE_PAWN
   .byte $52, WHITE_PAWN, $04, BLACK_KING
 ; check_black_bb7_after_ne5_bxh8
-  .byte $07, $02, $11
-  .byte $07, WHITE_BISHOP, $34, WHITE_KNIGHT, $02, BLACK_BISHOP
-  .byte $22, BLACK_KNIGHT, $33, BLACK_KNIGHT, $31, BLACK_PAWN
-  .byte $11, EMPTY_PIECE
+  .byte $65, $02, $11
+  .byte $07, WHITE_BISHOP, $34, WHITE_KNIGHT, $22, BLACK_KNIGHT, $33, BLACK_KNIGHT
+  .byte $31, BLACK_PAWN
 ; check_black_ng6_after_philidor_f4
-  .byte $08, $34, $26
-  .byte $34, BLACK_KNIGHT, $25, BLACK_KNIGHT, $14, BLACK_QUEEN
-  .byte $06, BLACK_KING, $44, WHITE_PAWN, $45, WHITE_PAWN
-  .byte $64, WHITE_BISHOP, $26, EMPTY_PIECE
+  .byte $46, $34, $26
+  .byte $25, BLACK_KNIGHT, $14, BLACK_QUEEN, $06, BLACK_KING, $44, WHITE_PAWN
+  .byte $45, WHITE_PAWN, $64, WHITE_BISHOP
 ; check_black_h6_against_bishop_g5
-  .byte $09, $17, $27
-  .byte $25, BLACK_BISHOP, $34, BLACK_KNIGHT, $43, WHITE_KNIGHT
-  .byte $56, WHITE_BISHOP, $52, WHITE_KNIGHT, $64, WHITE_BISHOP
-  .byte $06, BLACK_KING, $17, BLACK_PAWN, $27, EMPTY_PIECE
+  .byte $27, $17, $27
+  .byte $25, BLACK_BISHOP, $34, BLACK_KNIGHT, $43, WHITE_KNIGHT, $56, WHITE_BISHOP
+  .byte $52, WHITE_KNIGHT, $64, WHITE_BISHOP, $06, BLACK_KING
 ; check_black_re8_in_re3_rook_line
-  .byte $06, $05, $04
-  .byte $05, BLACK_ROOK, $04, EMPTY_PIECE, $54, WHITE_ROOK
-  .byte $53, WHITE_BISHOP, $33, WHITE_PAWN, $13, BLACK_BISHOP
+  .byte $84, $05, $04
+  .byte $54, WHITE_ROOK, $53, WHITE_BISHOP, $33, WHITE_PAWN, $13, BLACK_BISHOP
 ; check_black_rc8_after_caro_queen_raid
-  .byte $05, $00, $02
+  .byte $83, $00, $02
   .byte $22, WHITE_QUEEN, $42, BLACK_PAWN, $24, BLACK_BISHOP
-  .byte $00, BLACK_ROOK, $02, EMPTY_PIECE
 ; check_black_bf5_after_caro_f6_nf4
-  .byte $05, $24, $35
-  .byte $22, WHITE_QUEEN, $45, WHITE_KNIGHT, $24, BLACK_BISHOP
-  .byte $25, BLACK_PAWN, $35, EMPTY_PIECE
+  .byte $63, $24, $35
+  .byte $22, WHITE_QUEEN, $45, WHITE_KNIGHT, $25, BLACK_PAWN
 ; check_black_dxc4_after_caro_queen_raid
-  .byte $07, $33, $42
-  .byte $11, WHITE_QUEEN, $33, BLACK_PAWN, $42, WHITE_PAWN
-  .byte $34, WHITE_PAWN, $43, WHITE_PAWN, $24, BLACK_BISHOP
+  .byte $25, $b3, $42
+  .byte $11, WHITE_QUEEN, $34, WHITE_PAWN, $43, WHITE_PAWN, $24, BLACK_BISHOP
   .byte $16, BLACK_BISHOP
 ; check_black_nf6_after_queen_raid_e6
-  .byte $08, $06, $25
-  .byte $22, WHITE_QUEEN, $24, WHITE_PAWN, $33, WHITE_PAWN
-  .byte $35, BLACK_BISHOP, $16, BLACK_BISHOP, $13, BLACK_KNIGHT
-  .byte $06, BLACK_KNIGHT, $25, EMPTY_PIECE
+  .byte $46, $06, $25
+  .byte $22, WHITE_QUEEN, $24, WHITE_PAWN, $33, WHITE_PAWN, $35, BLACK_BISHOP
+  .byte $16, BLACK_BISHOP, $13, BLACK_KNIGHT
 ; check_black_h6_after_compact_philidor
-  .byte $0a, $17, $27
-  .byte $35, WHITE_KNIGHT, $13, BLACK_KNIGHT, $25, BLACK_KNIGHT
-  .byte $14, BLACK_BISHOP, $53, WHITE_BISHOP, $52, WHITE_KNIGHT
-  .byte $06, BLACK_KING, $76, WHITE_KING, $17, BLACK_PAWN
-  .byte $27, EMPTY_PIECE
+  .byte $28, $17, $27
+  .byte $35, WHITE_KNIGHT, $13, BLACK_KNIGHT, $25, BLACK_KNIGHT, $14, BLACK_BISHOP
+  .byte $53, WHITE_BISHOP, $52, WHITE_KNIGHT, $06, BLACK_KING, $76, WHITE_KING
 ; check_black_nxd5_after_philidor_h6_nd5
-  .byte $09, $25, $33
-  .byte $35, WHITE_KNIGHT, $33, WHITE_KNIGHT, $25, BLACK_KNIGHT
-  .byte $13, BLACK_KNIGHT, $14, BLACK_BISHOP, $53, WHITE_BISHOP
+  .byte $47, $2d, $33
+  .byte $35, WHITE_KNIGHT, $13, BLACK_KNIGHT, $14, BLACK_BISHOP, $53, WHITE_BISHOP
   .byte $06, BLACK_KING, $76, WHITE_KING, $27, BLACK_PAWN
 ; check_black_h6_after_ne5_philidor
-  .byte $0a, $17, $27
-  .byte $34, BLACK_KNIGHT, $25, BLACK_KNIGHT, $14, BLACK_QUEEN
-  .byte $02, BLACK_BISHOP, $06, BLACK_KING, $64, WHITE_BISHOP
-  .byte $52, WHITE_KNIGHT, $76, WHITE_KING, $17, BLACK_PAWN
-  .byte $27, EMPTY_PIECE
+  .byte $28, $17, $27
+  .byte $34, BLACK_KNIGHT, $25, BLACK_KNIGHT, $14, BLACK_QUEEN, $02, BLACK_BISHOP
+  .byte $06, BLACK_KING, $64, WHITE_BISHOP, $52, WHITE_KNIGHT, $76, WHITE_KING
 ; check_black_c6_in_castled_bishop_pin
-  .byte $09, $12, $22
-  .byte $14, BLACK_QUEEN, $34, BLACK_KNIGHT, $25, BLACK_KNIGHT
-  .byte $36, WHITE_BISHOP, $52, WHITE_KNIGHT, $64, WHITE_BISHOP
-  .byte $76, WHITE_KING, $12, BLACK_PAWN, $22, EMPTY_PIECE
+  .byte $27, $12, $22
+  .byte $14, BLACK_QUEEN, $34, BLACK_KNIGHT, $25, BLACK_KNIGHT, $36, WHITE_BISHOP
+  .byte $52, WHITE_KNIGHT, $64, WHITE_BISHOP, $76, WHITE_KING
 ; check_black_ne5_before_philidor_castles
-  .byte $09, $22, $34
-  .byte $22, BLACK_KNIGHT, $12, BLACK_KNIGHT, $14, BLACK_BISHOP
-  .byte $23, BLACK_PAWN, $43, WHITE_KNIGHT, $52, WHITE_KNIGHT
-  .byte $55, WHITE_BISHOP, $04, BLACK_KING, $34, EMPTY_PIECE
+  .byte $47, $22, $34
+  .byte $12, BLACK_KNIGHT, $14, BLACK_BISHOP, $23, BLACK_PAWN, $43, WHITE_KNIGHT
+  .byte $52, WHITE_KNIGHT, $55, WHITE_BISHOP, $04, BLACK_KING
 ; check_queens_pawn_nd5_against_nb5
-  .byte $07, $25, $33
-  .byte $25, BLACK_KNIGHT, $31, WHITE_KNIGHT, $24, BLACK_BISHOP
-  .byte $42, BLACK_PAWN, $43, WHITE_PAWN, $26, BLACK_PAWN
-  .byte $33, EMPTY_PIECE
+  .byte $45, $25, $33
+  .byte $31, WHITE_KNIGHT, $24, BLACK_BISHOP, $42, BLACK_PAWN, $43, WHITE_PAWN
+  .byte $26, BLACK_PAWN
 ; check_queens_pawn_bg7_after_b5_push
-  .byte $06, $05, $16
-  .byte $31, WHITE_PAWN, $42, BLACK_PAWN, $24, BLACK_BISHOP
-  .byte $26, BLACK_PAWN, $05, BLACK_BISHOP, $16, EMPTY_PIECE
+  .byte $64, $05, $16
+  .byte $31, WHITE_PAWN, $42, BLACK_PAWN, $24, BLACK_BISHOP, $26, BLACK_PAWN
 ; check_queens_pawn_a6_after_b5_a4_c6
-  .byte $07, $10, $20
-  .byte $31, BLACK_PAWN, $40, WHITE_PAWN, $22, BLACK_PAWN
-  .byte $42, BLACK_PAWN, $45, WHITE_BISHOP, $10, BLACK_PAWN
-  .byte $20, EMPTY_PIECE
+  .byte $25, $10, $20
+  .byte $31, BLACK_PAWN, $40, WHITE_PAWN, $22, BLACK_PAWN, $42, BLACK_PAWN
+  .byte $45, WHITE_BISHOP
 ; check_sicilian_bishop_check_bd7
-  .byte $06, $02, $13
-  .byte $31, WHITE_BISHOP, $33, WHITE_PAWN, $25, BLACK_KNIGHT
-  .byte $32, BLACK_PAWN, $02, BLACK_BISHOP, $13, EMPTY_PIECE
+  .byte $64, $02, $13
+  .byte $31, WHITE_BISHOP, $33, WHITE_PAWN, $25, BLACK_KNIGHT, $32, BLACK_PAWN
 ; check_sicilian_castled_bishop_g7
-  .byte $07, $05, $16
-  .byte $22, BLACK_KNIGHT, $31, WHITE_BISHOP, $32, BLACK_PAWN
-  .byte $26, BLACK_PAWN, $05, BLACK_BISHOP, $16, EMPTY_PIECE
+  .byte $25, $05, $16
+  .byte $22, BLACK_KNIGHT, $31, WHITE_BISHOP, $32, BLACK_PAWN, $26, BLACK_PAWN
   .byte $76, WHITE_KING
 ; check_queens_pawn_c6_after_b5_a4
-  .byte $08, $12, $22
-  .byte $31, BLACK_PAWN, $40, WHITE_PAWN, $42, BLACK_PAWN
-  .byte $43, WHITE_PAWN, $54, WHITE_PAWN, $55, WHITE_KNIGHT
-  .byte $12, BLACK_PAWN, $22, EMPTY_PIECE
+  .byte $26, $12, $22
+  .byte $31, BLACK_PAWN, $40, WHITE_PAWN, $42, BLACK_PAWN, $43, WHITE_PAWN
+  .byte $54, WHITE_PAWN, $55, WHITE_KNIGHT
 ; check_queens_pawn_b5_after_dxc4
-  .byte $07, $11, $31
-  .byte $42, BLACK_PAWN, $43, WHITE_PAWN, $54, WHITE_PAWN
-  .byte $55, WHITE_KNIGHT, $11, BLACK_PAWN, $21, EMPTY_PIECE
-  .byte $31, EMPTY_PIECE
+  .byte $25, $11, $31
+  .byte $42, BLACK_PAWN, $43, WHITE_PAWN, $54, WHITE_PAWN, $55, WHITE_KNIGHT
+  .byte $21, EMPTY_PIECE
 ; check_queens_pawn_e6_after_bf5
-  .byte $07, $14, $24
-  .byte $35, BLACK_BISHOP, $42, WHITE_BISHOP, $43, WHITE_PAWN
-  .byte $54, WHITE_PAWN, $55, WHITE_KNIGHT, $14, BLACK_PAWN
-  .byte $24, EMPTY_PIECE
+  .byte $25, $14, $24
+  .byte $35, BLACK_BISHOP, $42, WHITE_BISHOP, $43, WHITE_PAWN, $54, WHITE_PAWN
+  .byte $55, WHITE_KNIGHT
 ; check_caro_advance_qb6
-  .byte $09, $03, $21
-  .byte $22, BLACK_PAWN, $33, BLACK_PAWN, $34, WHITE_PAWN
-  .byte $43, WHITE_PAWN, $53, WHITE_BISHOP, $26, BLACK_PAWN
-  .byte $03, BLACK_QUEEN, $12, EMPTY_PIECE, $21, EMPTY_PIECE
+  .byte $a7, $03, $21
+  .byte $22, BLACK_PAWN, $33, BLACK_PAWN, $34, WHITE_PAWN, $43, WHITE_PAWN
+  .byte $53, WHITE_BISHOP, $26, BLACK_PAWN, $12, EMPTY_PIECE
 ; check_caro_advance_bg4
-  .byte $0b, $02, $46
-  .byte $22, BLACK_PAWN, $33, BLACK_PAWN, $34, WHITE_PAWN
-  .byte $43, WHITE_PAWN, $55, WHITE_KNIGHT, $26, BLACK_PAWN
-  .byte $02, BLACK_BISHOP, $13, EMPTY_PIECE, $24, EMPTY_PIECE
-  .byte $35, EMPTY_PIECE, $46, EMPTY_PIECE
+  .byte $69, $02, $46
+  .byte $22, BLACK_PAWN, $33, BLACK_PAWN, $34, WHITE_PAWN, $43, WHITE_PAWN
+  .byte $55, WHITE_KNIGHT, $26, BLACK_PAWN, $13, EMPTY_PIECE, $24, EMPTY_PIECE
+  .byte $35, EMPTY_PIECE
 ; check_caro_advance_bishop_e6
-  .byte $08, $02, $24
-  .byte $22, BLACK_PAWN, $33, BLACK_PAWN, $34, WHITE_PAWN
-  .byte $42, WHITE_PAWN, $43, WHITE_PAWN, $26, BLACK_PAWN
-  .byte $02, BLACK_BISHOP, $24, EMPTY_PIECE
+  .byte $66, $02, $24
+  .byte $22, BLACK_PAWN, $33, BLACK_PAWN, $34, WHITE_PAWN, $42, WHITE_PAWN
+  .byte $43, WHITE_PAWN, $26, BLACK_PAWN
 ; check_caro_advance_rb8_after_qxb7
-  .byte $08, $00, $01
-  .byte $00, BLACK_ROOK, $11, WHITE_QUEEN, $24, BLACK_BISHOP
-  .byte $32, BLACK_PAWN, $34, WHITE_PAWN, $43, WHITE_PAWN
-  .byte $33, WHITE_PAWN, $01, EMPTY_PIECE
+  .byte $86, $00, $01
+  .byte $11, WHITE_QUEEN, $24, BLACK_BISHOP, $32, BLACK_PAWN, $34, WHITE_PAWN
+  .byte $43, WHITE_PAWN, $33, WHITE_PAWN
 ; check_caro_advance_g6
-  .byte $06, $16, $26
-  .byte $22, BLACK_PAWN, $33, BLACK_PAWN, $34, WHITE_PAWN
-  .byte $43, WHITE_PAWN, $16, BLACK_PAWN, $26, EMPTY_PIECE
+  .byte $24, $16, $26
+  .byte $22, BLACK_PAWN, $33, BLACK_PAWN, $34, WHITE_PAWN, $43, WHITE_PAWN
 ; check_queens_pawn_c6_after_nf3
-  .byte $05, $12, $22
+  .byte $23, $12, $22
   .byte $33, BLACK_PAWN, $43, WHITE_PAWN, $55, WHITE_KNIGHT
-  .byte $12, BLACK_PAWN, $22, EMPTY_PIECE
 ; check_queens_pawn_g6_after_c6_c4
-  .byte $07, $16, $26
-  .byte $22, BLACK_PAWN, $33, BLACK_PAWN, $42, WHITE_PAWN
-  .byte $43, WHITE_PAWN, $55, WHITE_KNIGHT, $16, BLACK_PAWN
-  .byte $26, EMPTY_PIECE
+  .byte $25, $16, $26
+  .byte $22, BLACK_PAWN, $33, BLACK_PAWN, $42, WHITE_PAWN, $43, WHITE_PAWN
+  .byte $55, WHITE_KNIGHT
 ; check_queens_pawn_dxc4
-  .byte $04, $33, $42
-  .byte $33, BLACK_PAWN, $42, WHITE_PAWN, $43, WHITE_PAWN
-  .byte $34, EMPTY_PIECE
+  .byte $22, $b3, $42
+  .byte $43, WHITE_PAWN, $34, EMPTY_PIECE
 ; check_center_queen_line_f6
-  .byte $07, $15, $25
-  .byte $14, BLACK_QUEEN, $34, WHITE_KNIGHT, $33, BLACK_PAWN
-  .byte $43, WHITE_PAWN, $44, WHITE_PAWN, $15, BLACK_PAWN
-  .byte $25, EMPTY_PIECE
+  .byte $25, $15, $25
+  .byte $14, BLACK_QUEEN, $34, WHITE_KNIGHT, $33, BLACK_PAWN, $43, WHITE_PAWN
+  .byte $44, WHITE_PAWN
 ; check_center_queen_line_qxe4_after_nd3
-  .byte $08, $14, $44
-  .byte $14, BLACK_QUEEN, $53, WHITE_KNIGHT, $33, BLACK_PAWN
-  .byte $43, WHITE_PAWN, $44, WHITE_PAWN, $25, BLACK_PAWN
+  .byte $a6, $94, $44
+  .byte $53, WHITE_KNIGHT, $33, BLACK_PAWN, $43, WHITE_PAWN, $25, BLACK_PAWN
   .byte $24, EMPTY_PIECE, $34, EMPTY_PIECE
 ; check_center_queen_line_qxd5_after_d3_qe2
-  .byte $06, $03, $33
-  .byte $03, BLACK_QUEEN, $33, WHITE_PAWN, $44, BLACK_PAWN
-  .byte $53, WHITE_PAWN, $55, WHITE_KNIGHT, $64, WHITE_QUEEN
+  .byte $a4, $83, $33
+  .byte $44, BLACK_PAWN, $53, WHITE_PAWN, $55, WHITE_KNIGHT, $64, WHITE_QUEEN
 ; check_center_queen_line_qe7_after_qe2
-  .byte $07, $03, $14
-  .byte $03, BLACK_QUEEN, $33, WHITE_PAWN, $44, BLACK_PAWN
-  .byte $64, WHITE_QUEEN, $52, WHITE_KNIGHT, $55, WHITE_KNIGHT
-  .byte $14, EMPTY_PIECE
+  .byte $a5, $03, $14
+  .byte $33, WHITE_PAWN, $44, BLACK_PAWN, $64, WHITE_QUEEN, $52, WHITE_KNIGHT
+  .byte $55, WHITE_KNIGHT
 ; check_black_qe7_after_early_center_qe2_check
-  .byte $0b, $03, $14
-  .byte $03, BLACK_QUEEN, $14, EMPTY_PIECE, $64, WHITE_QUEEN
-  .byte $04, BLACK_KING, $41, BLACK_KNIGHT, $33, WHITE_PAWN
-  .byte $25, BLACK_KNIGHT, $52, WHITE_KNIGHT, $13, EMPTY_PIECE
-  .byte $05, BLACK_BISHOP, $74, WHITE_KING
+  .byte $a9, $03, $14
+  .byte $64, WHITE_QUEEN, $04, BLACK_KING, $41, BLACK_KNIGHT, $33, WHITE_PAWN
+  .byte $25, BLACK_KNIGHT, $52, WHITE_KNIGHT, $13, EMPTY_PIECE, $05, BLACK_BISHOP
+  .byte $74, WHITE_KING
 ; check_black_nxd5_after_early_center_be3
-  .byte $0b, $41, $33
-  .byte $41, BLACK_KNIGHT, $33, WHITE_PAWN, $14, BLACK_QUEEN
-  .byte $64, WHITE_QUEEN, $54, WHITE_BISHOP, $25, BLACK_KNIGHT
-  .byte $52, WHITE_KNIGHT, $04, BLACK_KING, $13, EMPTY_PIECE
-  .byte $02, BLACK_BISHOP, $05, BLACK_BISHOP
+  .byte $49, $c1, $33
+  .byte $14, BLACK_QUEEN, $64, WHITE_QUEEN, $54, WHITE_BISHOP, $25, BLACK_KNIGHT
+  .byte $52, WHITE_KNIGHT, $04, BLACK_KING, $13, EMPTY_PIECE, $02, BLACK_BISHOP
+  .byte $05, BLACK_BISHOP
 ; check_black_nxe3_after_early_center_castles
-  .byte $0b, $33, $54
-  .byte $33, BLACK_KNIGHT, $54, WHITE_BISHOP, $72, WHITE_KING
-  .byte $73, WHITE_ROOK, $64, WHITE_QUEEN, $14, BLACK_QUEEN
-  .byte $04, BLACK_KING, $02, BLACK_BISHOP, $05, BLACK_BISHOP
-  .byte $13, EMPTY_PIECE, $52, EMPTY_PIECE
+  .byte $49, $bb, $54
+  .byte $72, WHITE_KING, $73, WHITE_ROOK, $64, WHITE_QUEEN, $14, BLACK_QUEEN
+  .byte $04, BLACK_KING, $02, BLACK_BISHOP, $05, BLACK_BISHOP, $13, EMPTY_PIECE
+  .byte $52, EMPTY_PIECE
 ; check_black_exd4_after_early_d4
-  .byte $07, $34, $43
-  .byte $34, BLACK_PAWN, $43, WHITE_PAWN, $44, WHITE_PAWN
-  .byte $13, BLACK_PAWN, $04, BLACK_KING, $74, WHITE_KING
+  .byte $25, $b4, $43
+  .byte $44, WHITE_PAWN, $13, BLACK_PAWN, $04, BLACK_KING, $74, WHITE_KING
   .byte $55, EMPTY_PIECE
 ; check_black_nc6_after_e4_e5_nf3
-  .byte $08, $01, $22
-  .byte $34, BLACK_PAWN, $44, WHITE_PAWN, $55, WHITE_KNIGHT
-  .byte $01, BLACK_KNIGHT, $22, EMPTY_PIECE, $13, BLACK_PAWN
+  .byte $46, $01, $22
+  .byte $34, BLACK_PAWN, $44, WHITE_PAWN, $55, WHITE_KNIGHT, $13, BLACK_PAWN
   .byte $04, BLACK_KING, $74, WHITE_KING
 ; check_black_nf6_after_ruy_bb5
-  .byte $0a, $06, $25
-  .byte $06, BLACK_KNIGHT, $25, EMPTY_PIECE, $31, WHITE_BISHOP
-  .byte $55, WHITE_KNIGHT, $22, BLACK_KNIGHT, $34, BLACK_PAWN
-  .byte $44, WHITE_PAWN, $04, BLACK_KING, $74, WHITE_KING
-  .byte $13, BLACK_PAWN
+  .byte $48, $06, $25
+  .byte $31, WHITE_BISHOP, $55, WHITE_KNIGHT, $22, BLACK_KNIGHT, $34, BLACK_PAWN
+  .byte $44, WHITE_PAWN, $04, BLACK_KING, $74, WHITE_KING, $13, BLACK_PAWN
 ; check_black_nxe4_after_ruy_castles
-  .byte $0b, $25, $44
-  .byte $25, BLACK_KNIGHT, $44, WHITE_PAWN, $31, WHITE_BISHOP
-  .byte $76, WHITE_KING, $75, WHITE_ROOK, $22, BLACK_KNIGHT
-  .byte $34, BLACK_PAWN, $04, BLACK_KING, $03, BLACK_QUEEN
-  .byte $13, BLACK_PAWN, $05, BLACK_BISHOP
+  .byte $49, $a5, $44
+  .byte $31, WHITE_BISHOP, $76, WHITE_KING, $75, WHITE_ROOK, $22, BLACK_KNIGHT
+  .byte $34, BLACK_PAWN, $04, BLACK_KING, $03, BLACK_QUEEN, $13, BLACK_PAWN
+  .byte $05, BLACK_BISHOP
 ; check_black_nd6_after_ruy_nxe4_d4
-  .byte $0a, $44, $23
-  .byte $44, BLACK_KNIGHT, $23, EMPTY_PIECE, $31, WHITE_BISHOP
-  .byte $76, WHITE_KING, $75, WHITE_ROOK, $43, WHITE_PAWN
-  .byte $34, BLACK_PAWN, $13, BLACK_PAWN, $22, BLACK_KNIGHT
-  .byte $04, BLACK_KING
+  .byte $48, $44, $23
+  .byte $31, WHITE_BISHOP, $76, WHITE_KING, $75, WHITE_ROOK, $43, WHITE_PAWN
+  .byte $34, BLACK_PAWN, $13, BLACK_PAWN, $22, BLACK_KNIGHT, $04, BLACK_KING
 ; check_black_nd6_after_ruy_nxe4_re1
-  .byte $0b, $44, $23
-  .byte $44, BLACK_KNIGHT, $23, EMPTY_PIECE, $74, WHITE_ROOK
-  .byte $76, WHITE_KING, $31, WHITE_BISHOP, $22, BLACK_KNIGHT
-  .byte $34, BLACK_PAWN, $13, BLACK_PAWN, $04, BLACK_KING
-  .byte $03, BLACK_QUEEN, $05, BLACK_BISHOP
+  .byte $49, $44, $23
+  .byte $74, WHITE_ROOK, $76, WHITE_KING, $31, WHITE_BISHOP, $22, BLACK_KNIGHT
+  .byte $34, BLACK_PAWN, $13, BLACK_PAWN, $04, BLACK_KING, $03, BLACK_QUEEN
+  .byte $05, BLACK_BISHOP
 ; check_black_bd7_after_ruy_nxe5
-  .byte $0b, $02, $13
-  .byte $02, BLACK_BISHOP, $13, EMPTY_PIECE, $34, WHITE_KNIGHT
-  .byte $44, BLACK_KNIGHT, $31, WHITE_BISHOP, $43, WHITE_PAWN
-  .byte $33, BLACK_PAWN, $22, BLACK_KNIGHT, $05, BLACK_BISHOP
-  .byte $04, BLACK_KING, $76, WHITE_KING
+  .byte $69, $02, $13
+  .byte $34, WHITE_KNIGHT, $44, BLACK_KNIGHT, $31, WHITE_BISHOP, $43, WHITE_PAWN
+  .byte $33, BLACK_PAWN, $22, BLACK_KNIGHT, $05, BLACK_BISHOP, $04, BLACK_KING
+  .byte $76, WHITE_KING
 ; check_black_nb4_after_ruy_cxd5
-  .byte $0a, $22, $41
-  .byte $22, BLACK_KNIGHT, $41, EMPTY_PIECE, $33, WHITE_PAWN
-  .byte $44, WHITE_ROOK, $31, WHITE_BISHOP, $14, BLACK_BISHOP
-  .byte $06, BLACK_KING, $03, BLACK_QUEEN, $43, WHITE_PAWN
-  .byte $04, EMPTY_PIECE
+  .byte $48, $22, $41
+  .byte $33, WHITE_PAWN, $44, WHITE_ROOK, $31, WHITE_BISHOP, $14, BLACK_BISHOP
+  .byte $06, BLACK_KING, $03, BLACK_QUEEN, $43, WHITE_PAWN, $04, EMPTY_PIECE
 ; check_black_f5_after_ruy_nfd2
-  .byte $0a, $15, $35
-  .byte $15, BLACK_PAWN, $35, EMPTY_PIECE, $23, BLACK_KNIGHT
-  .byte $44, BLACK_PAWN, $74, WHITE_ROOK, $76, WHITE_KING
-  .byte $14, BLACK_BISHOP, $31, WHITE_BISHOP, $63, WHITE_KNIGHT
-  .byte $04, BLACK_KING
+  .byte $28, $15, $35
+  .byte $23, BLACK_KNIGHT, $44, BLACK_PAWN, $74, WHITE_ROOK, $76, WHITE_KING
+  .byte $14, BLACK_BISHOP, $31, WHITE_BISHOP, $63, WHITE_KNIGHT, $04, BLACK_KING
 ; check_black_b6_after_ruy_f5_ba4
-  .byte $0c, $11, $21
-  .byte $11, BLACK_PAWN, $21, EMPTY_PIECE, $44, BLACK_PAWN
-  .byte $35, BLACK_PAWN, $40, WHITE_BISHOP, $74, WHITE_ROOK
-  .byte $76, WHITE_KING, $23, BLACK_KNIGHT, $22, BLACK_KNIGHT
-  .byte $14, BLACK_BISHOP, $06, BLACK_KING, $05, BLACK_ROOK
+  .byte $2a, $11, $21
+  .byte $44, BLACK_PAWN, $35, BLACK_PAWN, $40, WHITE_BISHOP, $74, WHITE_ROOK
+  .byte $76, WHITE_KING, $23, BLACK_KNIGHT, $22, BLACK_KNIGHT, $14, BLACK_BISHOP
+  .byte $06, BLACK_KING, $05, BLACK_ROOK
 ; check_black_nxe4_after_ruy_c5_ndxe4
-  .byte $0a, $23, $44
-  .byte $23, BLACK_KNIGHT, $44, WHITE_KNIGHT, $40, WHITE_BISHOP
-  .byte $32, BLACK_PAWN, $35, BLACK_PAWN, $14, BLACK_BISHOP
-  .byte $22, BLACK_KNIGHT, $06, BLACK_KING, $74, WHITE_ROOK
-  .byte $76, WHITE_KING
+  .byte $48, $2b, $44
+  .byte $40, WHITE_BISHOP, $32, BLACK_PAWN, $35, BLACK_PAWN, $14, BLACK_BISHOP
+  .byte $22, BLACK_KNIGHT, $06, BLACK_KING, $74, WHITE_ROOK, $76, WHITE_KING
 ; check_black_nd4_after_ruy_d5
-  .byte $0a, $22, $43
-  .byte $22, BLACK_KNIGHT, $43, EMPTY_PIECE, $33, WHITE_PAWN
-  .byte $32, BLACK_PAWN, $44, BLACK_KNIGHT, $40, WHITE_BISHOP
-  .byte $14, BLACK_BISHOP, $06, BLACK_KING, $74, WHITE_ROOK
-  .byte $76, WHITE_KING
+  .byte $48, $22, $43
+  .byte $33, WHITE_PAWN, $32, BLACK_PAWN, $44, BLACK_KNIGHT, $40, WHITE_BISHOP
+  .byte $14, BLACK_BISHOP, $06, BLACK_KING, $74, WHITE_ROOK, $76, WHITE_KING
 ; check_black_bxd6_after_ruy_d6
-  .byte $0a, $14, $23
-  .byte $14, BLACK_BISHOP, $23, WHITE_PAWN, $34, BLACK_KNIGHT
-  .byte $44, BLACK_KNIGHT, $32, BLACK_PAWN, $35, BLACK_PAWN
-  .byte $40, WHITE_BISHOP, $52, WHITE_KNIGHT, $06, BLACK_KING
-  .byte $76, WHITE_KING
+  .byte $68, $94, $23
+  .byte $34, BLACK_KNIGHT, $44, BLACK_KNIGHT, $32, BLACK_PAWN, $35, BLACK_PAWN
+  .byte $40, WHITE_BISHOP, $52, WHITE_KNIGHT, $06, BLACK_KING, $76, WHITE_KING
 ; check_black_dxc6_after_ruy_bxc6
-  .byte $0a, $13, $22
-  .byte $13, BLACK_PAWN, $22, WHITE_BISHOP, $43, BLACK_PAWN
-  .byte $23, BLACK_BISHOP, $02, BLACK_BISHOP, $03, BLACK_QUEEN
-  .byte $06, BLACK_KING, $52, WHITE_KNIGHT, $35, BLACK_PAWN
-  .byte $72, WHITE_BISHOP
+  .byte $28, $9b, $22
+  .byte $43, BLACK_PAWN, $23, BLACK_BISHOP, $02, BLACK_BISHOP, $03, BLACK_QUEEN
+  .byte $06, BLACK_KING, $52, WHITE_KNIGHT, $35, BLACK_PAWN, $72, WHITE_BISHOP
 ; check_black_nxd5_after_ruy_nb4_nc3
-  .byte $0a, $41, $33
-  .byte $41, BLACK_KNIGHT, $33, WHITE_PAWN, $52, WHITE_KNIGHT
-  .byte $44, WHITE_ROOK, $31, WHITE_BISHOP, $14, BLACK_BISHOP
-  .byte $06, BLACK_KING, $03, BLACK_QUEEN, $43, WHITE_PAWN
-  .byte $04, EMPTY_PIECE
+  .byte $48, $c1, $33
+  .byte $52, WHITE_KNIGHT, $44, WHITE_ROOK, $31, WHITE_BISHOP, $14, BLACK_BISHOP
+  .byte $06, BLACK_KING, $03, BLACK_QUEEN, $43, WHITE_PAWN, $04, EMPTY_PIECE
 ; check_black_nf6_after_open_a3
-  .byte $08, $06, $25
-  .byte $34, BLACK_PAWN, $44, WHITE_PAWN, $55, WHITE_KNIGHT
-  .byte $50, WHITE_PAWN, $22, BLACK_KNIGHT, $06, BLACK_KNIGHT
-  .byte $25, EMPTY_PIECE, $04, BLACK_KING
+  .byte $46, $06, $25
+  .byte $34, BLACK_PAWN, $44, WHITE_PAWN, $55, WHITE_KNIGHT, $50, WHITE_PAWN
+  .byte $22, BLACK_KNIGHT, $04, BLACK_KING
 ; check_black_nf6_after_vienna_knights
-  .byte $09, $06, $25
-  .byte $34, BLACK_PAWN, $44, WHITE_PAWN, $52, WHITE_KNIGHT
-  .byte $55, WHITE_KNIGHT, $22, BLACK_KNIGHT, $06, BLACK_KNIGHT
-  .byte $25, EMPTY_PIECE, $04, BLACK_KING, $74, WHITE_KING
+  .byte $47, $06, $25
+  .byte $34, BLACK_PAWN, $44, WHITE_PAWN, $52, WHITE_KNIGHT, $55, WHITE_KNIGHT
+  .byte $22, BLACK_KNIGHT, $04, BLACK_KING, $74, WHITE_KING
 ; check_black_nd4_after_four_knights_bb5
-  .byte $0b, $22, $43
-  .byte $22, BLACK_KNIGHT, $43, EMPTY_PIECE, $31, WHITE_BISHOP
-  .byte $52, WHITE_KNIGHT, $55, WHITE_KNIGHT, $25, BLACK_KNIGHT
-  .byte $34, BLACK_PAWN, $44, WHITE_PAWN, $13, BLACK_PAWN
-  .byte $63, WHITE_PAWN, $04, BLACK_KING
+  .byte $49, $22, $43
+  .byte $31, WHITE_BISHOP, $52, WHITE_KNIGHT, $55, WHITE_KNIGHT, $25, BLACK_KNIGHT
+  .byte $34, BLACK_PAWN, $44, WHITE_PAWN, $13, BLACK_PAWN, $63, WHITE_PAWN
+  .byte $04, BLACK_KING
 ; check_black_qe7_after_four_knights_nd4_nxe5
-  .byte $0b, $03, $14
-  .byte $03, BLACK_QUEEN, $14, EMPTY_PIECE, $34, WHITE_KNIGHT
-  .byte $43, BLACK_KNIGHT, $31, WHITE_BISHOP, $52, WHITE_KNIGHT
-  .byte $25, BLACK_KNIGHT, $44, WHITE_PAWN, $13, BLACK_PAWN
-  .byte $05, BLACK_BISHOP, $04, BLACK_KING
+  .byte $a9, $03, $14
+  .byte $34, WHITE_KNIGHT, $43, BLACK_KNIGHT, $31, WHITE_BISHOP, $52, WHITE_KNIGHT
+  .byte $25, BLACK_KNIGHT, $44, WHITE_PAWN, $13, BLACK_PAWN, $05, BLACK_BISHOP
+  .byte $04, BLACK_KING
 ; check_black_nxb5_after_four_knights_qe7_nf3
-  .byte $0a, $43, $31
-  .byte $43, BLACK_KNIGHT, $31, WHITE_BISHOP, $14, BLACK_QUEEN
-  .byte $55, WHITE_KNIGHT, $52, WHITE_KNIGHT, $25, BLACK_KNIGHT
-  .byte $44, WHITE_PAWN, $13, BLACK_PAWN, $05, BLACK_BISHOP
-  .byte $04, BLACK_KING
+  .byte $48, $cb, $31
+  .byte $14, BLACK_QUEEN, $55, WHITE_KNIGHT, $52, WHITE_KNIGHT, $25, BLACK_KNIGHT
+  .byte $44, WHITE_PAWN, $13, BLACK_PAWN, $05, BLACK_BISHOP, $04, BLACK_KING
 ; check_black_bb4_after_four_knights_d4
-  .byte $0a, $05, $41
-  .byte $05, BLACK_BISHOP, $41, EMPTY_PIECE, $43, WHITE_PAWN
-  .byte $44, WHITE_PAWN, $52, WHITE_KNIGHT, $55, WHITE_KNIGHT
-  .byte $22, BLACK_KNIGHT, $25, BLACK_KNIGHT, $34, BLACK_PAWN
-  .byte $04, BLACK_KING
+  .byte $68, $05, $41
+  .byte $43, WHITE_PAWN, $44, WHITE_PAWN, $52, WHITE_KNIGHT, $55, WHITE_KNIGHT
+  .byte $22, BLACK_KNIGHT, $25, BLACK_KNIGHT, $34, BLACK_PAWN, $04, BLACK_KING
 ; check_black_h6_after_four_knights_bg5
-  .byte $0c, $17, $27
-  .byte $17, BLACK_PAWN, $27, EMPTY_PIECE, $36, WHITE_BISHOP
-  .byte $41, BLACK_BISHOP, $43, WHITE_PAWN, $44, WHITE_PAWN
-  .byte $52, WHITE_KNIGHT, $55, WHITE_KNIGHT, $22, BLACK_KNIGHT
-  .byte $25, BLACK_KNIGHT, $34, BLACK_PAWN, $04, BLACK_KING
-; check_black_qxf6_after_four_knights_bxf6
-  .byte $0b, $03, $25
-  .byte $03, BLACK_QUEEN, $25, WHITE_BISHOP, $41, BLACK_BISHOP
-  .byte $27, BLACK_PAWN, $43, WHITE_PAWN, $44, WHITE_PAWN
-  .byte $52, WHITE_KNIGHT, $55, WHITE_KNIGHT, $22, BLACK_KNIGHT
+  .byte $2a, $17, $27
+  .byte $36, WHITE_BISHOP, $41, BLACK_BISHOP, $43, WHITE_PAWN, $44, WHITE_PAWN
+  .byte $52, WHITE_KNIGHT, $55, WHITE_KNIGHT, $22, BLACK_KNIGHT, $25, BLACK_KNIGHT
   .byte $34, BLACK_PAWN, $04, BLACK_KING
+; check_black_qxf6_after_four_knights_bxf6
+  .byte $a9, $8b, $25
+  .byte $41, BLACK_BISHOP, $27, BLACK_PAWN, $43, WHITE_PAWN, $44, WHITE_PAWN
+  .byte $52, WHITE_KNIGHT, $55, WHITE_KNIGHT, $22, BLACK_KNIGHT, $34, BLACK_PAWN
+  .byte $04, BLACK_KING
 ; check_black_bb4_after_four_knights_d5_bb5
-  .byte $0b, $05, $41
-  .byte $05, BLACK_BISHOP, $41, EMPTY_PIECE, $31, WHITE_BISHOP
-  .byte $33, BLACK_PAWN, $34, BLACK_PAWN, $43, WHITE_PAWN
-  .byte $44, WHITE_PAWN, $52, WHITE_KNIGHT, $55, WHITE_KNIGHT
-  .byte $22, BLACK_KNIGHT, $25, BLACK_KNIGHT
+  .byte $69, $05, $41
+  .byte $31, WHITE_BISHOP, $33, BLACK_PAWN, $34, BLACK_PAWN, $43, WHITE_PAWN
+  .byte $44, WHITE_PAWN, $52, WHITE_KNIGHT, $55, WHITE_KNIGHT, $22, BLACK_KNIGHT
+  .byte $25, BLACK_KNIGHT
 ; check_black_bd7_after_four_knights_nxd4
-  .byte $09, $02, $13
-  .byte $02, BLACK_BISHOP, $13, EMPTY_PIECE, $31, WHITE_BISHOP
-  .byte $33, BLACK_PAWN, $43, WHITE_KNIGHT, $44, WHITE_PAWN
+  .byte $67, $02, $13
+  .byte $31, WHITE_BISHOP, $33, BLACK_PAWN, $43, WHITE_KNIGHT, $44, WHITE_PAWN
   .byte $52, WHITE_KNIGHT, $22, BLACK_KNIGHT, $25, BLACK_KNIGHT
 ; check_black_castles_after_four_knights_nxe5
-  .byte $0d, $04, $06
-  .byte $04, BLACK_KING, $07, BLACK_ROOK, $05, EMPTY_PIECE
-  .byte $06, EMPTY_PIECE, $34, WHITE_KNIGHT, $33, BLACK_PAWN
-  .byte $41, BLACK_BISHOP, $31, WHITE_BISHOP, $22, BLACK_KNIGHT
-  .byte $25, BLACK_KNIGHT, $43, WHITE_PAWN, $44, WHITE_PAWN
-  .byte $52, WHITE_KNIGHT
+  .byte $cb, $04, $06
+  .byte $07, BLACK_ROOK, $05, EMPTY_PIECE, $34, WHITE_KNIGHT, $33, BLACK_PAWN
+  .byte $41, BLACK_BISHOP, $31, WHITE_BISHOP, $22, BLACK_KNIGHT, $25, BLACK_KNIGHT
+  .byte $43, WHITE_PAWN, $44, WHITE_PAWN, $52, WHITE_KNIGHT
 ; check_black_nf6_after_italian_bc4
-  .byte $09, $06, $25
-  .byte $34, BLACK_PAWN, $44, WHITE_PAWN, $55, WHITE_KNIGHT
-  .byte $42, WHITE_BISHOP, $22, BLACK_KNIGHT, $06, BLACK_KNIGHT
-  .byte $25, EMPTY_PIECE, $04, BLACK_KING, $13, BLACK_PAWN
+  .byte $47, $06, $25
+  .byte $34, BLACK_PAWN, $44, WHITE_PAWN, $55, WHITE_KNIGHT, $42, WHITE_BISHOP
+  .byte $22, BLACK_KNIGHT, $04, BLACK_KING, $13, BLACK_PAWN
 ; check_black_bc5_after_italian_nc3
-  .byte $0b, $05, $32
-  .byte $05, BLACK_BISHOP, $32, EMPTY_PIECE, $42, WHITE_BISHOP
-  .byte $52, WHITE_KNIGHT, $55, WHITE_KNIGHT, $22, BLACK_KNIGHT
-  .byte $25, BLACK_KNIGHT, $34, BLACK_PAWN, $44, WHITE_PAWN
-  .byte $04, BLACK_KING, $13, BLACK_PAWN
+  .byte $69, $05, $32
+  .byte $42, WHITE_BISHOP, $52, WHITE_KNIGHT, $55, WHITE_KNIGHT, $22, BLACK_KNIGHT
+  .byte $25, BLACK_KNIGHT, $34, BLACK_PAWN, $44, WHITE_PAWN, $04, BLACK_KING
+  .byte $13, BLACK_PAWN
 ; check_black_na5_after_two_knights_exd5
-  .byte $0a, $22, $30
-  .byte $22, BLACK_KNIGHT, $30, EMPTY_PIECE, $33, WHITE_PAWN
-  .byte $36, WHITE_KNIGHT, $42, WHITE_BISHOP, $25, BLACK_KNIGHT
-  .byte $34, BLACK_PAWN, $44, EMPTY_PIECE, $13, EMPTY_PIECE
-  .byte $04, BLACK_KING
+  .byte $48, $22, $30
+  .byte $33, WHITE_PAWN, $36, WHITE_KNIGHT, $42, WHITE_BISHOP, $25, BLACK_KNIGHT
+  .byte $34, BLACK_PAWN, $44, EMPTY_PIECE, $13, EMPTY_PIECE, $04, BLACK_KING
 ; check_black_nxd5_after_exd5
-  .byte $07, $25, $33
-  .byte $25, BLACK_KNIGHT, $33, WHITE_PAWN, $34, BLACK_PAWN
-  .byte $22, BLACK_KNIGHT, $50, WHITE_PAWN, $53, WHITE_PAWN
+  .byte $45, $a5, $33
+  .byte $34, BLACK_PAWN, $22, BLACK_KNIGHT, $50, WHITE_PAWN, $53, WHITE_PAWN
   .byte $44, EMPTY_PIECE
 ; check_black_nf6_after_italian_qh5_attack
-  .byte $0f, $33, $25
-  .byte $33, BLACK_KNIGHT, $25, EMPTY_PIECE, $37, WHITE_QUEEN
-  .byte $17, WHITE_BISHOP, $07, BLACK_KING, $05, BLACK_ROOK
-  .byte $23, BLACK_BISHOP, $30, BLACK_KNIGHT, $36, WHITE_KNIGHT
-  .byte $43, BLACK_PAWN, $52, WHITE_PAWN, $75, WHITE_ROOK
-  .byte $76, WHITE_KING, $16, BLACK_PAWN, $15, BLACK_PAWN
+  .byte $4d, $33, $25
+  .byte $37, WHITE_QUEEN, $17, WHITE_BISHOP, $07, BLACK_KING, $05, BLACK_ROOK
+  .byte $23, BLACK_BISHOP, $30, BLACK_KNIGHT, $36, WHITE_KNIGHT, $43, BLACK_PAWN
+  .byte $52, WHITE_PAWN, $75, WHITE_ROOK, $76, WHITE_KING, $16, BLACK_PAWN
+  .byte $15, BLACK_PAWN
 ; check_philidor_exd4_after_d4
-  .byte $05, $34, $43
-  .byte $34, BLACK_PAWN, $43, WHITE_PAWN, $44, WHITE_PAWN
-  .byte $55, WHITE_KNIGHT, $23, BLACK_PAWN
+  .byte $23, $b4, $43
+  .byte $44, WHITE_PAWN, $55, WHITE_KNIGHT, $23, BLACK_PAWN
 ; check_philidor_be7_after_nc3
-  .byte $07, $05, $14
-  .byte $23, BLACK_PAWN, $25, BLACK_KNIGHT, $43, WHITE_KNIGHT
-  .byte $52, WHITE_KNIGHT, $44, WHITE_PAWN, $05, BLACK_BISHOP
-  .byte $14, EMPTY_PIECE
+  .byte $65, $05, $14
+  .byte $23, BLACK_PAWN, $25, BLACK_KNIGHT, $43, WHITE_KNIGHT, $52, WHITE_KNIGHT
+  .byte $44, WHITE_PAWN
 ; check_philidor_castles_after_nf5
-  .byte $09, $04, $06
-  .byte $35, WHITE_KNIGHT, $14, BLACK_BISHOP, $13, BLACK_KNIGHT
-  .byte $23, BLACK_PAWN, $25, BLACK_KNIGHT, $04, BLACK_KING
-  .byte $07, BLACK_ROOK, $05, EMPTY_PIECE, $06, EMPTY_PIECE
+  .byte $c7, $04, $06
+  .byte $35, WHITE_KNIGHT, $14, BLACK_BISHOP, $13, BLACK_KNIGHT, $23, BLACK_PAWN
+  .byte $25, BLACK_KNIGHT, $07, BLACK_ROOK, $05, EMPTY_PIECE
 ; check_philidor_ng4_after_bh6
-  .byte $07, $34, $46
-  .byte $34, BLACK_KNIGHT, $27, WHITE_BISHOP, $25, BLACK_KNIGHT
-  .byte $23, BLACK_PAWN, $24, EMPTY_PIECE, $35, EMPTY_PIECE
-  .byte $46, EMPTY_PIECE
+  .byte $45, $34, $46
+  .byte $27, WHITE_BISHOP, $25, BLACK_KNIGHT, $23, BLACK_PAWN, $24, EMPTY_PIECE
+  .byte $35, EMPTY_PIECE
 ; check_black_initial_e5
-  .byte $07, $14, $34
-  .byte $44, WHITE_PAWN, $12, BLACK_PAWN, $13, BLACK_PAWN
-  .byte $14, BLACK_PAWN, $01, BLACK_KNIGHT, $06, BLACK_KNIGHT
-  .byte $55, EMPTY_PIECE
+  .byte $26, $9c, $3c
+  .byte $44, WHITE_PAWN, $12, BLACK_PAWN, $13, BLACK_PAWN, $01, BLACK_KNIGHT
+  .byte $06, BLACK_KNIGHT, $55, EMPTY_PIECE
 ; check_black_caro_d5_after_d3
-  .byte $08, $13, $33
-  .byte $44, WHITE_PAWN, $53, WHITE_PAWN, $22, BLACK_PAWN
-  .byte $13, BLACK_PAWN, $33, EMPTY_PIECE, $14, BLACK_PAWN
+  .byte $26, $13, $33
+  .byte $44, WHITE_PAWN, $53, WHITE_PAWN, $22, BLACK_PAWN, $14, BLACK_PAWN
   .byte $04, BLACK_KING, $03, BLACK_QUEEN
 ; check_scandi_queen_recapture
-  .byte $05, $03, $33
-  .byte $33, WHITE_PAWN, $03, BLACK_QUEEN, $14, BLACK_PAWN
-  .byte $43, EMPTY_PIECE, $64, EMPTY_PIECE
+  .byte $a3, $83, $33
+  .byte $14, BLACK_PAWN, $43, EMPTY_PIECE, $64, EMPTY_PIECE
   .byte $00
 
 __ai_search_check_scandi_knight_recapture_0:
@@ -6079,29 +9362,6 @@ __ai_search_check_sicilian_develop_main_0:
   jmp SetOpeningSurvivalMove
 
 __ai_search_check_sicilian_bishop_check_0:
-; After ...Nc6 and Bb5, answer with ...g6 instead of weakening f7-f5.
-  lda Board88 + $22
-  cmp #BLACK_KNIGHT
-  bne __ai_search_check_sicilian_f5_repair_0
-  lda Board88 + $31
-  cmp #WHITE_BISHOP
-  bne __ai_search_check_sicilian_f5_repair_0
-  lda Board88 + $32
-  cmp #BLACK_PAWN
-  bne __ai_search_check_sicilian_f5_repair_0
-  lda Board88 + $44
-  cmp #WHITE_PAWN
-  bne __ai_search_check_sicilian_f5_repair_0
-  lda Board88 + $55
-  cmp #WHITE_KNIGHT
-  bne __ai_search_check_sicilian_f5_repair_0
-  lda Board88 + $16
-  cmp #BLACK_PAWN
-  bne __ai_search_check_sicilian_f5_repair_0
-  lda #$16
-  ldx #$26
-  jmp SetOpeningSurvivalMove
-
 __ai_search_check_sicilian_f5_repair_0:
 ; If the f-pawn mistake already happened and white is on f5, play ...d6.
   lda Board88 + $22
@@ -6315,6 +9575,7 @@ SetOpeningSurvivalMove:
   stx BestMoveTo
   sec
   rts
+.endif
 
 ;
 ; SetupAspirationWindow
@@ -6424,40 +9685,63 @@ FindBestMove:
 
 __ai_search_game_playable_0:
 
-  jsr TryEngineOpeningSurvivalMove
-  bcc __ai_search_no_survival_move_1
-  jsr RootBestMoveIsLegal
-  bcc __ai_search_no_survival_move_1
-  jmp FinishBestMoveZero
-__ai_search_no_survival_move_1:
+; Mate ends the game. Check it before material, book, or endgame shortcuts so
+; no tactical convenience move can steal an immediate win.
+  jsr TryRootMateInOne
+  bcs __ai_search_finish_root_shortcut_0
+__ai_search_no_root_mate_0:
+
+  jsr TryRootAvoidMateThreatMove
+  bcs __ai_search_finish_root_shortcut_0
+__ai_search_no_root_mate_threat_0:
+
+  jsr TryRootOpeningCenterPawnMove
+  bcs __ai_search_finish_root_shortcut_0
+__ai_search_no_opening_center_pawn_0:
+
+  jsr TryRootDevelopingBishopRecaptureMove
+  bcs __ai_search_finish_root_shortcut_0
+__ai_search_no_bishop_recap_move_0:
 
   jsr TryImmediateQueenPromotionMove
-  bcc __ai_search_no_immediate_promotion_0
-  jmp FinishBestMoveZero
+  bcs __ai_search_finish_root_shortcut_0
 __ai_search_no_immediate_promotion_0:
 
+  jsr TryRootMajorCaptureMove
+  bcs __ai_search_finish_root_shortcut_0
+__ai_search_no_root_major_capture_0:
+
+  jsr TryRootWinningCaptureMove
+  bcs __ai_search_finish_root_shortcut_0
+__ai_search_no_root_winning_capture_0:
+
+  jsr TryRootSaveAttackedMajorMove
+  bcs __ai_search_finish_root_shortcut_0
+__ai_search_no_root_save_major_0:
+
   jsr TrySparseQueenCaptureMove
-  bcc __ai_search_no_sparse_queen_capture_0
-  jmp FinishBestMoveZero
+  bcs __ai_search_finish_root_shortcut_0
 __ai_search_no_sparse_queen_capture_0:
 
   jsr TrySparseWinningCaptureMove
-  bcc __ai_search_no_sparse_winning_capture_0
-  jmp FinishBestMoveZero
+  bcs __ai_search_finish_root_shortcut_0
 __ai_search_no_sparse_winning_capture_0:
 
   jsr TrySimpleRookPawnEndgameMove
-  bcc __ai_search_no_simple_endgame_move_0
-  jmp FinishBestMoveZero
+  bcs __ai_search_finish_root_shortcut_0
 __ai_search_no_simple_endgame_move_0:
 
   jsr TrySimpleKingPawnEndgameMove
-  bcc __ai_search_no_simple_king_pawn_move_0
-  jmp FinishBestMoveZero
+  bcs __ai_search_finish_root_shortcut_0
 __ai_search_no_simple_king_pawn_move_0:
+
+  jsr TryLoneKingPawnConversionMove
+  bcs __ai_search_finish_root_shortcut_0
+__ai_search_no_lone_king_conversion_0:
 
   jsr TryBoxedKingPawnStormMove
   bcc __ai_search_no_boxed_king_pawn_storm_0
+__ai_search_finish_root_shortcut_0:
   jmp FinishBestMoveZero
 __ai_search_no_boxed_king_pawn_storm_0:
 
@@ -6466,6 +9750,9 @@ __ai_search_no_boxed_king_pawn_storm_0:
 ; knight or bishop is hanging.
   lda SearchSide
   jsr SideHasPawnAttackedPiece
+  bcs __ai_search_no_book_move_0
+  lda SearchSide
+  jsr SideHasMinorAttackedMajor
   bcs __ai_search_no_book_move_0
 
 ; Try opening book first - much faster than searching
@@ -6535,11 +9822,9 @@ __ai_search_no_book_move_0:
   sta SearchRootMoveCount
   beq __ai_search_no_moves_time_0
 
-; Initialize BestMove to first legal move as fallback
-  lda MoveListFrom
-  sta BestMoveFrom
-  lda MoveListTo
-  sta BestMoveTo
+; Initialize BestMove to a sane legal fallback before iterative search. If the
+; search fails to lift any move above the score floor, do not keep a queen hang.
+  jsr SetSafeRootFallbackMove
 
 ; Iterative deepening with time check
   lda #1
@@ -6579,19 +9864,14 @@ __ai_search_iteration_score_ready_0:
   lda IterScore
   bmi __ai_search_check_max_depth_0; Negative scores are not winning mates
   cmp #MATE_SCORE
-  bne __ai_search_check_max_depth_0
-
-__ai_search_found_mate_0:
-  jmp __ai_search_time_done_0; Found forced mate, stop searching
+  beq __ai_search_time_done_0; Found forced mate, stop searching
 
 __ai_search_check_max_depth_0:
 ; Increment depth for next iteration
   inc IterDepth
   lda IterDepth
   cmp MaxSearchDepth
-  bcs __ai_search_time_done_0; Hit max depth limit
-
-  jmp __ai_search_time_iter_loop_0
+  bcc __ai_search_time_iter_loop_0
 
 __ai_search_time_done_0:
   jsr RememberBestMove

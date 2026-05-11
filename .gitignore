@@ -1,4 +1,11 @@
 /build/
+.venv/
+__pycache__/
+tools/__pycache__/
+tools/Sim6502HeadlessBridge/bin/
+tools/Sim6502HeadlessBridge/obj/
+tools/ColossusRawRunner/bin/
+tools/ColossusRawRunner/obj/
 *.o
 *.dbg
 *.prg

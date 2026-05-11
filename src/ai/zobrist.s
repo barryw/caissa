@@ -174,6 +174,8 @@ ZobristEnPassant:
 ; Current position hash (2 bytes for better collision resistance)
 ZobristHash:
   .res 2
+ZobristHashValid:
+  .res 1
 
 ZobristTablesInitialized:
   .res 1
@@ -215,6 +217,7 @@ __ai_zobrist_hash_check_done_0:
   cpx #$80; Done all board bytes?
   bne __ai_zobrist_squareloop_0
 
+HashZobristState:
 ; XOR in side to move if white (2 bytes)
   lda currentplayer
   beq __ai_zobrist_skipside_0; Black to move (0), don't XOR
@@ -288,7 +291,73 @@ __ai_zobrist_nobq_0:
   sta ZobristHash + 1
 
 __ai_zobrist_done_0:
+  lda #$01
+  sta ZobristHashValid
   rts
+
+;
+; ComputeZobristHashFromPieceLists
+; Faster full hash for search positions where compact piece lists are already
+; authoritative. Falls through to the shared side/castling/en-passant hashing.
+; Result stored in ZobristHash (2 bytes)
+; Clobbers: A, X, Y, $f5-$fb
+;
+ComputeZobristHashFromPieceLists:
+  lda #$00
+  sta ZobristHash
+  sta ZobristHash + 1
+
+  lda WhitePieceCount
+  sta $f5; list count
+  lda #$00
+  sta $f6; list index
+
+__ai_zobrist_white_list_loop_0:
+  lda $f6
+  cmp $f5
+  bcs __ai_zobrist_black_list_start_0
+
+__ai_zobrist_white_list_square_0:
+  ldy $f6
+  lda WhitePieceList, y
+  cmp #$ff
+  beq __ai_zobrist_white_list_next_0
+  tax
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_zobrist_white_list_next_0
+  jsr HashZobristPieceAtSquare
+
+__ai_zobrist_white_list_next_0:
+  inc $f6
+  jmp __ai_zobrist_white_list_loop_0
+
+__ai_zobrist_black_list_start_0:
+  lda BlackPieceCount
+  sta $f5
+  lda #$00
+  sta $f6
+
+__ai_zobrist_black_list_loop_0:
+  lda $f6
+  cmp $f5
+  bcc __ai_zobrist_black_list_square_0
+  jmp HashZobristState
+
+__ai_zobrist_black_list_square_0:
+  ldy $f6
+  lda BlackPieceList, y
+  cmp #$ff
+  beq __ai_zobrist_black_list_next_0
+  tax
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_zobrist_black_list_next_0
+  jsr HashZobristPieceAtSquare
+
+__ai_zobrist_black_list_next_0:
+  inc $f6
+  jmp __ai_zobrist_black_list_loop_0
 
 ;
 ; HashZobristPieceAtSquare
@@ -378,30 +447,4 @@ __ai_zobrist_piece_offset_low_done_0:
 
 ; Restore square index
   ldx $f7
-  rts
-
-;
-; Convert piece value to Zobrist table index (0-11)
-; Input: A = piece value (WHITE_PAWN..WHITE_KING or BLACK_PAWN..BLACK_KING)
-; Output: A = index 0-11 (0-5 = white pieces, 6-11 = black pieces)
-; Piece values: WHITE = $B1-$B6, BLACK = $31-$36
-;
-PieceToZobristIndex:
-  pha
-  and #$80; Check color bit
-  beq __ai_zobrist_black_0
-
-; White piece: $B1-$B6 -> 0-5
-  pla
-  and #$07; Get type bits
-  sec
-  sbc #$01; $B1->0, $B2->1, etc.
-  rts
-
-__ai_zobrist_black_0:
-; Black piece: $31-$36 -> 6-11
-  pla
-  and #$07; Get type bits
-  clc
-  adc #$05; $31->6, $32->7, etc.
   rts
