@@ -1132,8 +1132,10 @@ GenerateLegalMoves:
 ; Filter out illegal moves
   jsr FilterLegalMoves
 
+.ifndef CHESS_RULES_ONLY
 ; Order moves: captures first with MVV-LVA scoring (improves alpha-beta pruning)
   jsr OrderMovesMVVLVA
+.endif
 
   lda MoveCount
   rts
@@ -1148,6 +1150,7 @@ InitSearch:
 
   lda #$00
   sta SearchDepth
+.ifndef CHESS_RULES_ONLY
   sta SearchCompletedDepth
   sta SearchRootMoveCount
   sta SearchUsedBook
@@ -1162,6 +1165,7 @@ InitSearch:
   sta SearchHistoryUpdates
   sta SearchHistoryActive
   sta SearchCounterMoveActive
+.endif
   sta PieceListUpdateDisabled
   sta LastMoveWasCaptureByDepth
   sta RecaptureExtensionUsedByDepth
@@ -1180,6 +1184,7 @@ __ai_search_black_to_move_0:
   sta SearchSide
   rts
 
+.ifndef CHESS_RULES_ONLY
 ;
 ; ClearKillers
 ; Clear all killer moves (call at start of search)
@@ -9934,3 +9939,4 @@ SearchAspirationActive:
   .res 1
 
 .segment "CODE"
+.endif

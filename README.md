@@ -105,14 +105,12 @@ to search.
 
 ## Public API
 
-External hosts should prefer these labels from `src/engine/api.s`:
+External hosts should prefer these labels from `src/engine/api.s`. The
+rules-only build entry point is `src/engine/rules_engine.s`; the full engine
+entry point remains `src/engine/engine.s`.
 
 - `ChessInitPieceLists`
 - `ChessGenerateLegalMoves`
-- `ChessFindBestMove`
-- `ChessPonderClear`
-- `ChessPonderSearch`
-- `ChessPonderUse`
 - `ChessMakeMove`
 - `ChessBeginGame`
 - `ChessCommitMove`
@@ -123,6 +121,13 @@ External hosts should prefer these labels from `src/engine/api.s`:
 - `ChessRecordPosition`
 - `ChessClearPositionHistory`
 - `ChessCheckRepetition`
+
+The full engine build also exports the local AI/search API:
+
+- `ChessFindBestMove`
+- `ChessPonderClear`
+- `ChessPonderSearch`
+- `ChessPonderUse`
 
 `src/engine/state.s` owns board and rule state such as `Board88`, `currentplayer`,
 `difficulty`, king squares, castling rights, en passant state, draw/repetition

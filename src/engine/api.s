@@ -17,6 +17,7 @@ ChessGenerateLegalMoves:
   jsr InitSearch
   jmp GenerateLegalMoves
 
+.ifndef CHESS_RULES_ONLY
 ChessFindBestMove:
   jmp FindBestMove
 
@@ -173,6 +174,7 @@ __engine_api_ponder_use_miss_0:
   sta PonderValid
   clc
   rts
+.endif
 
 ChessMakeMove:
   jmp MakeMove
@@ -308,6 +310,7 @@ CommitMoveWasPawn:
   .res 1
 CommitMoveWasCapture:
   .res 1
+.ifndef CHESS_RULES_ONLY
 PonderPredictedFrom:
   .res 1
 PonderPredictedTo:
@@ -332,5 +335,6 @@ PonderSavedGameState:
   .res 1
 PonderUndo:
   .res 6
+.endif
 
 .segment "CODE"

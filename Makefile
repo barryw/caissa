@@ -48,9 +48,9 @@ COLOSSUS_MULTIPV ?= 3
 
 BUILD_DIR := build
 ENGINE_SOURCES := $(shell find src tests -name '*.s' -print)
-SIM6502_RUNNER = docker run --pull=$(SIM6502_PULL) --rm -v $(PWD):/code $(SIM6502_IMAGE) /app/Sim6502TestRunner
+SIM6502_RUNNER = docker run --pull=$(SIM6502_PULL) --rm -v $(CURDIR):/code $(SIM6502_IMAGE) /app/Sim6502TestRunner
 
-.PHONY: all clean engine-build engine-test test benchmark benchmark-json size stockfish-tools-test stockfish-bridge-self-test stockfish-strength stockfish-blunder-check stockfish-games stockfish-elo stockfish-ladder-blunders colossus-probe colossus-match colossus-parallel colossus-blunders colossus-blunder-check
+.PHONY: all clean engine-build engine-test rules-build rules-test test benchmark benchmark-json size stockfish-tools-test stockfish-bridge-self-test stockfish-strength stockfish-blunder-check stockfish-games stockfish-elo stockfish-ladder-blunders colossus-probe colossus-match colossus-parallel colossus-blunders colossus-blunder-check
 
 all: engine-build
 
@@ -64,10 +64,22 @@ $(BUILD_DIR)/engine_harness.prg: $(BUILD_DIR)/engine_harness.o cfg/c64-prg.cfg t
 	$(LD65) -C cfg/c64-prg.cfg --dbgfile $(BUILD_DIR)/engine_harness.dbg -o $@ $<
 	$(PYTHON) tools/ld65_dbg_to_sim6502_sym.py $(BUILD_DIR)/engine_harness.dbg $(BUILD_DIR)/engine_harness.sym
 
+$(BUILD_DIR)/rules_harness.o: tests/rules_harness.s $(ENGINE_SOURCES) | $(BUILD_DIR)
+	$(CA65) --cpu 6502 -g -I src -I src/engine -I src/ai -o $@ $<
+
+$(BUILD_DIR)/rules_harness.prg: $(BUILD_DIR)/rules_harness.o cfg/c64-prg.cfg tools/ld65_dbg_to_sim6502_sym.py
+	$(LD65) -C cfg/c64-prg.cfg --dbgfile $(BUILD_DIR)/rules_harness.dbg -o $@ $<
+	$(PYTHON) tools/ld65_dbg_to_sim6502_sym.py $(BUILD_DIR)/rules_harness.dbg $(BUILD_DIR)/rules_harness.sym
+
 engine-build: $(BUILD_DIR)/engine_harness.prg
 
 engine-test: engine-build
 	$(SIM6502_RUNNER) -s /code/tests/engine_core.6502
+
+rules-build: $(BUILD_DIR)/rules_harness.prg
+
+rules-test: rules-build
+	$(SIM6502_RUNNER) -s /code/tests/rules_boundary.6502
 
 benchmark: engine-build
 	$(PYTHON) tools/run_engine_benchmarks.py --measure-cycles
@@ -120,9 +132,10 @@ colossus-blunder-check: engine-build
 	$(PYTHON) tools/run_stockfish_strength.py --runner-target headless --c64-backend $(STOCKFISH_BACKEND) --corpus tools/colossus_blunders.json --difficulty hard --stockfish-depth $(COLOSSUS_STOCKFISH_DEPTH) --multipv $(COLOSSUS_MULTIPV) --jobs $(STRENGTH_JOBS) --timeout-cycles $(STOCKFISH_TIMEOUT_CYCLES) --json build/colossus_blunder_check.json
 
 # Boundary tests pin the public Chess* API labels against the headless engine.
-test: engine-build
+test: engine-build rules-build
 	$(SIM6502_RUNNER) -s /code/tests/engine_core.6502
 	$(SIM6502_RUNNER) -s /code/tests/engine_boundary.6502
+	$(SIM6502_RUNNER) -s /code/tests/rules_boundary.6502
 	$(SIM6502_RUNNER) -s /code/tests/engine_loop.6502
 	$(SIM6502_RUNNER) -s /code/tests/engine_repetition.6502
 	$(SIM6502_RUNNER) -s /code/tests/engine_state.6502

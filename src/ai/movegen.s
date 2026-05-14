@@ -33,6 +33,7 @@ MoveListTo:
 
 .segment "CODE"
 
+.ifndef CHESS_RULES_ONLY
 ; Compact ranks for 8-bit MVV-LVA move ordering. Full evaluation values
 ; overflow when multiplied inside a byte, so ordering uses bounded ranks.
 MVV_LVA_ScoreValues:
@@ -66,6 +67,7 @@ CounterMoveTo:
   .res 128
 
 .segment "CODE"
+.endif
 
 ;
 ; Clear move list
@@ -722,6 +724,7 @@ __ai_movegen_gen_done_0:
   lda MoveCount; Return move count in A
   rts
 
+.ifndef CHESS_RULES_ONLY
 ;
 ; OrderMovesMVVLVA - Sort captures by Most Valuable Victim - Least Valuable Attacker
 ; Winning/safe captures are sorted to front by MVV-LVA score descending.
@@ -1895,3 +1898,4 @@ __ai_movegen_is_killer_0:
 __ai_movegen_not_killer_0:
   clc
   rts
+.endif
