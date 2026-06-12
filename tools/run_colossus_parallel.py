@@ -75,6 +75,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help="Per-move engine timeout cycles passed through to run_colossus_match.py.",
     )
+    parser.add_argument(
+        "--colossus-move-now-after-cycles",
+        type=int,
+        default=0,
+        help="Per-move Colossus think budget in cycles before injecting its move-now command. 0 disables.",
+    )
     parser.add_argument("--colossus-raw-cycles", type=int)
     parser.add_argument(
         "--colossus-raw-force-move-after-seconds",
@@ -304,6 +310,8 @@ def run_lane(args: argparse.Namespace, lane: Lane) -> dict[str, Any]:
         command.extend(["--difficulty", args.difficulty])
     if args.c64_timeout is not None:
         command.extend(["--c64-timeout", str(args.c64_timeout)])
+    if args.colossus_move_now_after_cycles > 0:
+        command.extend(["--colossus-move-now-after-cycles", str(args.colossus_move_now_after_cycles)])
     if args.colossus_raw_cycles is not None:
         command.extend(["--colossus-raw-cycles", str(args.colossus_raw_cycles)])
     if args.colossus_raw_force_move_after_seconds > 0:

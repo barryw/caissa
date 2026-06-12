@@ -706,6 +706,16 @@ def log_new_records(args: argparse.Namespace, records: list[MatchMove], start_in
         log_last_record(args, records[: index + 1])
 
 
+# Cycle budget for committing an already-found best line after the move-now
+# keypress. Probes resumed from a result-json meta commit within ~260M cycles
+# (keyboard poll alignment); this leaves wide margin.
+MOVE_NOW_COMMIT_CYCLES = 1_000_000_000
+
+# Whether the move-now press lands depends on the PC the think phase stopped
+# at; each retry resumes from the previous attempt's advanced state.
+MOVE_NOW_MAX_ATTEMPTS = 4
+
+
 class RawColossusSession:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -724,6 +734,7 @@ class RawColossusSession:
             else self.profile["tod_cycles_per_tick"]
         )
         self.force_move_after_seconds = max(0.0, args.colossus_raw_force_move_after_seconds)
+        self.move_now_after_cycles = max(0, args.colossus_move_now_after_cycles)
         self.pokes = [*self.profile["pokes"], *args.colossus_raw_poke]
 
     def _repo_relative(self, path: Path) -> Path:
@@ -771,6 +782,75 @@ class RawColossusSession:
         if self.force_move_after_seconds <= 0:
             return []
         return ["--wall-time-limit-seconds", f"{self.force_move_after_seconds:g}"]
+
+    def think_cycles(self) -> int:
+        if self.move_now_after_cycles > 0:
+            return self.move_now_after_cycles
+        return self.cycles
+
+    def force_move_now(self, out_prefix: Path, stop_regex: str) -> dict[str, Any]:
+        """Inject Colossus's own move-now command into a still-thinking state.
+
+        Colossus 4 commits its currently displayed best line when 'M' is
+        pressed mid-search. This bounds per-move think time externally while
+        the committed move is still entirely Colossus's choice.
+
+        The matrix keypress is only scanned when the machine resumes with the
+        boot dump's interrupt state: result-json metas restore a context whose
+        keyboard IRQ never fires, so the press would be ignored forever.
+        Resume from the think RAM at its exact PC with the boot meta instead.
+        Whether the press lands is still PC-dependent (some stop points sit in
+        interrupt-masked code), so retry from each attempt's advanced state.
+        """
+        source_prefix = out_prefix
+        result: dict[str, Any] = {}
+        total_cycles = 0
+        for attempt in range(1, MOVE_NOW_MAX_ATTEMPTS + 1):
+            forced_prefix = out_prefix.parent / f"{out_prefix.name}_forced{attempt}"
+            think_json = json.loads(source_prefix.with_suffix(".json").read_text(encoding="utf-8"))
+            end_pc = int(think_json["end"]["PC"])
+            command = [
+                "dotnet",
+                str(self.runner),
+                "--ram",
+                str(source_prefix.with_suffix(".ram.bin")),
+                "--cpu-view",
+                str(self.cpu_view),
+                "--meta",
+                str(self.runtime_dir / "ready.json"),
+                "--pc",
+                str(end_pc),
+                "--matrix-text",
+                "m",
+                "--cycles",
+                str(MOVE_NOW_COMMIT_CYCLES),
+                # Commit at the normal clock; the move was already chosen
+                # during the think phase, so only a few extra TOD seconds
+                # elapse.
+                "--tod-cycles-per-tick",
+                "100000",
+                "--stop-when-screen-regex",
+                stop_regex,
+                "--poll-steps",
+                str(self.args.colossus_raw_poll_steps),
+                "--ram-out",
+                str(forced_prefix.with_suffix(".ram.bin")),
+                "--json",
+                str(forced_prefix.with_suffix(".json")),
+                "--screen",
+                str(forced_prefix.with_suffix(".screen.txt")),
+            ]
+            command.extend(self.raw_time_limit_args())
+            result = self.run_raw_command(command)
+            total_cycles += int(result.get("cycles") or 0)
+            result["forcedPrefix"] = str(forced_prefix)
+            result["forcedAttempts"] = attempt
+            screen = str(result.get("screen", ""))
+            if re.search(stop_regex, screen, re.IGNORECASE | re.MULTILINE):
+                break
+            source_prefix = forced_prefix
+        result["cycles"] = total_cycles
+        return result
 
     def legal_reply_screen_pattern(self, board: Any | None) -> str:
         if board is None:
@@ -845,7 +925,7 @@ class RawColossusSession:
             "--meta",
             str(self.meta),
             "--cycles",
-            str(self.cycles),
+            str(self.think_cycles()),
             "--tod-cycles-per-tick",
             str(self.tod_cycles_per_tick),
             "--stop-when-screen-regex",
@@ -867,8 +947,17 @@ class RawColossusSession:
         self.last_screen = str(result.get("screen", ""))
         visible_entries = dict(screen_move_entries(self.last_screen))
         reply_uci = visible_entries.get(1)
+        forced = False
+        if reply_uci is None and self.move_now_after_cycles > 0:
+            think_cycles = int(result.get("cycles") or 0)
+            result = self.force_move_now(out_prefix, r"^\s*1\s+[a-h][1-8][-x][a-h][1-8]")
+            result["cycles"] = int(result.get("cycles") or 0) + think_cycles
+            self.last_screen = str(result.get("screen", ""))
+            visible_entries = dict(screen_move_entries(self.last_screen))
+            reply_uci = visible_entries.get(1)
+            forced = reply_uci is not None
         if reply_uci is None:
-            limit_text = "uncapped" if self.cycles <= 0 else f"{self.cycles} cycles"
+            limit_text = "uncapped" if self.think_cycles() <= 0 else f"{self.think_cycles()} cycles"
             if self.force_move_after_seconds > 0:
                 limit_text += f" or {self.force_move_after_seconds:g}s wall"
             raise TimeoutError(
@@ -877,9 +966,16 @@ class RawColossusSession:
                 f"{self.last_screen}"
             )
 
-        self.ram = out_prefix.with_suffix(".ram.bin")
-        self.meta = out_prefix.with_suffix(".json")
+        if forced:
+            forced_prefix = Path(result["forcedPrefix"])
+            self.ram = forced_prefix.with_suffix(".ram.bin")
+            self.meta = forced_prefix.with_suffix(".json")
+        else:
+            self.ram = out_prefix.with_suffix(".ram.bin")
+            self.meta = out_prefix.with_suffix(".json")
         stats = self.stats_for_result(result)
+        if forced:
+            stats["forced_move_now"] = True
         return reply_uci, stats, best_line(self.last_screen)
 
     def stats_for_result(self, result: dict[str, Any]) -> dict[str, Any]:
@@ -924,7 +1020,7 @@ class RawColossusSession:
             "--meta",
             str(self.meta),
             "--cycles",
-            str(self.cycles),
+            str(self.think_cycles()),
             "--tod-cycles-per-tick",
             str(self.tod_cycles_per_tick),
             "--stop-when-screen-regex",
@@ -968,8 +1064,17 @@ class RawColossusSession:
         self.last_screen = str(result.get("screen", ""))
         visible_entries = dict(screen_move_entries(self.last_screen))
         reply_uci = visible_entries.get(target_ply)
+        forced = False
+        if reply_uci is None and self.move_now_after_cycles > 0:
+            think_cycles = int(result.get("cycles") or 0)
+            result = self.force_move_now(out_prefix, stop_regex)
+            result["cycles"] = int(result.get("cycles") or 0) + think_cycles
+            self.last_screen = str(result.get("screen", ""))
+            visible_entries = dict(screen_move_entries(self.last_screen))
+            reply_uci = visible_entries.get(target_ply)
+            forced = reply_uci is not None
         if reply_uci is None:
-            limit_text = "uncapped" if self.cycles <= 0 else f"{self.cycles} cycles"
+            limit_text = "uncapped" if self.think_cycles() <= 0 else f"{self.think_cycles()} cycles"
             if self.force_move_after_seconds > 0:
                 limit_text += f" or {self.force_move_after_seconds:g}s wall"
             raise TimeoutError(
@@ -978,9 +1083,16 @@ class RawColossusSession:
                 f"{self.last_screen}"
             )
 
-        self.ram = out_prefix.with_suffix(".ram.bin")
-        self.meta = out_prefix.with_suffix(".json")
+        if forced:
+            forced_prefix = Path(result["forcedPrefix"])
+            self.ram = forced_prefix.with_suffix(".ram.bin")
+            self.meta = forced_prefix.with_suffix(".json")
+        else:
+            self.ram = out_prefix.with_suffix(".ram.bin")
+            self.meta = out_prefix.with_suffix(".json")
         stats = self.stats_for_result(result)
+        if forced:
+            stats["forced_move_now"] = True
         best = best_line(self.last_screen)
         return reply_uci, stats, best, pending_ponder
 
@@ -1446,6 +1558,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=float,
         default=0.0,
         help="Raw backend safety stop: give Colossus this much host wall time to commit a move; no/illegal move is non-clean data.",
+    )
+    parser.add_argument(
+        "--colossus-move-now-after-cycles",
+        type=int,
+        default=0,
+        help="Raw backend per-move think budget in cycles; when exceeded, inject Colossus's own "
+        "move-now command (M) so it commits its displayed best line. 0 disables.",
     )
     parser.add_argument("--colossus-raw-poll-steps", type=int, default=8192)
     parser.add_argument(
