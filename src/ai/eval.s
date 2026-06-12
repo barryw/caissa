@@ -192,18 +192,31 @@ PstLoop:
   lda Board88, x
   cmp #EMPTY_PIECE
   bne __ai_eval_pst_piece_present_0
-  jmp PstNext
+
+; Empty square: advance inline (duplicate of PstNext) to skip the round trip
+; through the far jmp. Same index sequence, fewer cycles.
+  inx
+  txa
+  and #$08; Past file h in 0x88 layout?
+  beq __ai_eval_pst_empty_chk_0
+  txa
+  clc
+  adc #$08; Skip offboard gap to next rank
+  tax
+__ai_eval_pst_empty_chk_0:
+  cpx #BOARD_SIZE
+  bne PstLoop
+  jmp __ai_eval_done_0
 
 __ai_eval_pst_piece_present_0:
 
 ; Save board index
   stx $f0
 
-; Get piece type and color
-  pha
+; Get piece type and color (A still holds the piece; reload beats pha/pla)
   and #WHITE_COLOR
   sta $f1; $f1 = color ($80=white, $00=black)
-  pla
+  lda Board88, x
   and #$07; Piece type (1-6)
   sta $f2; $f2 = piece type
   cmp #PAWN_TYPE
@@ -245,75 +258,90 @@ __ai_eval_piece_phase_not_queen_0:
   jsr EvaluateSeventhRankPressure
 __ai_eval_piece_phase_done_0:
 
-; Add material value for this piece.
+; Add material value and PST for this piece (inline per color).
+; The 0x88 -> 0-63 conversion (and the black rank mirror) now come from
+; lookup tables (Sq88To64 / Sq88To64Mirror below). The 16-bit adds use
+; carry-conditional inc/dec of the high byte, which produces the exact same
+; EvalScore as the previous adc #$00 / sbc #$00 sequences. The negative-PST
+; cases keep the original "negate to unsigned magnitude" semantics so even
+; a -128 entry behaves identically.
   ldy $f2
-  lda PieceValues, y
-  sta $f8
   lda $f1
-  beq __ai_eval_pst_black_material_0
+  beq __ai_eval_pst_black_side_0
 
+; --- White: EvalScore += material; EvalScore += signed PST ---
+  lda PieceValues, y
   clc
-  lda EvalScore
-  adc $f8
+  adc EvalScore
   sta EvalScore
-  lda EvalScore + 1
-  adc #$00
-  sta EvalScore + 1
-  jmp __ai_eval_pst_material_done_0
-
-__ai_eval_pst_black_material_0:
-  sec
-  lda EvalScore
-  sbc $f8
-  sta EvalScore
-  lda EvalScore + 1
-  sbc #$00
-  sta EvalScore + 1
-
-__ai_eval_pst_material_done_0:
-; Get PST pointer for this piece type
-  ldy $f2
+  bcc __ai_eval_white_mat_done_0
+  inc EvalScore + 1
+__ai_eval_white_mat_done_0:
   lda PST_Table_Lo, y
   sta $f3
   lda PST_Table_Hi, y
   sta $f4; $f3/$f4 = PST pointer
-
-; Convert 0x88 square to 0-63 index
-; sq64 = (row * 8) + col = ((sq >> 4) * 8) + (sq & 7)
-  lda $f0
-  and #$07; Column (0-7)
-  sta $f5
-  lda $f0
-  lsr
-  lsr
-  lsr
-  lsr; Row (0-7)
-  asl
-  asl
-  asl; Row * 8
-  ora $f5; + column = 0-63
-  sta $f5; $f5 = square index 0-63
-
-; For black pieces, mirror the square (XOR with $38 = flip rank)
-  lda $f1
-  bne __ai_eval_lookup_0
-__ai_eval_mirror_0:
-  lda $f5
-  eor #$38; Mirror for black
-  sta $f5
-
-__ai_eval_lookup_0:
-; Look up PST value
-  ldy $f5
+  ldx $f0
+  ldy Sq88To64, x
   lda ($f3), y; A = PST value (signed byte)
-  sta $f6; Save PST value
+  bmi __ai_eval_white_pst_neg_0
+  clc
+  adc EvalScore
+  sta EvalScore
+  bcc __ai_eval_white_pst_done_0
+  inc EvalScore + 1
+__ai_eval_white_pst_done_0:
+  jmp PstNext
+__ai_eval_white_pst_neg_0:
+; Adding a sign-extended negative: high byte gets $ff + carry, i.e. it
+; stays put when the low add carries and decrements otherwise.
+  clc
+  adc EvalScore
+  sta EvalScore
+  bcs __ai_eval_white_pst_done_0
+  dec EvalScore + 1
+  jmp PstNext
 
-; Call appropriate helper based on color
-  lda $f1
-  bne __ai_eval_pst_white_far_0
-  jmp PstBlackPiece
-__ai_eval_pst_white_far_0:
-  jmp PstWhitePiece
+; --- Black: EvalScore -= material; EvalScore -= signed PST ---
+__ai_eval_pst_black_side_0:
+  lda PieceValues, y
+  sta $f8
+  sec
+  lda EvalScore
+  sbc $f8
+  sta EvalScore
+  bcs __ai_eval_black_mat_done_0
+  dec EvalScore + 1
+__ai_eval_black_mat_done_0:
+  lda PST_Table_Lo, y
+  sta $f3
+  lda PST_Table_Hi, y
+  sta $f4; $f3/$f4 = PST pointer
+  ldx $f0
+  ldy Sq88To64Mirror, x; mirrored square for black
+  lda ($f3), y; A = PST value (signed byte)
+  bmi __ai_eval_black_pst_neg_0
+  sta $f8
+  sec
+  lda EvalScore
+  sbc $f8
+  sta EvalScore
+  bcs __ai_eval_black_pst_done_0
+  dec EvalScore + 1
+__ai_eval_black_pst_done_0:
+  jmp PstNext
+__ai_eval_black_pst_neg_0:
+; Subtracting a negative = adding its unsigned magnitude (matches the old
+; PstBlackPiece negate path exactly, including a hypothetical -128).
+  eor #$ff
+  clc
+  adc #$01
+  clc
+  adc EvalScore
+  sta EvalScore
+  bcc __ai_eval_black_pst_done_0
+  inc EvalScore + 1
+  jmp PstNext
 
 PstNext:
   inx
@@ -364,76 +392,27 @@ __ai_eval_eval_middlegame_king_0:
   jmp EvaluateKingSafety
 
 ;
-; PstWhitePiece - Add PST value for white piece
-; Input: $f6 = signed PST value
-; Modifies: A
+; Sq88To64 - 0x88 board index -> 0-63 PST index
+; Sq88To64Mirror - same, rank-mirrored (eor #$38) for black pieces
+; Offboard entries are never read (the PST loop skips them); padded with 0.
 ;
-PstWhitePiece:
-  lda $f6
-  bmi __ai_eval_negative_0
-; Positive PST value - add it
-  clc
-  lda EvalScore
-  adc $f6
-  sta EvalScore
-  lda EvalScore + 1
-  adc #$00
-  sta EvalScore + 1
-  ldx $f0
-  jmp PstNext
+Sq88To64:
+.repeat 128, i
+  .if (i & $88) = 0
+    .byte ((i & $70) >> 1) | (i & $07)
+  .else
+    .byte $00
+  .endif
+.endrepeat
 
-__ai_eval_negative_0:
-; Negative PST value - subtract its absolute value
-  lda $f6
-  eor #$ff
-  clc
-  adc #$01; Negate to get positive
-  sta $f6
-  sec
-  lda EvalScore
-  sbc $f6
-  sta EvalScore
-  lda EvalScore + 1
-  sbc #$00
-  sta EvalScore + 1
-  ldx $f0
-  jmp PstNext
-
-;
-; PstBlackPiece - Subtract PST value for black piece
-; Input: $f6 = signed PST value
-; Modifies: A
-;
-PstBlackPiece:
-  lda $f6
-  bmi __ai_eval_negative_1
-; Positive PST value - subtract it
-  sec
-  lda EvalScore
-  sbc $f6
-  sta EvalScore
-  lda EvalScore + 1
-  sbc #$00
-  sta EvalScore + 1
-  ldx $f0
-  jmp PstNext
-
-__ai_eval_negative_1:
-; Negative PST value - subtracting negative = adding positive
-  lda $f6
-  eor #$ff
-  clc
-  adc #$01; Negate to get positive
-  sta $f6
-  clc
-  lda EvalScore
-  adc $f6
-  sta EvalScore
-  lda EvalScore + 1
-  adc #$00
-  sta EvalScore + 1
-  ldx $f0
-  jmp PstNext
+Sq88To64Mirror:
+.repeat 128, i
+  .if (i & $88) = 0
+    .byte (((i & $70) >> 1) | (i & $07)) ^ $38
+  .else
+    .byte $00
+  .endif
+.endrepeat
 
 ;
 ; EvaluatePawnPressure

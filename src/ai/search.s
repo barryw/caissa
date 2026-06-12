@@ -3605,6 +3605,24 @@ __ai_search_done_eval_0:
   rts
 
 ;
+; NEGATE_SCORE_A - inline form of NegateSearchScore for hot paths.
+; Identical arithmetic; saves the jsr/rts overhead (12 cycles per use).
+;
+.macro NEGATE_SCORE_A
+  .local notmin
+  .local done
+  cmp #$80
+  bne notmin
+  lda #$7f
+  bne done; always taken ($7f is nonzero)
+notmin:
+  eor #$ff
+  clc
+  adc #$01
+done:
+.endmacro
+
+;
 ; NegateSearchScore
 ; Two's-complement negation with saturation for $80 (-128), which cannot be
 ; represented as +128 in an 8-bit signed score. Search windows use $7f as the
@@ -3730,7 +3748,7 @@ __ai_search_null_eval_pass_0:
   asl
   tax
   lda NegamaxState + 7, x
-  jsr NegateSearchScore
+  NEGATE_SCORE_A
   sta $e8
   clc
   adc #$01
@@ -3746,7 +3764,7 @@ __ai_search_null_beta_ready_0:
   lda #$00
 __ai_search_null_child_depth_ready_0:
   jsr Negamax
-  jsr NegateSearchScore
+  NEGATE_SCORE_A
   sta NullMoveScore
 
   lda SearchSide
@@ -3953,26 +3971,27 @@ QSaveMoveList:
 __ai_search_qsave_fits_0:
   ldx QuiesceDepth
   sta QSavedCount, x
+; Copy top-down with X tracking base+index in lockstep with Y; identical
+; bytes land in the same slots, minus the per-move base+index recompute.
   lda QuiesceDepth
   asl
   asl
   asl
   asl
   asl
-  sta $f0; base = depth * 32
-  ldy #$00
-__ai_search_qsave_loop_0:
-  cpy MoveCount
-  beq __ai_search_qsave_done_0
-  tya
   clc
-  adc $f0
-  tax
+  adc MoveCount
+  tax; X = base (depth * 32) + count
+  ldy MoveCount
+  beq __ai_search_qsave_done_0
+__ai_search_qsave_loop_0:
+  dex
+  dey
   lda MoveListFrom, y
   sta QSavedFrom, x
   lda MoveListTo, y
   sta QSavedTo, x
-  iny
+  cpy #$00
   bne __ai_search_qsave_loop_0
 __ai_search_qsave_done_0:
   rts
@@ -3986,26 +4005,26 @@ QRestoreMoveList:
   rts
 __ai_search_qrestore_ok_0:
   sta MoveCount
+; Mirror of the save loop: top-down copy, X = base+index in lockstep with Y.
   lda QuiesceDepth
   asl
   asl
   asl
   asl
   asl
-  sta $f0
-  ldy #$00
-__ai_search_qrestore_loop_0:
-  cpy MoveCount
-  beq __ai_search_qrestore_done_0
-  tya
   clc
-  adc $f0
-  tax
+  adc MoveCount
+  tax; X = base (depth * 32) + count
+  ldy MoveCount
+  beq __ai_search_qrestore_done_0
+__ai_search_qrestore_loop_0:
+  dex
+  dey
   lda QSavedFrom, x
   sta MoveListFrom, y
   lda QSavedTo, x
   sta MoveListTo, y
-  iny
+  cpy #$00
   bne __ai_search_qrestore_loop_0
 __ai_search_qrestore_done_0:
   sec
@@ -4058,18 +4077,18 @@ __ai_search_q_search_move_0:
 ; Recurse: -Quiesce(-beta, -alpha)
   ldx QuiesceDepth
   lda QBeta, x
-  jsr NegateSearchScore
+  NEGATE_SCORE_A
   sta $e8; child alpha = -beta
 
   ldx QuiesceDepth
   lda QAlpha, x
-  jsr NegateSearchScore
+  NEGATE_SCORE_A
   sta $e9; child beta = -alpha
 
   jsr Quiesce
 
 ; Negate score
-  jsr NegateSearchScore
+  NEGATE_SCORE_A
   ldx QuiesceDepth
   sta QScore, x; QScore = -child_score
 
@@ -7037,21 +7056,21 @@ __ai_search_pvs_full_width_0:
   bvc __ai_search_pvs_alpha_plus_one_ok_0
   lda #$7f
 __ai_search_pvs_alpha_plus_one_ok_0:
-  jsr NegateSearchScore
+  NEGATE_SCORE_A
   sta $e8; child alpha = -(alpha + 1)
 
   lda NegamaxState + 6, x; alpha
-  jsr NegateSearchScore
+  NEGATE_SCORE_A
   sta $e9; child beta = -alpha
   jmp __ai_search_child_window_ready_0
 
 __ai_search_child_full_window_0:
   lda NegamaxState + 7, x; beta
-  jsr NegateSearchScore; -beta
+  NEGATE_SCORE_A; -beta
   sta $e8; child alpha = -beta
 
   lda NegamaxState + 6, x; alpha
-  jsr NegateSearchScore; -alpha
+  NEGATE_SCORE_A; -alpha
   sta $e9; child beta = -alpha
 
 __ai_search_child_window_ready_0:
@@ -7063,7 +7082,7 @@ __ai_search_child_window_ready_0:
   jsr Negamax
 
 ; Negate score: score = -score
-  jsr NegateSearchScore
+  NEGATE_SCORE_A
   sta $eb; Save negated score in temp
 
 ; Recalculate state offset for PARENT (SearchDepth-1 because MakeMove incremented it)
@@ -7129,6 +7148,8 @@ __ai_search_pvs_cmp_beta_no_ov_0:
   asl
   asl
   tax
+; PVS re-search setup is rare; keep the jsr form here so the long branches
+; above stay in range.
   lda NegamaxState + 7, x
   jsr NegateSearchScore
   sta $e8
@@ -7142,7 +7163,7 @@ __ai_search_pvs_cmp_beta_no_ov_0:
   tay
   lda NegamaxChildDepth, y
   jsr Negamax
-  jsr NegateSearchScore
+  NEGATE_SCORE_A
   sta $eb
 
   lda SearchDepth
