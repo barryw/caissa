@@ -314,9 +314,20 @@ internal sealed class RawRunner
 
         try
         {
+            // VICE comparison showed Colossus misbehaves without its 60Hz CIA1
+            // Timer A interrupt: the jiffy clock and IRQ-updated state freeze,
+            // which corrupted book selection (1.e4 f6?!) and produced illegal
+            // check evasions. Deliver the jiffy IRQ at the PAL KERNAL rate.
+            const long JiffyIrqCycles = 16421;
+            var nextIrqCycle = JiffyIrqCycles;
             while (_totalCycles < maxCycles && steps < maxSteps)
             {
                 queuedInput?.Pump(memoryMap, _totalCycles);
+                if (_totalCycles >= nextIrqCycle)
+                {
+                    _processor.InterruptRequest();
+                    nextIrqCycle += JiffyIrqCycles;
+                }
                 if (_options.StopOnBrk && IsBrkAtPc())
                 {
                     stopReason = "brk";
@@ -859,6 +870,23 @@ internal sealed class ColossusMemoryMap : IMemoryMap
             return MatrixPortA();
         if (address == 0xDC01)
             return MatrixPortB();
+        // Colossus reads the VIC raster and CIA timers as entropy/index
+        // sources. Returning the frozen boot-dump bytes corrupts its book
+        // selection and move handling (1.e4 was answered with the impossible
+        // book move f6, and checks drew illegal replies), so model them as
+        // free-running counters derived from the cycle clock.
+        if (address == 0xD012)
+            return (byte)(RasterLine() & 0xFF);
+        if (address == 0xD011)
+            return (byte)((_io[0x11] & 0x7F) | (((RasterLine() >> 8) & 1) << 7));
+        if (address == 0xDC04)
+            return (byte)(Cia1TimerA() & 0xFF);
+        if (address == 0xDC05)
+            return (byte)(Cia1TimerA() >> 8);
+        if (address == 0xDC06)
+            return (byte)(Cia1TimerB() & 0xFF);
+        if (address == 0xDC07)
+            return (byte)(Cia1TimerB() >> 8);
 
         if (address >= 0xA000 && address < 0xC000 && BasicVisible)
             return _basicRom[address - 0xA000];
@@ -910,6 +938,16 @@ internal sealed class ColossusMemoryMap : IMemoryMap
                 break;
         }
     }
+
+    // PAL C64: 63 cycles per raster line, 312 lines per frame.
+    private int RasterLine() => (int)((_cycleTicks / 63) % 312);
+
+    // KERNAL programs CIA1 Timer A as the ~60Hz jiffy source (PAL latch
+    // 16421); Timer B free-runs from $FFFF. Exact phase does not matter for
+    // Colossus; changing values at CPU-clock rate does.
+    private ushort Cia1TimerA() => (ushort)(16421 - (_cycleTicks % 16422));
+
+    private ushort Cia1TimerB() => (ushort)(0xFFFF - (_cycleTicks % 0x10000));
 
     private bool LoRam => (_dataPort & 0x01) != 0;
     private bool HiRam => (_dataPort & 0x02) != 0;

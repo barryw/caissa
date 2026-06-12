@@ -1166,6 +1166,7 @@ InitSearch:
   sta SearchHistoryUpdates
   sta SearchHistoryActive
   sta SearchCounterMoveActive
+  sta SearchBestMoveRepairs
 .endif
   sta PieceListUpdateDisabled
   sta LastMoveWasCaptureByDepth
@@ -3446,6 +3447,11 @@ SearchHistoryUpdates:
 SearchHistoryActive:
   .res 1
 SearchCounterMoveActive:
+  .res 1
+; Number of times the final-legality guard had to replace an illegal best
+; move this search. Nonzero means an engine bug upstream; the guard exists so
+; a host never sees an illegal move regardless.
+SearchBestMoveRepairs:
   .res 1
 
 .segment "CODE"
@@ -9626,11 +9632,274 @@ __ai_search_aspiration_ok_0:
 ; Output: BestMoveFrom/BestMoveTo contain best move
 ;         A = best score from deepest completed search
 ;
+;
+; SanitizeHostState
+; Hosts own Board88, king squares, castling rights, and the en-passant
+; square. A stale or corrupt value makes the engine search a position that
+; does not exist and emit "legal" moves for it. Re-derive what the board can
+; prove and drop whatever it cannot.
+; Clobbers: A, X
+;
+SanitizeHostState:
+  ldx #$77
+__ai_search_sanitize_scan_0:
+  txa
+  and #$88
+  bne __ai_search_sanitize_next_0
+  lda Board88, x
+  cmp #WHITE_KING
+  bne __ai_search_sanitize_not_wk_0
+  stx whitekingsq
+  jmp __ai_search_sanitize_next_0
+__ai_search_sanitize_not_wk_0:
+  cmp #BLACK_KING
+  bne __ai_search_sanitize_next_0
+  stx blackkingsq
+__ai_search_sanitize_next_0:
+  dex
+  bpl __ai_search_sanitize_scan_0
+
+; Castling rights are only meaningful while the king and rook sit on their
+; home squares.
+  lda Board88 + $74
+  cmp #WHITE_KING
+  beq __ai_search_sanitize_wk_home_0
+  lda castlerights
+  and #<~(CASTLE_WK | CASTLE_WQ)
+  sta castlerights
+  jmp __ai_search_sanitize_black_castle_0
+__ai_search_sanitize_wk_home_0:
+  lda Board88 + $77
+  cmp #WHITE_ROOK
+  beq __ai_search_sanitize_wq_check_0
+  lda castlerights
+  and #<~CASTLE_WK
+  sta castlerights
+__ai_search_sanitize_wq_check_0:
+  lda Board88 + $70
+  cmp #WHITE_ROOK
+  beq __ai_search_sanitize_black_castle_0
+  lda castlerights
+  and #<~CASTLE_WQ
+  sta castlerights
+
+__ai_search_sanitize_black_castle_0:
+  lda Board88 + $04
+  cmp #BLACK_KING
+  beq __ai_search_sanitize_bk_home_0
+  lda castlerights
+  and #<~(CASTLE_BK | CASTLE_BQ)
+  sta castlerights
+  jmp __ai_search_sanitize_enpassant_0
+__ai_search_sanitize_bk_home_0:
+  lda Board88 + $07
+  cmp #BLACK_ROOK
+  beq __ai_search_sanitize_bq_check_0
+  lda castlerights
+  and #<~CASTLE_BK
+  sta castlerights
+__ai_search_sanitize_bq_check_0:
+  lda Board88 + $00
+  cmp #BLACK_ROOK
+  beq __ai_search_sanitize_enpassant_0
+  lda castlerights
+  and #<~CASTLE_BQ
+  sta castlerights
+
+__ai_search_sanitize_enpassant_0:
+; A valid en-passant target is an empty square on the third rank of the side
+; that just moved, with that side's pawn directly behind it.
+  lda enpassantsq
+  cmp #$ff
+  beq __ai_search_sanitize_done_0
+  and #$88
+  bne __ai_search_sanitize_clear_ep_0
+  ldx enpassantsq
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  bne __ai_search_sanitize_clear_ep_0
+  lda SearchSide
+  beq __ai_search_sanitize_ep_black_0
+; White to move: target must be on row $20 (rank 6) with a black pawn below.
+  txa
+  and #$f0
+  cmp #$20
+  bne __ai_search_sanitize_clear_ep_0
+  lda Board88 + $10, x
+  cmp #BLACK_PAWN
+  bne __ai_search_sanitize_clear_ep_0
+  jmp __ai_search_sanitize_done_0
+__ai_search_sanitize_ep_black_0:
+; Black to move: target must be on row $50 (rank 3) with a white pawn above.
+  txa
+  and #$f0
+  cmp #$50
+  bne __ai_search_sanitize_clear_ep_0
+  lda Board88 - $10, x
+  cmp #WHITE_PAWN
+  bne __ai_search_sanitize_clear_ep_0
+  jmp __ai_search_sanitize_done_0
+__ai_search_sanitize_clear_ep_0:
+  lda #$ff
+  sta enpassantsq
+__ai_search_sanitize_done_0:
+  rts
+
+;
+; EnsureBestMoveLegal
+; Final output guard: the move handed to the host must be legal in the root
+; position. The common case validates only the moving piece (a few thousand
+; cycles); the full legal-move regeneration is paid only when a repair is
+; actually needed, which indicates an upstream bug or host state corruption.
+; A position with no legal moves reports no-move.
+; Clobbers: A, X, Y, $e2-$e6, move list
+;
+EnsureBestMoveLegal:
+  lda BestMoveFrom
+  cmp #$ff
+  beq __ai_search_best_legal_done_0
+
+  jsr ValidateBestMove
+  bcs __ai_search_best_legal_done_0
+
+  inc SearchBestMoveRepairs
+  jsr GenerateLegalMoves
+  lda MoveCount
+  beq __ai_search_best_legal_none_0
+  lda MoveListFrom
+  sta BestMoveFrom
+  lda MoveListTo
+  sta BestMoveTo
+  rts
+__ai_search_best_legal_none_0:
+  lda #$ff
+  sta BestMoveFrom
+  sta BestMoveTo
+__ai_search_best_legal_done_0:
+  rts
+
+;
+; ValidateBestMove
+; Check that BestMoveFrom/BestMoveTo is a legal move for SearchSide by
+; generating only the moving piece's moves and applying the same castling
+; and king-safety filters as FilterLegalMoves.
+; Output: carry set = legal, carry clear = not legal.
+; Clobbers: A, X, Y, $e2-$e6, move list
+;
+ValidateBestMove:
+  lda BestMoveFrom
+  and #$88
+  bne __ai_search_validate_fail_near_0
+
+  ldx BestMoveFrom
+  lda Board88, x
+  cmp #EMPTY_PIECE
+  beq __ai_search_validate_fail_near_0
+  sta $e5
+  and #WHITE_COLOR
+  cmp SearchSide
+  beq __ai_search_validate_side_ok_0
+__ai_search_validate_fail_near_0:
+  jmp __ai_search_validate_fail_0
+__ai_search_validate_side_ok_0:
+
+  jsr ClearMoveList
+  lda $e5
+  and #$07
+  sta $e6
+  lda BestMoveFrom
+  ldx SearchSide
+  ldy $e6
+  cpy #PAWN_TYPE
+  bne __ai_search_validate_not_pawn_0
+  jsr GeneratePawnMoves
+  jmp __ai_search_validate_scan_0
+__ai_search_validate_not_pawn_0:
+  cpy #KNIGHT_TYPE
+  bne __ai_search_validate_not_knight_0
+  jsr GenerateKnightMoves
+  jmp __ai_search_validate_scan_0
+__ai_search_validate_not_knight_0:
+  cpy #BISHOP_TYPE
+  bne __ai_search_validate_not_bishop_0
+  jsr GenerateBishopMoves
+  jmp __ai_search_validate_scan_0
+__ai_search_validate_not_bishop_0:
+  cpy #ROOK_TYPE
+  bne __ai_search_validate_not_rook_0
+  jsr GenerateRookMoves
+  jmp __ai_search_validate_scan_0
+__ai_search_validate_not_rook_0:
+  cpy #QUEEN_TYPE
+  bne __ai_search_validate_not_queen_0
+  jsr GenerateQueenMoves
+  jmp __ai_search_validate_scan_0
+__ai_search_validate_not_queen_0:
+  cpy #KING_TYPE
+  bne __ai_search_validate_fail_0
+; GenerateKingMoves falls through into castling generation.
+  jsr GenerateKingMoves
+
+__ai_search_validate_scan_0:
+  ldx #$00
+__ai_search_validate_scan_loop_0:
+  cpx MoveCount
+  beq __ai_search_validate_fail_0
+  lda MoveListFrom, x
+  cmp BestMoveFrom
+  bne __ai_search_validate_scan_next_0
+  lda MoveListTo, x
+  eor BestMoveTo
+  and #$7f
+  beq __ai_search_validate_found_0
+__ai_search_validate_scan_next_0:
+  inx
+  bne __ai_search_validate_scan_loop_0
+  clc
+  rts
+
+__ai_search_validate_found_0:
+  lda MoveListFrom, x
+  sta $e2
+  lda MoveListTo, x
+  and #$7f
+  sta $e3
+  lda MoveListTo, x
+  sta $e4
+
+  jsr IsCastlingMove
+  bcc __ai_search_validate_not_castle_0
+  jsr CheckCastlingLegal
+  bcs __ai_search_validate_fail_0
+
+__ai_search_validate_not_castle_0:
+  lda #$01
+  sta PieceListUpdateDisabled
+  lda $e2
+  ldx $e4
+  jsr MakeMove
+  jsr IsSearchKingInCheck
+  php
+  lda $e2
+  ldx $e4
+  jsr UnmakeMove
+  lda #$00
+  sta PieceListUpdateDisabled
+  plp
+  bcs __ai_search_validate_fail_0
+  sec
+  rts
+
+__ai_search_validate_fail_0:
+  clc
+  rts
+
 FindBestMove:
 ; NOTE: With $35 (HIRAM=0), $A000-$BFFF is already RAM - no banking needed
 
 ; Initialize search
   jsr InitSearch
+  jsr SanitizeHostState
 
   jsr AICheckGameState
   sta EngineGameState
@@ -9831,6 +10100,7 @@ __ai_search_check_max_depth_0:
   bcc __ai_search_time_iter_loop_0
 
 __ai_search_time_done_0:
+  jsr EnsureBestMoveLegal
   jsr RememberBestMove
   lda IterScore
   rts
@@ -9849,6 +10119,7 @@ FinishBestMoveNoMove:
   rts
 
 FinishBestMoveZero:
+  jsr EnsureBestMoveLegal
   jsr RememberBestMove
   lda #$00
   rts

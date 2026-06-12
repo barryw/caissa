@@ -1,0 +1,146 @@
+; NMOS 6502/6510 behavior probes for the sim6502 core shared by the test
+; runner and ColossusRawRunner. Colossus 4 is 1985 NMOS code; any divergence
+; here can corrupt its play (see colossus illegal-move investigation).
+
+suites {
+  suite("CPU NMOS Quirks") {
+    symbols("/code/build/engine_harness.sym")
+    load("/code/build/engine_harness.prg", strip_header = true)
+
+    test("adc-decimal-mode-basic", "SED ADC performs BCD addition") {
+      ; C000: F8 18 A9 15 69 27 8D F0 C0 D8 60
+      $c000 = $f8
+      $c001 = $18
+      $c002 = $a9
+      $c003 = $15
+      $c004 = $69
+      $c005 = $27
+      $c006 = $8d
+      $c007 = $f0
+      $c008 = $c0
+      $c009 = $d8
+      $c00a = $60
+
+      jsr($c000, stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($c0f0) == $42, "BCD 15 + 27 must equal 42")
+    }
+
+    test("adc-decimal-mode-carry", "SED ADC propagates BCD carry") {
+      ; C010: F8 18 A9 58 69 46 8D F1 C0 A9 00 69 00 8D F2 C0 D8 60
+      $c010 = $f8
+      $c011 = $18
+      $c012 = $a9
+      $c013 = $58
+      $c014 = $69
+      $c015 = $46
+      $c016 = $8d
+      $c017 = $f1
+      $c018 = $c0
+      $c019 = $a9
+      $c01a = $00
+      $c01b = $69
+      $c01c = $00
+      $c01d = $8d
+      $c01e = $f2
+      $c01f = $c0
+      $c020 = $d8
+      $c021 = $60
+
+      jsr($c010, stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($c0f1) == $04, "BCD 58 + 46 must equal 04 with carry")
+      assert(peekbyte($c0f2) == $01, "BCD carry must ripple into the next add")
+    }
+
+    test("sbc-decimal-mode", "SED SBC performs BCD subtraction") {
+      ; C030: F8 38 A9 42 E9 27 8D F3 C0 D8 60
+      $c030 = $f8
+      $c031 = $38
+      $c032 = $a9
+      $c033 = $42
+      $c034 = $e9
+      $c035 = $27
+      $c036 = $8d
+      $c037 = $f3
+      $c038 = $c0
+      $c039 = $d8
+      $c03a = $60
+
+      jsr($c030, stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($c0f3) == $15, "BCD 42 - 27 must equal 15")
+    }
+
+    test("jmp-indirect-page-wrap", "JMP (xxFF) reads the high byte from xx00 on NMOS") {
+      ; C040: 6C FF C1   JMP ($C1FF)
+      $c040 = $6c
+      $c041 = $ff
+      $c042 = $c1
+      ; pointer low byte at $C1FF, NMOS high byte comes from $C100
+      $c1ff = $60
+      $c100 = $c3
+      $c200 = $c4
+      ; $C360: LDA #$01 STA $C0F4 RTS   (NMOS wrap target)
+      $c360 = $a9
+      $c361 = $01
+      $c362 = $8d
+      $c363 = $f4
+      $c364 = $c0
+      $c365 = $60
+      ; $C460: LDA #$02 STA $C0F4 RTS   (no-wrap target)
+      $c460 = $a9
+      $c461 = $02
+      $c462 = $8d
+      $c463 = $f4
+      $c464 = $c0
+      $c465 = $60
+      $c0f4 = $00
+
+      jsr($c040, stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($c0f4) == $01, "NMOS JMP (xxFF) must wrap within the page")
+    }
+
+    test("zp-indexed-wraparound", "LDA zp,X wraps within zero page") {
+      ; C050: A2 10 B5 F8 8D F5 C0 60   LDX #$10 LDA $F8,X STA $C0F5 RTS
+      $c050 = $a2
+      $c051 = $10
+      $c052 = $b5
+      $c053 = $f8
+      $c054 = $8d
+      $c055 = $f5
+      $c056 = $c0
+      $c057 = $60
+      $0008 = $aa
+      $0108 = $bb
+      $c0f5 = $00
+
+      jsr($c050, stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($c0f5) == $aa, "zp,X must wrap to $08, not read $0108")
+    }
+
+    test("adc-overflow-flag", "ADC sets V on signed overflow") {
+      ; C060: 18 A9 7F 69 01 08 68 8D F6 C0 60
+      ; result $80, V must be set; pull flags via PHP/PLA
+      $c060 = $18
+      $c061 = $a9
+      $c062 = $7f
+      $c063 = $69
+      $c064 = $01
+      $c065 = $08
+      $c066 = $68
+      $c067 = $8d
+      $c068 = $f6
+      $c069 = $c0
+      $c06a = $60
+      $c0f6 = $00
+
+      jsr($c060, stop_on_rts = true, fail_on_brk = true)
+
+      assert((peekbyte($c0f6) & $40) == $40, "ADC $7F + $01 must set the V flag")
+      assert((peekbyte($c0f6) & $80) == $80, "ADC $7F + $01 must set the N flag")
+    }
+  }
+}

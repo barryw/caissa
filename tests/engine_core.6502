@@ -3101,6 +3101,70 @@ suites {
       assert(peekbyte([Board88] + $74) == $b6, "Search should leave the white king on e1")
     }
 
+    test("sanitize-host-state-repairs-input", "SanitizeHostState re-derives king squares and drops impossible castle/ep state") {
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $04 = $36
+      [Board88] + $70 = $b4
+      [Board88] + $30 = $31
+      [whitekingsq] = $44
+      [blackkingsq] = $40
+      [SearchSide] = $80
+      [castlerights] = $0f
+      [enpassantsq] = $20
+
+      jsr([SanitizeHostState], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte([whitekingsq]) == $74, "White king square must be re-derived from the board")
+      assert(peekbyte([blackkingsq]) == $04, "Black king square must be re-derived from the board")
+      assert((peekbyte([castlerights]) & $01) == $00, "White kingside right needs the h1 rook")
+      assert((peekbyte([castlerights]) & $02) == $02, "White queenside right survives with king e1 and rook a1")
+      assert((peekbyte([castlerights]) & $0c) == $00, "Black rights need rooks on a8/h8")
+      assert(peekbyte([enpassantsq]) == $20, "a6 en passant with a black pawn on a5 is plausible and survives")
+
+      [enpassantsq] = $21
+      jsr([SanitizeHostState], stop_on_rts = true, fail_on_brk = true)
+      assert(peekbyte([enpassantsq]) == $ff, "En passant without the pushed pawn behind it must clear")
+
+      [enpassantsq] = $55
+      jsr([SanitizeHostState], stop_on_rts = true, fail_on_brk = true)
+      assert(peekbyte([enpassantsq]) == $ff, "Rank-3 en passant target is impossible with white to move")
+    }
+
+    test("best-move-guard-repairs-illegal-output", "EnsureBestMoveLegal replaces a corrupt best move with a legal one") {
+      memfill([Board88], 128, $30)
+      [Board88] + $74 = $b6
+      [Board88] + $04 = $36
+      [Board88] + $60 = $b1
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [currentplayer] = $01
+      [SearchSide] = $80
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      [SearchBestMoveRepairs] = $00
+
+      [BestMoveFrom] = $60
+      [BestMoveTo] = $50
+      jsr([EnsureBestMoveLegal], stop_on_rts = true, fail_on_brk = true)
+      assert(peekbyte([BestMoveFrom]) == $60, "Legal pawn push must be left untouched")
+      assert(peekbyte([BestMoveTo]) == $50, "Legal pawn push destination must be left untouched")
+      assert(peekbyte([SearchBestMoveRepairs]) == $00, "Legal moves must not count as repairs")
+
+      [BestMoveFrom] = $60
+      [BestMoveTo] = $30
+      jsr([EnsureBestMoveLegal], stop_on_rts = true, fail_on_brk = true)
+      assert(peekbyte([BestMoveFrom]) != $ff, "Guard must still produce a move")
+      assert(peekbyte([BestMoveTo]) != $30, "Pawn teleport must be rejected and replaced")
+      assert(peekbyte([SearchBestMoveRepairs]) == $01, "Repair counter must record the replacement")
+
+      [BestMoveFrom] = $33
+      [BestMoveTo] = $34
+      jsr([EnsureBestMoveLegal], stop_on_rts = true, fail_on_brk = true)
+      assert(peekbyte([BestMoveFrom]) != $33, "Move from an empty square must be rejected and replaced")
+      assert(peekbyte([SearchBestMoveRepairs]) == $02, "Second repair must increment the counter")
+    }
+
     test("headless-time-cap-exempts-beast-level", "Headless depth cap stops hard at depth 4 but lets LEVEL_BEAST iterate to the depth table") {
       [difficulty] = $02
       [IterDepth] = $04
