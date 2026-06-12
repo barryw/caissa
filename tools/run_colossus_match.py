@@ -712,8 +712,11 @@ def log_new_records(args: argparse.Namespace, records: list[MatchMove], start_in
 MOVE_NOW_COMMIT_CYCLES = 1_000_000_000
 
 # Whether the move-now press lands depends on the PC the think phase stopped
-# at; each retry resumes from the previous attempt's advanced state.
+# at; some stop points BRK immediately on pc-style resume. Between attempts,
+# continue the search briefly (a result-json resume, which always works) so
+# the next attempt starts from a fresh PC.
 MOVE_NOW_MAX_ATTEMPTS = 4
+MOVE_NOW_NUDGE_CYCLES = 50_000_000
 
 
 class RawColossusSession:
@@ -788,7 +791,7 @@ class RawColossusSession:
             return self.move_now_after_cycles
         return self.cycles
 
-    def force_move_now(self, out_prefix: Path, stop_regex: str) -> dict[str, Any]:
+    def force_move_now(self, out_prefix: Path, stop_regex: str, target_ply: int) -> dict[str, Any]:
         """Inject Colossus's own move-now command into a still-thinking state.
 
         Colossus 4 commits its currently displayed best line when 'M' is
@@ -806,6 +809,33 @@ class RawColossusSession:
         result: dict[str, Any] = {}
         total_cycles = 0
         for attempt in range(1, MOVE_NOW_MAX_ATTEMPTS + 1):
+            if attempt > 1:
+                nudge_prefix = out_prefix.parent / f"{out_prefix.name}_nudge{attempt}"
+                nudge_command = [
+                    "dotnet",
+                    str(self.runner),
+                    "--ram",
+                    str(source_prefix.with_suffix(".ram.bin")),
+                    "--cpu-view",
+                    str(self.cpu_view),
+                    "--meta",
+                    str(source_prefix.with_suffix(".json")),
+                    "--cycles",
+                    str(MOVE_NOW_NUDGE_CYCLES),
+                    "--tod-cycles-per-tick",
+                    str(self.tod_cycles_per_tick),
+                    "--poll-steps",
+                    str(self.args.colossus_raw_poll_steps),
+                    "--ram-out",
+                    str(nudge_prefix.with_suffix(".ram.bin")),
+                    "--json",
+                    str(nudge_prefix.with_suffix(".json")),
+                    "--screen",
+                    str(nudge_prefix.with_suffix(".screen.txt")),
+                ]
+                nudge_result = self.run_raw_command(nudge_command)
+                total_cycles += int(nudge_result.get("cycles") or 0)
+                source_prefix = nudge_prefix
             forced_prefix = out_prefix.parent / f"{out_prefix.name}_forced{attempt}"
             think_json = json.loads(source_prefix.with_suffix(".json").read_text(encoding="utf-8"))
             end_pc = int(think_json["end"]["PC"])
@@ -845,10 +875,18 @@ class RawColossusSession:
             total_cycles += int(result.get("cycles") or 0)
             result["forcedPrefix"] = str(forced_prefix)
             result["forcedAttempts"] = attempt
+            # Success check must agree with the caller's parser: the committed
+            # move shows up as screen move list entry target_ply. A redundant
+            # M press after a commit lands in Colossus's input phase and
+            # silently desyncs the rest of the game, so never retry past
+            # success.
             screen = str(result.get("screen", ""))
-            if re.search(stop_regex, screen, re.IGNORECASE | re.MULTILINE):
+            if dict(screen_move_entries(screen)).get(target_ply) is not None:
                 break
-            source_prefix = forced_prefix
+            # Only chain from the forced state when it actually executed;
+            # instant-BRK attempts leave the prior searching state authoritative.
+            if int(result.get("steps") or 0) > 1000:
+                source_prefix = forced_prefix
         result["cycles"] = total_cycles
         return result
 
@@ -950,7 +988,7 @@ class RawColossusSession:
         forced = False
         if reply_uci is None and self.move_now_after_cycles > 0:
             think_cycles = int(result.get("cycles") or 0)
-            result = self.force_move_now(out_prefix, r"^\s*1\s+[a-h][1-8][-x][a-h][1-8]")
+            result = self.force_move_now(out_prefix, r"^\s*1\s+[a-h][1-8][-x][a-h][1-8]", 1)
             result["cycles"] = int(result.get("cycles") or 0) + think_cycles
             self.last_screen = str(result.get("screen", ""))
             visible_entries = dict(screen_move_entries(self.last_screen))
@@ -1067,7 +1105,7 @@ class RawColossusSession:
         forced = False
         if reply_uci is None and self.move_now_after_cycles > 0:
             think_cycles = int(result.get("cycles") or 0)
-            result = self.force_move_now(out_prefix, stop_regex)
+            result = self.force_move_now(out_prefix, stop_regex, target_ply)
             result["cycles"] = int(result.get("cycles") or 0) + think_cycles
             self.last_screen = str(result.get("screen", ""))
             visible_entries = dict(screen_move_entries(self.last_screen))

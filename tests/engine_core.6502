@@ -2031,42 +2031,6 @@ suites {
       assert(peekbyte($eb) == $0a, "Home minors should keep the early rook penalty active")
     }
 
-    test("root-rewards-safe-quiet-checks", "Root scoring keeps forcing quiet checks competitive") {
-      memfill([Board88], 128, $30)
-      [Board88] + $74 = $b6
-      [Board88] + $73 = $b5
-      [Board88] + $04 = $36
-      [whitekingsq] = $74
-      [blackkingsq] = $04
-      [SearchSide] = $80
-      [SearchDepth] = $00
-      [MoveListFrom] + $00 = $73
-      [MoveListTo] + $00 = $37
-      [NegamaxState] + $02 = $00
-      [NegamaxState] + $03 = $73
-      [NegamaxState] + $04 = $37
-      $eb = $50
-
-      jsr([ApplyRootQuietCheckBonus], stop_on_rts = true, fail_on_brk = true)
-
-      assert(peekbyte($eb) == $68, "Qd1-h5+ should gain a quiet-check bonus")
-
-      [MoveListTo] + $00 = $63
-      [NegamaxState] + $04 = $63
-      $eb = $50
-
-      jsr([ApplyRootQuietCheckBonus], stop_on_rts = true, fail_on_brk = true)
-
-      assert(peekbyte($eb) == $50, "Non-checking queen moves should not gain the quiet-check bonus")
-
-      [MoveListTo] + $00 = $37
-      [NegamaxState] + $04 = $37
-      $eb = $80
-
-      jsr([ApplyRootQuietCheckBonus], stop_on_rts = true, fail_on_brk = true)
-
-      assert(peekbyte($eb) == $80, "Rejected moves should not be revived by quiet-check scoring")
-    }
 
     test("root-allows-king-escape-under-queen-pressure", "Exposed kings can run when an enemy queen is close") {
       memfill([Board88], 128, $30)
@@ -3135,42 +3099,6 @@ suites {
       assert(peekbyte([BestMoveTo]) != $ff, "Hard search should find a concrete destination")
       assert(peekbyte([BestMoveTo]) != $74, "Hard search must not return a move onto its own king")
       assert(peekbyte([Board88] + $74) == $b6, "Search should leave the white king on e1")
-    }
-
-    test("root-quiet-check-bonus-skips-losing-checks", "Quiet-check initiative bonus must not rescue checks that lose material") {
-      [Board88] + $75 = $b3
-      [Board88] + $74 = $b6
-      [Board88] + $04 = $36
-      [whitekingsq] = $74
-      [blackkingsq] = $04
-      [currentplayer] = $01
-      [SearchSide] = $80
-      [SearchDepth] = $00
-
-      [MoveListFrom] + $00 = $75
-      [MoveListTo] + $00 = $31
-      [NegamaxState] + $02 = $00
-      [NegamaxState] + $04 = $31
-
-      $eb = $f6
-
-      jsr([ApplyRootQuietCheckBonus], stop_on_rts = true, fail_on_brk = true)
-
-      assert(peekbyte($eb) == $f6, "Losing quiet check keeps its negative search score")
-
-      $eb = $05
-
-      jsr([ApplyRootQuietCheckBonus], stop_on_rts = true, fail_on_brk = true)
-
-      assert(peekbyte($eb) == $1d, "Winning quiet check still earns the initiative bonus")
-
-      [NegamaxState] + $04 = $33
-      [MoveListTo] + $00 = $33
-      $eb = $05
-
-      jsr([ApplyRootQuietCheckBonus], stop_on_rts = true, fail_on_brk = true)
-
-      assert(peekbyte($eb) == $05, "Non-checking quiet move earns no initiative bonus")
     }
 
     test("headless-time-cap-exempts-beast-level", "Headless depth cap stops hard at depth 4 but lets LEVEL_BEAST iterate to the depth table") {

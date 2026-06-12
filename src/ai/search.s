@@ -106,7 +106,6 @@ ROOT_MINOR_ATTACKED_DEST_PENALTY = 80
 ROOT_HANGING_MINOR_PENALTY = 65
 ROOT_MISSED_PAWN_WIN_PENALTY = 70
 ROOT_EARLY_QUEEN_MOVE_PENALTY = 45
-ROOT_QUIET_CHECK_BONUS = 24
 ROOT_MISSED_ADVANCED_PAWN_PENALTY = 75
 ROOT_MISSED_CENTER_BREAK_PENALTY = 60
 ROOT_BLOCKED_BISHOP_RECAPTURE_PENALTY = 70
@@ -4966,52 +4965,6 @@ __ai_search_penalty_store_0:
   rts
 
 ;
-; ApplyRootQuietCheckBonus
-; Modestly reward safe quiet root checks as forcing initiative. Captures and
-; rejected moves keep their normal tactical/safety scores.
-; Input/Output: $eb = root move score from the mover's perspective.
-; Clobbers: A, X, Y, $f0-$f5, attack_sq, attack_color
-;
-ApplyRootQuietCheckBonus:
-  lda $eb
-  cmp #NEG_INFINITY
-  beq __ai_search_quiet_check_done_0
-
-  lda NegamaxState + 4
-  bmi __ai_search_quiet_check_done_0
-  and #$7f
-  tax
-  lda Board88, x
-  cmp #EMPTY_PIECE
-  bne __ai_search_quiet_check_done_0
-
-  ldx NegamaxState + 2
-  jsr RootMoveGivesCheck
-  bcc __ai_search_quiet_check_done_0
-
-; A negative search score means the check already loses material in full
-; search. Initiative cannot pay for a piece, so never let this bonus lift a
-; losing check above a sound quiet alternative.
-  lda $eb
-  bmi __ai_search_quiet_check_done_0
-  clc
-  adc #ROOT_QUIET_CHECK_BONUS
-  bvc __ai_search_quiet_check_clamp_positive_0
-  lda #STATIC_EVAL_LIMIT
-  jmp __ai_search_quiet_check_store_0
-
-__ai_search_quiet_check_clamp_positive_0:
-  cmp #STATIC_EVAL_LIMIT + 1
-  bcc __ai_search_quiet_check_store_0
-  lda #STATIC_EVAL_LIMIT
-
-__ai_search_quiet_check_store_0:
-  sta $eb
-
-__ai_search_quiet_check_done_0:
-  rts
-
-;
 ; RootProbeAllowsMateInOne
 ; Input: RootProbeFrom/RootProbeTo hold a legal candidate for the current side.
 ; Output: Carry set if making that move gives the opponent mate in one.
@@ -7059,7 +7012,6 @@ __ai_search_pvs_research_done_0:
   jsr ApplyRootEarlyKingPenalty
   jsr ApplyRootCheckedKingMovePenalty
   jsr ApplyRootExposedKingFlankPawnPenalty
-  jsr ApplyRootQuietCheckBonus
   jsr ApplyRootLoopPenalty
 
 __ai_search_skip_root_pawn_safety_0:
