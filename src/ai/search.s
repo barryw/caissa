@@ -4987,8 +4987,11 @@ ApplyRootQuietCheckBonus:
   jsr RootMoveGivesCheck
   bcc __ai_search_quiet_check_done_0
 
+; A negative search score means the check already loses material in full
+; search. Initiative cannot pay for a piece, so never let this bonus lift a
+; losing check above a sound quiet alternative.
   lda $eb
-  bmi __ai_search_quiet_check_add_negative_0
+  bmi __ai_search_quiet_check_done_0
   clc
   adc #ROOT_QUIET_CHECK_BONUS
   bvc __ai_search_quiet_check_clamp_positive_0
@@ -4999,11 +5002,6 @@ __ai_search_quiet_check_clamp_positive_0:
   cmp #STATIC_EVAL_LIMIT + 1
   bcc __ai_search_quiet_check_store_0
   lda #STATIC_EVAL_LIMIT
-  jmp __ai_search_quiet_check_store_0
-
-__ai_search_quiet_check_add_negative_0:
-  clc
-  adc #ROOT_QUIET_CHECK_BONUS
 
 __ai_search_quiet_check_store_0:
   sta $eb

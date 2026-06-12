@@ -3137,6 +3137,42 @@ suites {
       assert(peekbyte([Board88] + $74) == $b6, "Search should leave the white king on e1")
     }
 
+    test("root-quiet-check-bonus-skips-losing-checks", "Quiet-check initiative bonus must not rescue checks that lose material") {
+      [Board88] + $75 = $b3
+      [Board88] + $74 = $b6
+      [Board88] + $04 = $36
+      [whitekingsq] = $74
+      [blackkingsq] = $04
+      [currentplayer] = $01
+      [SearchSide] = $80
+      [SearchDepth] = $00
+
+      [MoveListFrom] + $00 = $75
+      [MoveListTo] + $00 = $31
+      [NegamaxState] + $02 = $00
+      [NegamaxState] + $04 = $31
+
+      $eb = $f6
+
+      jsr([ApplyRootQuietCheckBonus], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $f6, "Losing quiet check keeps its negative search score")
+
+      $eb = $05
+
+      jsr([ApplyRootQuietCheckBonus], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $1d, "Winning quiet check still earns the initiative bonus")
+
+      [NegamaxState] + $04 = $33
+      [MoveListTo] + $00 = $33
+      $eb = $05
+
+      jsr([ApplyRootQuietCheckBonus], stop_on_rts = true, fail_on_brk = true)
+
+      assert(peekbyte($eb) == $05, "Non-checking quiet move earns no initiative bonus")
+    }
+
     test("headless-engine-ponder-cache-restores-board", "ChessPonderSearch caches a matching reply without committing the predicted move", timeout = 13000000) {
       jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
       jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
