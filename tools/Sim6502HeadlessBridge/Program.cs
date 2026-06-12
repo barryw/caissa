@@ -161,7 +161,16 @@ internal sealed class HeadlessBridge : IDisposable
         WritePosition(root);
 
         var beforeSearchCycles = _totalCycles;
-        var clean = ExecuteRoutine(Symbol(_options.FindBestMoveLabel), totalTimeout);
+        var depthCycles = new Dictionary<string, long>();
+        var depthAddress = _symbols.TryGetValue("SearchCompletedDepth", out var depthSymbol) ? depthSymbol : -1;
+        var clean = ExecuteRoutine(Symbol(_options.FindBestMoveLabel), totalTimeout, () =>
+        {
+            if (depthAddress < 0)
+                return;
+            var depth = _backend.Processor.ReadMemoryValueWithoutCycle(depthAddress);
+            if (depth > 0)
+                depthCycles.TryAdd(depth.ToString(), _totalCycles - beforeSearchCycles);
+        });
         var timedOut = RoutineTimedOut;
         var totalCycles = _totalCycles;
         var bestMoveFrom = ReadByte("BestMoveFrom");
@@ -191,6 +200,7 @@ internal sealed class HeadlessBridge : IDisposable
             searchDepth = TryReadByte("SearchDepth"),
             searchCompletedDepth = TryReadByte("SearchCompletedDepth"),
             searchRootMoveCount = TryReadByte("SearchRootMoveCount"),
+            depthCycles,
             pc = _backend.Processor.ProgramCounter,
         };
     }
@@ -353,13 +363,14 @@ internal sealed class HeadlessBridge : IDisposable
         return clean;
     }
 
-    private bool ExecuteRoutine(int address, long timeoutCycles)
+    private bool ExecuteRoutine(int address, long timeoutCycles, Action? onPoll = null)
     {
         var processor = _backend.Processor;
         var keepRunning = true;
         var subroutineCount = 1;
         var exitCleanly = true;
         var startCycles = _totalCycles;
+        var steps = 0L;
         processor.ProgramCounter = address;
 
         RoutineTimedOut = false;
@@ -386,6 +397,8 @@ internal sealed class HeadlessBridge : IDisposable
             }
 
             processor.NextStep();
+            if (onPoll is not null && (++steps & 0x3FF) == 0)
+                onPoll();
 
             if (timeoutCycles > 0 && _totalCycles - startCycles > timeoutCycles)
             {

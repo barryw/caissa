@@ -154,6 +154,10 @@ EvalBlackBishopCount:
   .res 1
 EvalEndgameFlag:
   .res 1
+; When nonzero, EvaluatePosition computes only material + PST + phase
+; counters. Set/cleared by EvaluateLazy in search.s.
+EvalLazyStage:
+  .res 1
 
 ;
 ; Pawn count storage per file (0-7)
@@ -205,6 +209,8 @@ __ai_eval_pst_piece_present_0:
   cmp #PAWN_TYPE
   bne __ai_eval_piece_phase_not_pawn_0
   inc EvalPawnCount
+  lda EvalLazyStage
+  bne __ai_eval_piece_phase_done_0
   jsr EvaluateAdvancedPawn
   jmp __ai_eval_piece_phase_done_0
 __ai_eval_piece_phase_not_pawn_0:
@@ -226,6 +232,11 @@ __ai_eval_piece_phase_not_bishop_0:
   bne __ai_eval_piece_phase_not_queen_0
   inc EvalQueenCount
 __ai_eval_piece_phase_not_queen_0:
+; The per-piece pressure and mobility scans dominate evaluation cost
+; (~30K cycles per piece). The lazy first stage skips them; quiescence
+; stand-pat only pays for them when material+PST lands near the window.
+  lda EvalLazyStage
+  bne __ai_eval_piece_phase_done_0
   jsr EvaluatePawnPressure
   jsr EvaluateQueenPressure
   jsr EvaluateMinorPressure
@@ -299,7 +310,9 @@ __ai_eval_lookup_0:
 
 ; Call appropriate helper based on color
   lda $f1
-  beq PstBlackPiece
+  bne __ai_eval_pst_white_far_0
+  jmp PstBlackPiece
+__ai_eval_pst_white_far_0:
   jmp PstWhitePiece
 
 PstNext:
@@ -327,6 +340,11 @@ __ai_eval_set_endgame_0:
   sta EvalEndgameFlag
 
 __ai_eval_phase_done_0:
+; Lazy stage one ends here: material, PST, and phase counters only.
+  lda EvalLazyStage
+  beq __ai_eval_full_tail_0
+  rts
+__ai_eval_full_tail_0:
   jsr ApplyBishopPairBonus
 
 ; Evaluate pawn structure only when pawns exist. Sparse tactical and

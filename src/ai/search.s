@@ -3487,6 +3487,70 @@ CommittedBestTo:
 ; Output: A = score (signed 8-bit, clamped below the mate score band)
 ; Clobbers: Uses EvaluatePosition temps
 ;
+; Margin for the lazy stand-pat evaluation, in engine units (10 = one pawn).
+; Must exceed the largest realistic swing the skipped terms can add on top of
+; material + PST (pressure, mobility, king safety, pawn structure combined).
+LAZY_EVAL_MARGIN = 24
+
+;
+; EvaluateLazy
+; Quiescence stand-pat evaluation with a lazy first stage. Computes material
+; + PST only; when that score sits more than LAZY_EVAL_MARGIN outside the
+; current alpha/beta window ($e8/$e9) the expensive positional terms cannot
+; change the cutoff decision and the stage-one score is returned directly.
+; Output: A = score from SearchSide's perspective.
+; Clobbers: Evaluate temps, $f6-$f7
+;
+EvaluateLazy:
+  lda #$01
+  sta EvalLazyStage
+  jsr Evaluate
+  ldx #$00
+  stx EvalLazyStage
+  sta $f6; stage-one score
+
+; Fail-high check: stage1 >= beta + margin?
+  lda $e9
+  clc
+  adc #LAZY_EVAL_MARGIN
+  bvc __ai_search_lazy_hi_bound_ok_0
+  lda #$7f
+__ai_search_lazy_hi_bound_ok_0:
+  sta $f7
+  lda $f6
+  sec
+  sbc $f7
+  bvc __ai_search_lazy_hi_cmp_ok_0
+  eor #$80
+__ai_search_lazy_hi_cmp_ok_0:
+  bmi __ai_search_lazy_not_high_0
+  lda $f6
+  rts
+
+__ai_search_lazy_not_high_0:
+; Fail-low check: stage1 <= alpha - margin?
+  lda $e8
+  sec
+  sbc #LAZY_EVAL_MARGIN
+  bvc __ai_search_lazy_lo_bound_ok_0
+  lda #$80
+__ai_search_lazy_lo_bound_ok_0:
+  sta $f7
+  lda $f6
+  sec
+  sbc $f7
+  beq __ai_search_lazy_low_0
+  bvc __ai_search_lazy_lo_cmp_ok_0
+  eor #$80
+__ai_search_lazy_lo_cmp_ok_0:
+  bmi __ai_search_lazy_low_0
+; Near the window: the cheap score cannot decide, pay for the full terms.
+  jmp Evaluate
+
+__ai_search_lazy_low_0:
+  lda $f6
+  rts
+
 Evaluate:
   jsr EvaluatePosition
 
@@ -3736,7 +3800,7 @@ Quiesce:
   bcc __ai_search_quiesce_continue_0
 ; Depth limit reached - just evaluate
   dec QuiesceDepth
-  jmp Evaluate
+  jmp EvaluateLazy
 
 __ai_search_quiesce_continue_0:
 ; In deeper check quiescence, standing pat is illegal. Search all legal
@@ -3770,7 +3834,7 @@ __ai_search_q_no_checked_evasions_0:
 __ai_search_q_not_in_check_0:
 ; Stand pat: evaluate current position
 ; If this position is already good enough, we don't need to search captures
-  jsr Evaluate
+  jsr EvaluateLazy
   sta $ea; $ea = stand_pat score
 
 ; Beta cutoff: if stand_pat >= beta, return beta
