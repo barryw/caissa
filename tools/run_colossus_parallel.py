@@ -64,6 +64,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=list(DEFAULT_OPENINGS),
         help="Opening lanes. Use comma-separated UCI moves for multi-move lanes, or 'engine' for no forced moves.",
     )
+    parser.add_argument(
+        "--difficulty",
+        default=None,
+        help="Engine difficulty passed through to run_colossus_match.py (e.g. hard, beast).",
+    )
+    parser.add_argument(
+        "--c64-timeout",
+        type=int,
+        default=None,
+        help="Per-move engine timeout cycles passed through to run_colossus_match.py.",
+    )
     parser.add_argument("--colossus-raw-cycles", type=int)
     parser.add_argument(
         "--colossus-raw-force-move-after-seconds",
@@ -289,6 +300,10 @@ def run_lane(args: argparse.Namespace, lane: Lane) -> dict[str, Any]:
         "--colossus-raw-input-gap-cycles",
         str(args.colossus_raw_input_gap_cycles),
     ]
+    if args.difficulty is not None:
+        command.extend(["--difficulty", args.difficulty])
+    if args.c64_timeout is not None:
+        command.extend(["--c64-timeout", str(args.c64_timeout)])
     if args.colossus_raw_cycles is not None:
         command.extend(["--colossus-raw-cycles", str(args.colossus_raw_cycles)])
     if args.colossus_raw_force_move_after_seconds > 0:
