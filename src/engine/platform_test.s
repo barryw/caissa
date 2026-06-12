@@ -17,7 +17,12 @@ EngineStartSearchTimer:
 EngineCheckTime:
 ; Headless tests do not have CIA timers. Cap iterative deepening before
 ; hard-mode depth 4 so ordinary positions return a measured move instead of
-; running full depth with no wall-clock deadline.
+; running full depth with no wall-clock deadline. LEVEL_BEAST opts out of the
+; cap for engine-vs-engine match play; its only bound is MaxDepthTable, so
+; callers must budget multi-billion-cycle moves.
+  lda difficulty
+  cmp #LEVEL_BEAST
+  bcs __engine_platform_test_time_ok_0
   lda IterDepth
   cmp #$04
   bcc __engine_platform_test_time_ok_0

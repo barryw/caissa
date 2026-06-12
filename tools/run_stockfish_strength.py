@@ -41,6 +41,10 @@ DIFFICULTY = {
     "easy": 0,
     "medium": 1,
     "hard": 2,
+    # Harness-only: full hard depth table without the headless depth-3
+    # iteration cap. Engine moves can take billions of cycles; raise
+    # per-move timeout-cycles accordingly.
+    "beast": 3,
 }
 
 RUNNER_TARGETS = {

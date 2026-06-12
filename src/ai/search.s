@@ -84,16 +84,18 @@ SearchSide:
 
 ; Time budgets by difficulty level
 TimeBudgetTableLo:
-  .byte <TIME_EASY, <TIME_MEDIUM, <TIME_HARD
+  .byte <TIME_EASY, <TIME_MEDIUM, <TIME_HARD, <TIME_BEAST
 
 TimeBudgetTableHi:
-  .byte >TIME_EASY, >TIME_MEDIUM, >TIME_HARD
+  .byte >TIME_EASY, >TIME_MEDIUM, >TIME_HARD, >TIME_BEAST
 
 ; Exclusive iterative-deepening limits by difficulty.
 ; Easy searches depths 1-2, medium 1-3, hard 1-5. Hard depth 5 depends on
 ; selective pruning/reduction; brute force depth 5 is too slow.
+; Beast shares the hard table but is exempt from the headless depth-3
+; iteration cap (see platform_test.s EngineCheckTime).
 MaxDepthTable:
-  .byte 3, 4, 6
+  .byte 3, 4, 6, 6
 
 ; Keep static evaluation below the mate score band. Mate is reported as
 ; exactly +/-MATE_SCORE, so non-terminal scores must never look like mate.

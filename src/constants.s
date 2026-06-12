@@ -174,11 +174,16 @@ NUM_COLS = NUM_ROWS
 LEVEL_EASY = $00
 LEVEL_MEDIUM = $01
 LEVEL_HARD = $02
+; Harness-only strength level for engine-vs-engine matches. Searches the full
+; hard depth table without the headless depth-3 iteration cap. Not offered by
+; the C64 UI; hosts that expose it must accept multi-minute moves.
+LEVEL_BEAST = $03
 
 ; Time budgets in jiffies (1/60 second)
 TIME_EASY = 180; 3 seconds
 TIME_MEDIUM = 600; 10 seconds
 TIME_HARD = 1500; 25 seconds
+TIME_BEAST = 18000; 5 minutes
 
 ;
 ; AI Search Constants

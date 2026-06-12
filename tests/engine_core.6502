@@ -3173,6 +3173,35 @@ suites {
       assert(peekbyte($eb) == $05, "Non-checking quiet move earns no initiative bonus")
     }
 
+    test("headless-time-cap-exempts-beast-level", "Headless depth cap stops hard at depth 4 but lets LEVEL_BEAST iterate to the depth table") {
+      [difficulty] = $02
+      [IterDepth] = $04
+      [TimeUp] = $00
+
+      jsr([EngineCheckTime], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == true, "Hard difficulty hits the headless cap at iteration depth 4")
+      assert(peekbyte([TimeUp]) == $01, "Hard difficulty cap should set TimeUp")
+
+      [difficulty] = $03
+      [IterDepth] = $05
+      [TimeUp] = $00
+
+      jsr([EngineCheckTime], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == false, "Beast difficulty is exempt from the headless iteration cap")
+      assert(peekbyte([TimeUp]) == $00, "Beast difficulty should not set TimeUp")
+
+      [difficulty] = $02
+      [IterDepth] = $03
+      [TimeUp] = $00
+
+      jsr([EngineCheckTime], stop_on_rts = true, fail_on_brk = true)
+
+      assert(c == false, "Hard difficulty still searches below the cap")
+      assert(peekbyte([TimeUp]) == $00, "Below-cap iterations should not set TimeUp")
+    }
+
     test("headless-engine-ponder-cache-restores-board", "ChessPonderSearch caches a matching reply without committing the predicted move", timeout = 13000000) {
       jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
       jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
