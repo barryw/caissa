@@ -71,6 +71,8 @@ PAWN_SHIELD_BONUS = 10; Bonus per pawn in shield
 OPEN_FILE_PENALTY = 25; Penalty for open file near king
 SEMI_OPEN_FILE_PENALTY = 12; Penalty for half-open file near king
 KING_CENTER_PENALTY = 30; Penalty for king in center in middlegame
+KING_MARCH_BASE = 8; Flat middlegame penalty once the king leaves ranks 1-2
+KING_MARCH_STEP = 8; Extra penalty per rank the king has marched forward
 KING_ZONE_ATTACK_PENALTY = 5; Penalty per attacked square around the king
 
 ; Passed pawn bonus by rank (row 0 = rank 8, row 7 = rank 1)
@@ -2513,6 +2515,28 @@ __ai_eval_white_center_penalty_0:
   sta $f1
 
 __ai_eval_white_done_0:
+; A king that has marched up the board in the middlegame is the single most
+; common way our Stockfish-ladder games end in mating attacks. Penalize every
+; rank past the second, hardest the farther it walks. This routine only runs
+; in the middlegame, so endgame king activity is unaffected; castled kings on
+; rank 1 are a no-op.
+  lda $f3
+  cmp #$06
+  bcs __ai_eval_white_march_done_0
+  lda #$06
+  sec
+  sbc $f3; ranks advanced past rank 2 (1..6)
+  asl
+  asl
+  asl; times KING_MARCH_STEP (8)
+  clc
+  adc #KING_MARCH_BASE
+  sta $f4
+  sec
+  lda $f1
+  sbc $f4
+  sta $f1
+__ai_eval_white_march_done_0:
   jsr ApplyWhiteKingFileExposure
   lda #BLACKS_TURN
   jsr ApplyKingZonePressure
@@ -2646,6 +2670,24 @@ __ai_eval_black_center_penalty_0:
   sta $f1
 
 __ai_eval_black_done_0:
+; Mirror of the white king-march penalty: black ranks 8-7 are rows 0-1, so
+; anything at row 2 or beyond has wandered into the middlegame crossfire.
+  lda $f3
+  cmp #$02
+  bcc __ai_eval_black_march_done_0
+  sec
+  sbc #$01; ranks advanced past rank 7 (1..6)
+  asl
+  asl
+  asl; times KING_MARCH_STEP (8)
+  clc
+  adc #KING_MARCH_BASE
+  sta $f4
+  sec
+  lda $f1
+  sbc $f4
+  sta $f1
+__ai_eval_black_march_done_0:
   jsr ApplyBlackKingFileExposure
   lda #WHITE_COLOR
   jsr ApplyKingZonePressure
