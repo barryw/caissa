@@ -162,15 +162,27 @@ internal sealed class HeadlessBridge : IDisposable
 
         var beforeSearchCycles = _totalCycles;
         var clean = ExecuteRoutine(Symbol(_options.FindBestMoveLabel), totalTimeout);
+        var timedOut = RoutineTimedOut;
         var totalCycles = _totalCycles;
         var bestMoveFrom = ReadByte("BestMoveFrom");
         var bestMoveTo = ReadByte("BestMoveTo");
+
+        // BestMoveFrom/To is scratch while root probes and partial iterations
+        // run, so a timed-out search must answer with the engine's committed
+        // pair: the best move of the last fully completed iteration. The
+        // machine state is discarded by RestoreBaseline on the next request.
+        if (timedOut)
+        {
+            bestMoveFrom = ReadByte("CommittedBestFrom");
+            bestMoveTo = ReadByte("CommittedBestTo");
+        }
         var encoded = (bestMoveFrom << 8) | bestMoveTo;
 
         return new
         {
             id,
-            ok = clean,
+            ok = clean || (timedOut && bestMoveFrom != 0xFF),
+            timedOut,
             bestMoveFrom,
             bestMoveTo,
             encoded,
@@ -350,6 +362,8 @@ internal sealed class HeadlessBridge : IDisposable
         var startCycles = _totalCycles;
         processor.ProgramCounter = address;
 
+        RoutineTimedOut = false;
+
         do
         {
             if (processor.IsJsr())
@@ -374,11 +388,21 @@ internal sealed class HeadlessBridge : IDisposable
             processor.NextStep();
 
             if (timeoutCycles > 0 && _totalCycles - startCycles > timeoutCycles)
-                throw new TimeoutException($"Routine ${address:X4} exceeded {timeoutCycles} cycles");
+            {
+                // The engine keeps BestMoveFrom/BestMoveTo current at the
+                // root throughout iterative deepening, so a budget overrun
+                // can still hand the caller the best move found so far
+                // instead of failing the whole game. Callers that need a
+                // hard failure can inspect the timedOut flag.
+                RoutineTimedOut = true;
+                keepRunning = false;
+            }
         } while (keepRunning);
 
-        return exitCleanly;
+        return exitCleanly && !RoutineTimedOut;
     }
+
+    private bool RoutineTimedOut;
 
     private void LoadProgram(string path, bool stripHeader)
     {

@@ -1167,6 +1167,10 @@ InitSearch:
   sta SearchHistoryActive
   sta SearchCounterMoveActive
   sta SearchBestMoveRepairs
+  lda #$ff
+  sta CommittedBestFrom
+  sta CommittedBestTo
+  lda #$00
 .endif
   sta PieceListUpdateDisabled
   sta LastMoveWasCaptureByDepth
@@ -3452,6 +3456,13 @@ SearchCounterMoveActive:
 ; move this search. Nonzero means an engine bug upstream; the guard exists so
 ; a host never sees an illegal move regardless.
 SearchBestMoveRepairs:
+  .res 1
+; Best move as of the last fully completed iteration. BestMoveFrom/To is
+; scratch during root shortcut probes and partial iterations, so an external
+; supervisor that cuts a search short must read this pair instead.
+CommittedBestFrom:
+  .res 1
+CommittedBestTo:
   .res 1
 
 .segment "CODE"
@@ -10051,6 +10062,10 @@ __ai_search_no_book_move_0:
 ; Initialize BestMove to a sane legal fallback before iterative search. If the
 ; search fails to lift any move above the score floor, do not keep a queen hang.
   jsr SetSafeRootFallbackMove
+  lda BestMoveFrom
+  sta CommittedBestFrom
+  lda BestMoveTo
+  sta CommittedBestTo
 
 ; Iterative deepening with time check
   lda #1
@@ -10082,6 +10097,14 @@ __ai_search_time_iter_loop_0:
 __ai_search_iteration_score_ready_0:
   lda IterDepth
   sta SearchCompletedDepth
+
+; Commit this iteration's best move for external supervisors. BestMoveFrom/To
+; is scratch during probes and partial iterations; this pair is only ever a
+; fully searched root move.
+  lda BestMoveFrom
+  sta CommittedBestFrom
+  lda BestMoveTo
+  sta CommittedBestTo
 
 ; Update thinking display with current depth and best move
   jsr EngineOnSearchIteration
