@@ -3885,7 +3885,9 @@ __ai_search_q_alpha_ok_0:
 
 ; If no captures, return alpha (position is quiet)
   lda MoveCount
-  bne __ai_search_q_have_captures_0
+  beq __ai_search_q_no_pseudo_caps_0
+  jmp __ai_search_q_have_captures_0
+__ai_search_q_no_pseudo_caps_0:
 
 ; A quiet leaf still needs a checkmate guard. If the side to move is checked
 ; and has no captures, search all legal evasions and report mate if none exist.
@@ -3897,7 +3899,9 @@ __ai_search_q_alpha_ok_0:
   sta QInCheck, x
   jsr GenerateLegalMoves
   lda MoveCount
-  bne __ai_search_q_have_captures_0
+  beq __ai_search_q_no_evasions_0
+  jmp __ai_search_q_have_captures_0
+__ai_search_q_no_evasions_0:
 
   dec QuiesceDepth
   lda #<-MATE_SCORE
@@ -3931,7 +3935,84 @@ __ai_search_q_return_quiet_now_0:
   lda QAlpha, x
   rts
 
+;
+; QSaveMoveList / QRestoreMoveList
+; Snapshot the current node's ordered move list so child quiescence calls can
+; clobber the shared buffer freely. Restore sets carry on success; carry clear
+; means the list was oversized and the caller must regenerate.
+; Clobbers: A, X, Y, $f0
+;
+QSaveMoveList:
+  lda MoveCount
+  cmp #QSAVED_MAX_MOVES + 1
+  bcc __ai_search_qsave_fits_0
+  ldx QuiesceDepth
+  lda #$ff
+  sta QSavedCount, x
+  rts
+__ai_search_qsave_fits_0:
+  ldx QuiesceDepth
+  sta QSavedCount, x
+  lda QuiesceDepth
+  asl
+  asl
+  asl
+  asl
+  asl
+  sta $f0; base = depth * 32
+  ldy #$00
+__ai_search_qsave_loop_0:
+  cpy MoveCount
+  beq __ai_search_qsave_done_0
+  tya
+  clc
+  adc $f0
+  tax
+  lda MoveListFrom, y
+  sta QSavedFrom, x
+  lda MoveListTo, y
+  sta QSavedTo, x
+  iny
+  bne __ai_search_qsave_loop_0
+__ai_search_qsave_done_0:
+  rts
+
+QRestoreMoveList:
+  ldx QuiesceDepth
+  lda QSavedCount, x
+  cmp #$ff
+  bne __ai_search_qrestore_ok_0
+  clc
+  rts
+__ai_search_qrestore_ok_0:
+  sta MoveCount
+  lda QuiesceDepth
+  asl
+  asl
+  asl
+  asl
+  asl
+  sta $f0
+  ldy #$00
+__ai_search_qrestore_loop_0:
+  cpy MoveCount
+  beq __ai_search_qrestore_done_0
+  tya
+  clc
+  adc $f0
+  tax
+  lda QSavedFrom, x
+  sta MoveListFrom, y
+  lda QSavedTo, x
+  sta MoveListTo, y
+  iny
+  bne __ai_search_qrestore_loop_0
+__ai_search_qrestore_done_0:
+  sec
+  rts
+
 __ai_search_q_have_captures_0:
+  jsr QSaveMoveList
   ldx QuiesceDepth
   lda #$00
   sta QMoveIdx, x; Move index
@@ -4029,8 +4110,13 @@ __ai_search_q_no_ov4_0:
   sta QAlpha, x; alpha = score
 
 __ai_search_q_next_cap_0:
-; Child quiescence clobbered the shared move list. Rebuild this node's
-; move list before advancing to the next parent move.
+; Child quiescence clobbered the shared move list. Restore this node's saved
+; copy; only oversized lists pay for regeneration.
+  jsr QRestoreMoveList
+  bcc __ai_search_q_regen_fallback_0
+  jmp __ai_search_q_regen_done_0
+
+__ai_search_q_regen_fallback_0:
   ldx QuiesceDepth
   lda QInCheck, x
   cmp #$01
@@ -4074,6 +4160,14 @@ QTo:      .res MAX_QUIESCE_DEPTH
 QScore:   .res MAX_QUIESCE_DEPTH
 QMoveIdx: .res MAX_QUIESCE_DEPTH
 QInCheck: .res MAX_QUIESCE_DEPTH
+; Per-depth saved move lists. Regenerating + refiltering the shared move list
+; after every searched capture made quiescence O(moves^2) in make/unmake;
+; restoring a 32-entry copy costs a few hundred cycles instead. Count $ff
+; marks an oversized list that must fall back to regeneration.
+QSAVED_MAX_MOVES = 32
+QSavedCount: .res MAX_QUIESCE_DEPTH + 2
+QSavedFrom:  .res (MAX_QUIESCE_DEPTH + 2) * QSAVED_MAX_MOVES
+QSavedTo:    .res (MAX_QUIESCE_DEPTH + 2) * QSAVED_MAX_MOVES
 
 .segment "CODE"
 
