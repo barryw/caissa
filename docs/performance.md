@@ -16,15 +16,19 @@ Current standalone benchmark baseline:
 
 | Benchmark | Cycles | Gate |
 | --- | ---: | ---: |
-| easy mate in one | 587,819 | 2,400,000 |
-| medium mate in one | 587,819 | 2,400,000 |
-| hard mate in one | 587,819 | 2,400,000 |
-| depth-1 hanging queen search | 837,697 | 1,000,000 |
-| hard hanging queen | 660,612 | 700,000 |
-| depth-5 middlegame search | 4,535,000 | 5,000,000 |
-| hard white promotion | 499,361 | 650,000 |
-| hard black promotion | 499,539 | 650,000 |
-| hard rook activation | 677,471 | 750,000 |
+| easy mate in one | 593,655 | 2,400,000 |
+| medium mate in one | 593,655 | 2,400,000 |
+| hard mate in one | 593,655 | 2,400,000 |
+| depth-1 hanging queen search | 866,528 | 1,000,000 |
+| hard hanging queen | 668,188 | 700,000 |
+| depth-5 middlegame search | 4,569,439 | 5,000,000 |
+| hard white promotion | 507,099 | 650,000 |
+| hard black promotion | 507,288 | 650,000 |
+| hard rook activation | 687,897 | 750,000 |
+
+About 5K of the hard-path cycles are the host-state sanitizer and the
+final move-legality guard added after the Nova UI illegal-move report; that
+is a deliberately accepted tradeoff for a hard output guarantee.
 
 `make size` reports ld65 segment sizes from `build/engine_harness.dbg`. `FILE`
 is the emitted PRG payload; `RUNTIME` includes `BSS` RAM reserved by the linker.
@@ -33,15 +37,14 @@ Current standalone ca65 size:
 | Segment | Range | Bytes |
 | --- | --- | ---: |
 | `LOADADDR` | `$0000-$0001` | 2 |
-| `CODE` | `$0801-$6c0f` | 25,615 |
-| `BSS` | `$6c10-$7e97` | 4,744 |
-| PRG payload | | 25,617 |
-| runtime footprint | | 30,361 |
+| `CODE` | `$0801-$58bd` | 20,669 |
+| `BSS` | `$58be-$6c47` | 5,002 |
+| PRG payload | | 20,671 |
+| runtime footprint | | 25,673 |
 
 The resident engine budget target is 35K runtime footprint. The current
-standalone harness leaves 5,479 bytes for additional resident engine logic
-before hitting that ceiling. The current label span ends at `$7e92`, leaving
-365 bytes before `$8000` in this memory map.
+standalone harness leaves 9,327 bytes for additional resident engine logic
+before hitting that ceiling. The current label span ends at `$6c42`.
 
 Treat benchmark changes as suspicious until they have both a cycle explanation
 and a strength/correctness test result. The goal is to make every optimization
