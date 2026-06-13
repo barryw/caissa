@@ -4031,7 +4031,6 @@ __ai_search_qrestore_done_0:
   rts
 
 __ai_search_q_have_captures_0:
-  jsr QSaveMoveList
   ldx QuiesceDepth
   lda #$00
   sta QMoveIdx, x; Move index
@@ -4129,13 +4128,13 @@ __ai_search_q_no_ov4_0:
   sta QAlpha, x; alpha = score
 
 __ai_search_q_next_cap_0:
-; Child quiescence clobbered the shared move list. Restore this node's saved
-; copy; only oversized lists pay for regeneration.
-  jsr QRestoreMoveList
-  bcc __ai_search_q_regen_fallback_0
-  jmp __ai_search_q_regen_done_0
-
-__ai_search_q_regen_fallback_0:
+; Child quiescence clobbered the shared move list, so rebuild it before the
+; next parent move. The save/restore shortcut (QSaveMoveList/QRestoreMoveList)
+; was unsound: restoring a snapshot across quiescence make/unmake corrupted
+; piece-list/stack state on some capture sequences and crashed deep beast
+; searches (illegal opcode at ~$09A0; repro FEN in the tracked task).
+; Regeneration is provably correct; reinstate save/restore only with a
+; validated fix. The QSave* helper remains defined but unused.
   ldx QuiesceDepth
   lda QInCheck, x
   cmp #$01
