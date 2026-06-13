@@ -6631,6 +6631,22 @@ __ai_search_done_10:
 ; the NegamaxState array indexed by depth, since the 6502 stack is limited.
 ;
 Negamax:
+; Hard recursion ceiling. NegamaxState is MAX_DEPTH*8 bytes indexed by
+; SearchDepth*8, and the 6502 hardware stack is only 256 bytes. Check and
+; recapture extensions add plies on top of the iterative-deepening depth, so
+; a long forcing line could drive SearchDepth past MAX_DEPTH, run the state
+; index off its array, and overflow the call stack -- which corrupted memory
+; and crashed deep beast searches with a wild RTS into the piece-list code
+; (illegal opcode near $097A/$09A0). Treat MAX_DEPTH as an absolute horizon:
+; drop to quiescence instead of recursing further.
+  ldx SearchDepth
+  cpx #MAX_DEPTH
+  bcc __ai_search_depth_in_range_0
+  ldx #$00
+  stx QuiesceDepth
+  jmp Quiesce
+__ai_search_depth_in_range_0:
+
 ; Base case: depth == 0 -> quiescence search
   cmp #$00
   bne __ai_search_search_0
