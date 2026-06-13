@@ -11,3 +11,6 @@ tools/ColossusRawRunner/obj/
 *.prg
 *.sym
 .DS_Store
+
+# sim6502 bridge build lock (inter-process, transient)
+tools/Sim6502HeadlessBridge/.bridge_build.lock

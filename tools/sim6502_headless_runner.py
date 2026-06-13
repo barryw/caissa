@@ -183,33 +183,53 @@ class Sim6502HeadlessRunner:
             raise Sim6502BridgeError(json.dumps(response, sort_keys=True))
         return response
 
-    def _ensure_built(self) -> None:
-        if self.bridge_dll.exists() and self.bridge_dll.stat().st_mtime >= self.project_path.stat().st_mtime:
-            program_cs = self.project_path.with_name("Program.cs")
-            if (
-                self.bridge_dll.stat().st_mtime >= program_cs.stat().st_mtime
-                and (
-                    not self.sim6502_runner_dll.exists()
-                    or self.bridge_dll.stat().st_mtime >= self.sim6502_runner_dll.stat().st_mtime
-                )
-            ):
-                return
-        result = subprocess.run(
-            [
-                self.dotnet,
-                "build",
-                str(self.project_path),
-                "-c",
-                self.configuration,
-                f"-p:Sim6502OutputDir={self.sim6502_output_dir}",
-            ],
-            cwd=self.repo_root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+    def _bridge_is_current(self) -> bool:
+        if not (self.bridge_dll.exists() and self.bridge_dll.stat().st_mtime >= self.project_path.stat().st_mtime):
+            return False
+        program_cs = self.project_path.with_name("Program.cs")
+        return (
+            self.bridge_dll.stat().st_mtime >= program_cs.stat().st_mtime
+            and (
+                not self.sim6502_runner_dll.exists()
+                or self.bridge_dll.stat().st_mtime >= self.sim6502_runner_dll.stat().st_mtime
+            )
         )
-        if result.returncode != 0:
-            raise Sim6502BridgeError(f"Could not build sim6502 bridge.\n{result.stdout}")
+
+    def _ensure_built(self) -> None:
+        if self._bridge_is_current():
+            return
+        # `dotnet build` is NOT safe to run concurrently against the same
+        # obj/bin (CS2012 "being used by another process"). Parallel launchers
+        # spin up many runners at once, so serialize the build behind an
+        # inter-process lock and re-check inside the critical section -- the
+        # first worker builds, the rest see a current dll and skip. This
+        # turned a silently-wasted parallel run into a reliable one.
+        lock_path = self.project_path.with_name(".bridge_build.lock")
+        with open(lock_path, "w") as lock_file:
+            try:
+                import fcntl
+
+                fcntl.flock(lock_file, fcntl.LOCK_EX)
+            except (ImportError, OSError):
+                pass  # No flock (non-POSIX): fall through; mtime recheck still helps.
+            if self._bridge_is_current():
+                return
+            result = subprocess.run(
+                [
+                    self.dotnet,
+                    "build",
+                    str(self.project_path),
+                    "-c",
+                    self.configuration,
+                    f"-p:Sim6502OutputDir={self.sim6502_output_dir}",
+                ],
+                cwd=self.repo_root,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            if result.returncode != 0:
+                raise Sim6502BridgeError(f"Could not build sim6502 bridge.\n{result.stdout}")
 
     def _send(self, payload: dict[str, Any]) -> None:
         assert self.proc is not None and self.proc.stdin is not None
