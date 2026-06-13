@@ -16,14 +16,20 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from probe_colossus_vice import (  # noqa: E402
-    DEFAULT_D64,
-    DEFAULT_PROGRAM_INDEX,
-    DEFAULT_VICE_MCP_URL,
-    ViceMCPClient,
-    decode_screen,
-    send_colossus_move,
+from vice_colossus import (  # noqa: E402
+    ViceColossus,
+    ViceColossusError,
+    legalize_from_to as vice_legalize_from_to,
+    screen_move_entries as vice_screen_move_entries,
 )
+
+# The MCP-based VICE bridge (probe_colossus_vice.ViceMCPClient) is gone; the VICE
+# Colossus backend now talks to x64sc's remote text monitor through
+# tools/vice_colossus.py. The rebuilt Colossus disk and its loader entry are the
+# defaults proven by build/vice_boot_check.py.
+DEFAULT_VICE_D64 = Path("build") / "coloss40_rebuilt.d64"
+DEFAULT_VICE_PROGRAM_ENTRY = "colossus 4.0-d"
+DEFAULT_VICE_X64SC = "/usr/local/bin/x64sc"
 from run_stockfish_strength import (  # noqa: E402
     C64_BACKENDS,
     DEFAULT_IMAGE,
@@ -128,41 +134,6 @@ class MatchResult:
     final_fen: str
     decoded_screen: str
     ponder: PonderStats | None = None
-
-
-def read_screen(vice: ViceMCPClient) -> str:
-    screen_ram = vice.call("vice.memory.read", {"address": "$0400", "size": 1000})
-    return decode_screen(screen_ram.get("data", []))
-
-
-def set_warp(vice: ViceMCPClient, speed: int) -> None:
-    vice.call("vice.machine.config.set", {"resources": {"WarpMode": 1, "Speed": speed}})
-    vice.call("vice.execution.run")
-
-
-def disable_colossus_prediction(vice: ViceMCPClient) -> None:
-    # Colossus prediction mode guesses the opponent's next move and can desync
-    # automated engine-vs-engine input. $B49B=0 disables that feature.
-    vice.call("vice.memory.write", {"address": "$b49b", "data": [0], "bank": "ram"})
-
-
-def wait_for_boot(vice: ViceMCPClient, timeout_seconds: float, poll_seconds: float) -> str:
-    deadline = time.monotonic() + timeout_seconds
-    last_screen = ""
-    while time.monotonic() < deadline:
-        last_screen = read_screen(vice)
-        if "COLOSSUS 4.0" in last_screen.upper() and "LOADING" not in last_screen.upper():
-            return last_screen
-        time.sleep(poll_seconds)
-    raise TimeoutError(f"Colossus did not reach the board within {timeout_seconds:.1f}s\n{last_screen}")
-
-
-def boot_colossus(args: argparse.Namespace, vice: ViceMCPClient) -> str:
-    vice.call("vice.disk.attach", {"unit": 8, "path": str(args.d64)})
-    vice.call("vice.machine.reset", {"mode": "hard", "run_after": True})
-    vice.call("vice.autostart", {"path": str(args.d64), "index": args.program_index, "run": True})
-    set_warp(vice, args.warp_speed)
-    return wait_for_boot(vice, args.boot_timeout_seconds, args.poll_seconds)
 
 
 def screen_move_pairs(screen: str) -> list[str]:
@@ -367,61 +338,6 @@ def try_start_live_ponder(
     )
 
 
-def bytes_from_mcp_data(data: list[Any]) -> bytes:
-    values: list[int] = []
-    for value in data:
-        if isinstance(value, str):
-            values.append(int(value, 16) & 0xFF)
-        else:
-            values.append(int(value) & 0xFF)
-    return bytes(values)
-
-
-def read_colossus_piece_map(vice: ViceMCPClient) -> dict[int, Any]:
-    result = vice.call(
-        "vice.memory.read",
-        {"address": f"${COLOSSUS_BOARD_BASE:04x}", "size": 100, "bank": "ram"},
-    )
-    data = bytes_from_mcp_data(result.get("data", []))
-    if len(data) < COLOSSUS_BOARD_ORIGIN + (COLOSSUS_BOARD_STRIDE * 7) + 8:
-        raise RuntimeError(f"Colossus board RAM read returned {len(data)} bytes")
-
-    pieces: dict[int, Any] = {}
-    for rank in range(1, 9):
-        for file_index in range(8):
-            offset = COLOSSUS_BOARD_ORIGIN + ((8 - rank) * COLOSSUS_BOARD_STRIDE) + file_index
-            code = data[offset]
-            if code not in COLOSSUS_PIECE_SYMBOLS:
-                raise RuntimeError(
-                    f"Unexpected Colossus piece byte ${code:02x} at "
-                    f"{chess.square_name(chess.square(file_index, rank - 1))}"
-                )
-            symbol = COLOSSUS_PIECE_SYMBOLS[code]
-            if symbol is not None:
-                pieces[chess.square(file_index, rank - 1)] = chess.Piece.from_symbol(symbol)
-    return pieces
-
-
-def piece_map_matches_board(piece_map: dict[int, Any], board: Any) -> bool:
-    return all(piece_map.get(square) == board.piece_at(square) for square in chess.SQUARES)
-
-
-def piece_map_board_fen(piece_map: dict[int, Any]) -> str:
-    board = chess.Board(None)
-    for square, piece in piece_map.items():
-        board.set_piece_at(square, piece)
-    return board.board_fen()
-
-
-def infer_move_from_colossus_memory(board: Any, piece_map: dict[int, Any]) -> Any | None:
-    for move in board.legal_moves:
-        candidate = board.copy(stack=False)
-        candidate.push(move)
-        if piece_map_matches_board(piece_map, candidate):
-            return move
-    return None
-
-
 def parsed_screen_moves(start_fen: str, screen: str) -> list[Any]:
     board = chess.Board(start_fen)
     parsed = []
@@ -432,114 +348,6 @@ def parsed_screen_moves(start_fen: str, screen: str) -> list[Any]:
         parsed.append(move)
         board.push(move)
     return parsed
-
-
-def wait_for_screen_plies(
-    args: argparse.Namespace,
-    vice: ViceMCPClient,
-    start_fen: str,
-    target_plies: int,
-    timeout_seconds: float,
-    require_prompt: bool = False,
-) -> tuple[list[Any], str]:
-    deadline = time.monotonic() + timeout_seconds
-    last_screen = ""
-    last_moves: list[Any] = []
-    last_warp_refresh = 0.0
-    while time.monotonic() < deadline:
-        now = time.monotonic()
-        if now - last_warp_refresh > 5.0:
-            set_warp(vice, args.warp_speed)
-            last_warp_refresh = now
-        last_screen = read_screen(vice)
-        last_moves = parsed_screen_moves(start_fen, last_screen)
-        prompt_ready = (not require_prompt) or ("YOUR MOVE" in last_screen.upper())
-        if len(last_moves) >= target_plies and prompt_ready:
-            return last_moves, last_screen
-        time.sleep(args.poll_seconds)
-    raise TimeoutError(
-        f"Colossus move log reached {len(last_moves)} plies, expected {target_plies}"
-        f"{' plus prompt' if require_prompt else ''} within {timeout_seconds:.1f}s\n{last_screen}"
-    )
-
-
-def wait_for_colossus_memory_position(
-    args: argparse.Namespace,
-    vice: ViceMCPClient,
-    expected_board: Any,
-    timeout_seconds: float,
-) -> str:
-    deadline = time.monotonic() + timeout_seconds
-    last_board_fen = ""
-    last_warp_refresh = 0.0
-    while time.monotonic() < deadline:
-        now = time.monotonic()
-        if now - last_warp_refresh > 5.0:
-            set_warp(vice, args.warp_speed)
-            last_warp_refresh = now
-        piece_map = read_colossus_piece_map(vice)
-        last_board_fen = piece_map_board_fen(piece_map)
-        if piece_map_matches_board(piece_map, expected_board):
-            return read_screen(vice)
-        time.sleep(args.poll_seconds)
-    raise TimeoutError(
-        f"Colossus RAM did not reach expected position within {timeout_seconds:.1f}s; "
-        f"expected={expected_board.board_fen()} actual={last_board_fen}\n{read_screen(vice)}"
-    )
-
-
-def wait_for_colossus_memory_after_engine_move(
-    args: argparse.Namespace,
-    vice: ViceMCPClient,
-    expected_board: Any,
-    timeout_seconds: float,
-) -> tuple[str, Any | None]:
-    deadline = time.monotonic() + timeout_seconds
-    last_board_fen = ""
-    last_warp_refresh = 0.0
-    while time.monotonic() < deadline:
-        now = time.monotonic()
-        if now - last_warp_refresh > 5.0:
-            set_warp(vice, args.warp_speed)
-            last_warp_refresh = now
-        piece_map = read_colossus_piece_map(vice)
-        last_board_fen = piece_map_board_fen(piece_map)
-        if piece_map_matches_board(piece_map, expected_board):
-            return read_screen(vice), None
-        reply = infer_move_from_colossus_memory(expected_board, piece_map)
-        if reply is not None:
-            return read_screen(vice), reply
-        time.sleep(args.poll_seconds)
-    raise TimeoutError(
-        f"Colossus RAM did not acknowledge expected position within {timeout_seconds:.1f}s; "
-        f"expected={expected_board.board_fen()} actual={last_board_fen}\n{read_screen(vice)}"
-    )
-
-
-def wait_for_colossus_memory_move(
-    args: argparse.Namespace,
-    vice: ViceMCPClient,
-    board: Any,
-    timeout_seconds: float,
-) -> tuple[Any, str]:
-    deadline = time.monotonic() + timeout_seconds
-    last_board_fen = ""
-    last_warp_refresh = 0.0
-    while time.monotonic() < deadline:
-        now = time.monotonic()
-        if now - last_warp_refresh > 5.0:
-            set_warp(vice, args.warp_speed)
-            last_warp_refresh = now
-        piece_map = read_colossus_piece_map(vice)
-        last_board_fen = piece_map_board_fen(piece_map)
-        move = infer_move_from_colossus_memory(board, piece_map)
-        if move is not None:
-            return move, read_screen(vice)
-        time.sleep(args.poll_seconds)
-    raise TimeoutError(
-        f"Colossus RAM did not produce a legal move for {board.fen()} within {timeout_seconds:.1f}s; "
-        f"actual={last_board_fen}\n{read_screen(vice)}"
-    )
 
 
 def pgn_for_match(start_fen: str, moves: list[MatchMove], result: str, engine_color: str) -> str:
@@ -594,55 +402,31 @@ def sync_visible_screen_moves(
 
 def wait_for_visible_screen_ply(
     args: argparse.Namespace,
-    vice: ViceMCPClient,
+    vice: ViceColossus,
     target_ply: int,
     timeout_seconds: float,
 ) -> str:
-    deadline = time.monotonic() + timeout_seconds
-    last_screen = ""
-    last_visible: list[int] = []
-    last_warp_refresh = 0.0
-    while time.monotonic() < deadline:
-        now = time.monotonic()
-        if now - last_warp_refresh > 5.0:
-            set_warp(vice, args.warp_speed)
-            last_warp_refresh = now
-        last_screen = read_screen(vice)
-        last_visible = [ply for ply, _ in screen_move_entries(last_screen)]
-        if target_ply in last_visible:
-            return last_screen
-        time.sleep(args.poll_seconds)
-    raise TimeoutError(
-        f"Colossus visible log did not show ply {target_ply} within {timeout_seconds:.1f}s; "
-        f"visible={last_visible}\n{last_screen}"
-    )
+    return vice.wait_for_ply(target_ply, timeout_seconds, poll_seconds=args.poll_seconds)
 
 
 def send_engine_move_with_ack(
     args: argparse.Namespace,
-    vice: ViceMCPClient,
+    vice: ViceColossus,
     move_uci: str,
     target_ply: int,
 ) -> str:
-    last_error: TimeoutError | None = None
+    last_error: ViceColossusError | None = None
     for _ in range(args.move_attempts):
-        send_colossus_move(
-            vice,
-            move_uci,
-            input_mode=args.move_input,
-            hold_frames=args.move_hold_frames,
-            key_gap=args.move_key_gap,
-        )
+        vice.inject_move(move_uci)
         try:
-            return wait_for_visible_screen_ply(
-                args,
-                vice,
+            return vice.wait_for_ply(
                 target_ply,
                 args.input_timeout_seconds,
+                poll_seconds=args.poll_seconds,
             )
-        except TimeoutError as exc:
+        except ViceColossusError as exc:
             last_error = exc
-            set_warp(vice, args.warp_speed)
+            vice.set_warp()
     if last_error is not None:
         raise last_error
     raise RuntimeError("move send was not attempted")
@@ -1419,36 +1203,6 @@ def run_match_raw(args: argparse.Namespace) -> MatchResult:
     )
 
 
-def wait_for_engine_move_ack(
-    args: argparse.Namespace,
-    vice: ViceMCPClient,
-    start_fen: str,
-    target_plies: int,
-    expected_move: Any,
-) -> tuple[list[Any], str, bool]:
-    deadline = time.monotonic() + args.input_timeout_seconds
-    last_screen = ""
-    last_moves: list[Any] = []
-    last_warp_refresh = 0.0
-    expected_uci = expected_move.uci()[:4]
-    while time.monotonic() < deadline:
-        now = time.monotonic()
-        if now - last_warp_refresh > 5.0:
-            set_warp(vice, args.warp_speed)
-            last_warp_refresh = now
-        last_screen = read_screen(vice)
-        last_moves = parsed_screen_moves(start_fen, last_screen)
-        if len(last_moves) >= target_plies:
-            return last_moves, last_screen, False
-        if screen_assumed_move(last_screen) == expected_uci:
-            return last_moves, last_screen, True
-        time.sleep(args.poll_seconds)
-    raise TimeoutError(
-        f"Colossus did not acknowledge engine move {expected_uci} within "
-        f"{args.input_timeout_seconds:.1f}s; log plies={len(last_moves)}\n{last_screen}"
-    )
-
-
 def write_outputs(args: argparse.Namespace, result: MatchResult) -> None:
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
@@ -1471,15 +1225,16 @@ def run_match(args: argparse.Namespace) -> MatchResult:
     if missing:
         raise SystemExit(f"Missing C64 runner files: {', '.join(missing)}. Run `make build` first.")
 
-    vice = ViceMCPClient(args.vice_url)
-    if args.boot:
-        log_progress(args, "booting Colossus in VICE")
-        decoded_screen = boot_colossus(args, vice)
-        log_progress(args, "VICE Colossus board ready")
-    else:
-        set_warp(vice, args.warp_speed)
-        decoded_screen = read_screen(vice)
-    disable_colossus_prediction(vice)
+    d64_path = args.d64 if args.d64.is_absolute() else (args.repo_root / args.d64)
+    if args.boot and not d64_path.exists():
+        raise SystemExit(f"Colossus D64 image not found: {d64_path}")
+    vice = ViceColossus(
+        d64=d64_path,
+        program_entry=args.vice_program_entry,
+        x64sc=args.vice_x64sc,
+        warp_speed=args.warp_speed,
+        connect_timeout=args.boot_timeout_seconds,
+    )
 
     board = chess.Board(args.start_fen)
     engine_side = chess.WHITE if args.engine_color == "white" else chess.BLACK
@@ -1492,6 +1247,16 @@ def run_match(args: argparse.Namespace) -> MatchResult:
         else None
     )
     try:
+        if args.boot:
+            log_progress(args, "launching x64sc + booting Colossus in VICE")
+            vice.launch(boot_log=args.repo_root / "build" / "vice_colossus_boot.log")
+            decoded_screen = vice.wait_for_boot(args.colossus_boot_timeout_seconds, args.poll_seconds)
+            log_progress(args, "VICE Colossus board ready")
+        else:
+            vice.set_warp()
+            decoded_screen = vice.read_screen()
+        vice.disable_prediction()
+
         if sim_runner_context is None:
             sim_runner = None
             context = None
@@ -1538,7 +1303,7 @@ def run_match(args: argparse.Namespace) -> MatchResult:
 
                 expected_ply = len(records) + 1
                 pending_cycles[expected_ply] = cycles
-                disable_colossus_prediction(vice)
+                vice.disable_prediction()
                 log_progress(args, f"sending engine move {move_uci} for ply {expected_ply:02d}")
                 decoded_screen = send_engine_move_with_ack(args, vice, move_uci, expected_ply)
                 previous_count = len(records)
@@ -1560,6 +1325,8 @@ def run_match(args: argparse.Namespace) -> MatchResult:
     finally:
         if sim_runner_context is not None:
             sim_runner_context.__exit__(None, None, None)
+        if args.boot:
+            vice.kill()
 
     result = board.result(claim_draw=True)
     termination = "game-over" if board.is_game_over(claim_draw=True) else "max-plies"
@@ -1576,9 +1343,28 @@ def run_match(args: argparse.Namespace) -> MatchResult:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--vice-url", default=os.environ.get("VICE_MCP_URL", DEFAULT_VICE_MCP_URL))
-    parser.add_argument("--d64", type=Path, default=Path(os.environ.get("COLOSSUS_D64", DEFAULT_D64)))
-    parser.add_argument("--program-index", type=int, default=DEFAULT_PROGRAM_INDEX)
+    parser.add_argument(
+        "--d64",
+        type=Path,
+        default=Path(os.environ.get("COLOSSUS_D64", str(DEFAULT_VICE_D64))),
+        help="Colossus Chess 4 D64 image autostarted in x64sc (VICE backend).",
+    )
+    parser.add_argument(
+        "--vice-program-entry",
+        default=os.environ.get("COLOSSUS_PROGRAM_ENTRY", DEFAULT_VICE_PROGRAM_ENTRY),
+        help="Disk directory entry the VICE loader autostarts to reach the board.",
+    )
+    parser.add_argument(
+        "--vice-x64sc",
+        default=os.environ.get("VICE_X64SC", DEFAULT_VICE_X64SC),
+        help="Path to the x64sc binary used for the VICE Colossus backend.",
+    )
+    parser.add_argument(
+        "--colossus-boot-timeout-seconds",
+        type=float,
+        default=240.0,
+        help="How long to wait for Colossus to reach the board after autostart.",
+    )
     parser.add_argument("--repo-root", type=Path, default=repo_root_from_script())
     parser.add_argument("--engine-color", choices=("white", "black"), default="white")
     parser.add_argument("--difficulty", choices=sorted(DIFFICULTY), default="hard")
