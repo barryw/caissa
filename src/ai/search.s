@@ -14,7 +14,14 @@ MAX_QUIESCE_DEPTH = 6
 CHECK_QUIESCE_MAX_DEPTH = 2
 CHECK_QUIESCE_MIN_SEARCH_PLY = 2
 CHECK_QUIESCE_MAX_SEARCH_PLY = 3
-MOVE_LIST_SNAPSHOT_DEPTH = MAX_DEPTH - 1
+; Per-node move-list snapshots are indexed by SearchDepth. The deepest
+; recursing main-search node is SearchDepth = MAX_DEPTH - 1 (the entry guard
+; drops to quiescence at SearchDepth >= MAX_DEPTH), so the snapshot arrays must
+; cover indices 0..MAX_DEPTH-1 -> MAX_DEPTH slots. Sizing this MAX_DEPTH-1 left
+; the deepest ply writing one slice past the end; a forcing line that stacks
+; two-plus extensions can reach that ply, and depth-6 beast makes it more
+; likely. Cover the full recursing range.
+MOVE_LIST_SNAPSHOT_DEPTH = MAX_DEPTH
 
 ; Undo Stack
 ; Each entry saves state needed to unmake a move
@@ -89,13 +96,23 @@ TimeBudgetTableLo:
 TimeBudgetTableHi:
   .byte >TIME_EASY, >TIME_MEDIUM, >TIME_HARD, >TIME_BEAST
 
-; Exclusive iterative-deepening limits by difficulty.
+; Exclusive iterative-deepening limits by difficulty (loop runs IterDepth
+; 1..N-1 because N is an exclusive bound: `cmp MaxSearchDepth; bcc`).
 ; Easy searches depths 1-2, medium 1-3, hard 1-5. Hard depth 5 depends on
 ; selective pruning/reduction; brute force depth 5 is too slow.
-; Beast shares the hard table but is exempt from the headless depth-3
-; iteration cap (see platform_test.s EngineCheckTime).
+; Beast diverges from hard with an extra ply (entry 7 -> IterDepth reaches 6).
+; Beast is exempt from the headless depth cap (see platform_test.s
+; EngineCheckTime); the host enforces a per-move cycle budget via the bridge,
+; which commits the last completed iteration on overrun, so a depth-6 search
+; that exceeds the budget safely returns the depth-5 result.
+;
+; SAFETY: deepening IterDepth does NOT change worst-case SearchDepth. The
+; Negamax entry hard-caps recursion at SearchDepth >= MAX_DEPTH (drops to
+; quiescence), and check/recapture extensions can only prolong a line up to --
+; never past -- that ceiling. So MAX_DEPTH (8) and the depth-indexed arrays
+; already bound the deepest extension chain at depth 5; depth 6 is identical.
 MaxDepthTable:
-  .byte 3, 4, 6, 6
+  .byte 3, 4, 6, 7
 
 ; Keep static evaluation below the mate score band. Mate is reported as
 ; exactly +/-MATE_SCORE, so non-terminal scores must never look like mate.
