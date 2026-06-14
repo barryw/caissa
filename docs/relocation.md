@@ -14,7 +14,8 @@ Runtime RAM not emitted into the binary:
 - `BSS`: currently includes generated Zobrist random tables, move lists,
   history scores, repetition history, undo records, per-depth move-list
   snapshots, and zero-initialized search/eval/TT scratch state
-- `ENGINE_TT_BASE`: base address for the 2KB transposition table (`TT_SIZE * TT_ENTRY_SIZE`)
+- `ENGINE_TT_BASE`: base address for the transposition table; reserve `TT_SIZE * TT_ENTRY_SIZE` bytes (TT_ENTRY_SIZE = 8) of writable RAM there
+- `TT_SIZE`: TT entry count, host-overridable (power of two, multiple of 256). Default 256 (2KB). Larger raises the transposition hit rate / search strength and never affects correctness; size the `ENGINE_TT_BASE` region to match
 
 Zero page is the non-relocatable ABI surface in the current engine. The code uses
 these ranges directly for speed and indirect addressing:

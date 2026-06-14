@@ -9,7 +9,14 @@
 
 .segment "CODE"
 
+; TT_SIZE is host-overridable (power of two, multiple of 256). Default 256 (2KB)
+; fits C64-era hosts; a host with more RAM can enlarge it (reserve TT_SIZE *
+; TT_ENTRY_SIZE bytes at ENGINE_TT_BASE). NOTE: with the current 16-bit Zobrist
+; hash a larger table is a wash in practice (false-hit exposure grows with
+; occupancy); a wider hash is the prerequisite for a big TT to pay off.
+.ifndef TT_SIZE
 TT_SIZE = 256; Number of entries
+.endif
 TT_ENTRY_SIZE = 8; Bytes per entry
 .ifndef ENGINE_TT_BASE
 ENGINE_TT_BASE = $C800
@@ -120,12 +127,18 @@ TTProbe:
   sta TTHit
   sta TTMoveAvailable
 
-; Calculate entry index: ZobristHash mod TT_SIZE
-; TT_SIZE = 256, so the low hash byte is the index.
+; Calculate entry index: ZobristHash mod TT_SIZE (index splits at the hash byte
+; boundary since TT_SIZE is a multiple of 256). For the 256 default this is just
+; the low hash byte, byte-identical to the original.
   lda ZobristHash
-  sta tt_ptr; Low 8 bits
+  sta tt_ptr; index low 8 bits
+.if TT_SIZE > 256
+  lda ZobristHash + 1
+  and #((TT_SIZE >> 8) - 1); index high bits
+.else
   lda #$00
-  sta tt_ptr + 1; Index high byte
+.endif
+  sta tt_ptr + 1
 
 ; Calculate entry address: TT_BASE + (index * 8)
 ; index * 8 = shift left 3 times
@@ -219,10 +232,15 @@ TTStore:
   sta $f2; $f2 = depth
   stx $f3; $f3 = flag
 
-; Calculate entry address (same as probe)
+; Calculate entry address (same index as probe)
   lda ZobristHash
   sta tt_ptr
+.if TT_SIZE > 256
+  lda ZobristHash + 1
+  and #((TT_SIZE >> 8) - 1)
+.else
   lda #$00
+.endif
   sta tt_ptr + 1
 
   asl tt_ptr

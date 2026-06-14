@@ -60,13 +60,15 @@ a platform adapter that provides the required hooks, then include the engine:
 
 ```asm
 ENGINE_FIXED_PST = 0
-ENGINE_TT_BASE = $C800  ; choose host RAM for the 2KB transposition table
+ENGINE_TT_BASE = $C800  ; choose host RAM for the transposition table
+; TT_SIZE = 256        ; optional: override the entry count (power of two,
+                       ; multiple of 256). Default is 256 entries (2KB).
 .include "constants.s"
 .include "engine/platform_test.s"  ; replace with your platform adapter
 .include "engine/engine.s"
 ```
 
-For ca65, code and data placement belongs in linker configs. The shared engine emits normal `CODE` by default and emits a separate `PST` segment when `ENGINE_FIXED_PST` is nonzero; host linker configs can place that segment wherever they need it. The transposition table is not emitted into the PRG, so hosts provide 2KB of writable RAM through `ENGINE_TT_BASE`.
+For ca65, code and data placement belongs in linker configs. The shared engine emits normal `CODE` by default and emits a separate `PST` segment when `ENGINE_FIXED_PST` is nonzero; host linker configs can place that segment wherever they need it. The transposition table is not emitted into the PRG, so hosts provide `TT_SIZE * TT_ENTRY_SIZE` bytes (TT_ENTRY_SIZE is 8) of writable RAM through `ENGINE_TT_BASE`. **Both `TT_SIZE` and `ENGINE_TT_BASE` are host-overridable.** The default is 256 entries (2KB) to fit C64-era hosts unchanged; a host with more RAM (e.g. the headless engine build uses 2048 entries / 16KB) gets a stronger search by enlarging it. A bigger table never changes correctness — it only raises the transposition hit rate; if you grow it, grow the RAM region you reserve at `ENGINE_TT_BASE` to match.
 
 The current engine still has a zero-page ABI for speed. Reserve `$02-$37` and `$e0-$fe` for the engine unless you do a coordinated zero-page remap pass.
 

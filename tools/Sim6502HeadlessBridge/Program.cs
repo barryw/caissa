@@ -223,6 +223,8 @@ internal sealed class HeadlessBridge : IDisposable
             searchCompletedDepth = TryReadByte("SearchCompletedDepth"),
             searchRootMoveCount = TryReadByte("SearchRootMoveCount"),
             searchUsedBook = TryReadByte("SearchUsedBook"),
+            // Search diagnostic counters (TryRead24) are read on demand only when
+            // the engine is built with them; omitted from the default reply.
             depthCycles,
             pcSamples = pcSamples?.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
             pc = _backend.Processor.ProgramCounter,
@@ -542,6 +544,17 @@ internal sealed class HeadlessBridge : IDisposable
     private int? TryReadByte(string label)
     {
         return _symbols.ContainsKey(label) ? ReadByte(label) : null;
+    }
+
+    // Read a 24-bit little-endian counter (lo/mid/hi) by symbol; null if absent.
+    private long? TryRead24(string label)
+    {
+        if (!_symbols.TryGetValue(label, out var addr))
+            return null;
+        long lo = _backend.Processor.ReadMemoryValueWithoutCycle(addr);
+        long mid = _backend.Processor.ReadMemoryValueWithoutCycle(addr + 1);
+        long hi = _backend.Processor.ReadMemoryValueWithoutCycle(addr + 2);
+        return lo | (mid << 8) | (hi << 16);
     }
 
     private void WriteByte(string label, int value) => WriteByte(Symbol(label), value);
