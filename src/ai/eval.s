@@ -704,6 +704,12 @@ __ai_eval_queen_0:
   jsr CountSlidingMobility
 
 ApplyMobilityScore:
+; Raw square-count was applied at a full eval unit (10cp) per square, uncapped
+; and identical for every piece -- a centralized queen scored +250cp+ of pure
+; mobility, biasing the engine toward premature queen/rook sorties. Halve it
+; toward standard mobility weights (self-play A/B: half ~57% vs the full-weight
+; baseline, quarter ~50% -- half is the sweet spot among {x1, x0.5, x0.25}).
+  lsr
   beq __ai_eval_done_4
   ldx $f1
   beq __ai_eval_black_piece_0
