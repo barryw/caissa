@@ -216,6 +216,41 @@ class Sim6502HeadlessRunner:
             raise Sim6502BridgeError(json.dumps(response, sort_keys=True))
         return response
 
+    def evaluate(self, c64_position: object, timeout_cycles: int = 100_000_000, lazy: int = 0) -> dict[str, Any]:
+        """Return the engine's static eval for a position.
+
+        Drives EvaluatePosition inside the engine, so the ``eval`` field is the
+        engine's own 16-bit signed white-POV score in engine units (10cp = 1
+        unit). lazy=1 returns material + PST + phase counters only (for
+        incremental Texel port verification); lazy=0 (default) runs every term.
+        """
+        self.start()
+        assert self.proc is not None
+        request_id = self._next_id
+        self._next_id += 1
+        request = {
+            "id": request_id,
+            "command": "eval",
+            "lazy": int(lazy),
+            "board88": list(getattr(c64_position, "board88")),
+            "currentplayer": int(getattr(c64_position, "currentplayer")),
+            "whitekingsq": int(getattr(c64_position, "whitekingsq")),
+            "blackkingsq": int(getattr(c64_position, "blackkingsq")),
+            "castlerights": int(getattr(c64_position, "castlerights")),
+            "enpassantsq": int(getattr(c64_position, "enpassantsq")),
+            "halfmoveClock": int(getattr(c64_position, "halfmove_clock")),
+            "fullmoveNumber": int(getattr(c64_position, "fullmove_number")),
+            "difficulty": 0,
+            "timeoutCycles": int(timeout_cycles),
+        }
+        self._send(request)
+        response = self._read_response()
+        if response.get("id") != request_id:
+            raise Sim6502BridgeError(f"sim6502 bridge response id mismatch: {response}")
+        if not response.get("ok"):
+            raise Sim6502BridgeError(json.dumps(response, sort_keys=True))
+        return response
+
     def _bridge_is_current(self) -> bool:
         if not (self.bridge_dll.exists() and self.bridge_dll.stat().st_mtime >= self.project_path.stat().st_mtime):
             return False

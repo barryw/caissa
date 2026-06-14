@@ -136,6 +136,7 @@ internal sealed class HeadlessBridge : IDisposable
                     "ponder" => PonderSearch(id, root),
                     "ponderuse" => PonderUse(id, root),
                     "zobrist" => ComputeZobrist(id, root),
+                    "eval" => EvaluatePosition(id, root),
                     _ => throw new InvalidOperationException($"Unknown command: {command}"),
                 });
             }
@@ -303,6 +304,37 @@ internal sealed class HeadlessBridge : IDisposable
             key = (keyHi << 8) | keyLo,
             cycles = _totalCycles,
             pc = _backend.Processor.ProgramCounter,
+        };
+    }
+
+    private object EvaluatePosition(int id, JsonElement root)
+    {
+        // Drive the engine's full static eval (EvaluatePosition with EvalLazyStage
+        // cleared so every term runs) so the Texel eval port can be verified
+        // bug-for-bug against what the engine actually scores. EvalScore is a
+        // 16-bit signed white-POV value in engine units (10cp = 1 unit).
+        RestoreBaseline();
+        var totalTimeout = GetOptionalLong(root, "timeoutCycles", 0);
+        ExecuteRequiredRoutine("InitZobristTables", totalTimeout);
+        WritePosition(root);
+        // lazy=1 -> material + PST + phase counters only (for incremental port
+        // verification); lazy=0 (default) -> full eval with every term.
+        TryWriteByte("EvalLazyStage", GetOptionalInt(root, "lazy", 0));
+        var clean = ExecuteRoutine(Symbol("EvaluatePosition"), totalTimeout);
+        var lo = _backend.ReadByte(Symbol("EvalScore"));
+        var hi = _backend.ReadByte(Symbol("EvalScore") + 1);
+        var raw = (hi << 8) | lo;
+        if (raw >= 0x8000)
+            raw -= 0x10000;
+
+        return new
+        {
+            id,
+            ok = clean,
+            eval = raw,
+            evalLo = lo,
+            evalHi = hi,
+            cycles = _totalCycles,
         };
     }
 
