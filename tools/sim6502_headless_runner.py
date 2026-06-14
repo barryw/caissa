@@ -102,7 +102,7 @@ class Sim6502HeadlessRunner:
                 self.proc.kill()
         self.proc = None
 
-    def best_move(self, c64_position: object, difficulty: int, timeout_cycles: int) -> dict[str, Any]:
+    def best_move(self, c64_position: object, difficulty: int, timeout_cycles: int, profile: bool = False) -> dict[str, Any]:
         self.start()
         assert self.proc is not None
         request_id = self._next_id
@@ -120,6 +120,7 @@ class Sim6502HeadlessRunner:
             "fullmoveNumber": int(getattr(c64_position, "fullmove_number")),
             "difficulty": int(difficulty),
             "timeoutCycles": int(timeout_cycles),
+            "profile": bool(profile),
         }
         self._send(request)
         response = self._read_response()

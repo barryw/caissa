@@ -90,6 +90,9 @@ internal sealed class HeadlessBridge : IDisposable
     private readonly Dictionary<string, int> _symbols;
     private readonly byte[] _baselineMemory;
     private long _totalCycles;
+    // PC-sampling profiler: when non-null, the program counter is bucketed every
+    // 1024 cycles so we can attribute search cost to routines (via the .sym).
+    private Dictionary<int, long>? _pcSamples;
 
     public HeadlessBridge(BridgeOptions options)
     {
@@ -97,9 +100,20 @@ internal sealed class HeadlessBridge : IDisposable
         _symbols = LoadSymbols(options.SymbolsPath);
         var (memoryMap, processorType) = MemoryMapFactory.CreateForSystem(SystemType.Generic6510);
         _backend = new SimulatorBackend(processorType, memoryMap);
-        _backend.Processor.CycleCountIncrementedAction = () => _totalCycles++;
+        _backend.Processor.CycleCountIncrementedAction = OnCycle;
         LoadProgram(options.ProgramPath, options.StripHeader);
         _baselineMemory = _backend.Processor.DumpMemory().ToArray();
+    }
+
+    private void OnCycle()
+    {
+        _totalCycles++;
+        if (_pcSamples != null && (_totalCycles & 1023) == 0)
+        {
+            var pc = _backend.Processor.ProgramCounter;
+            _pcSamples.TryGetValue(pc, out var c);
+            _pcSamples[pc] = c + 1;
+        }
     }
 
     public void Run()
@@ -162,6 +176,10 @@ internal sealed class HeadlessBridge : IDisposable
         ExecuteRequiredRoutine("TTClear", totalTimeout);
         WritePosition(root);
 
+        var profile = GetOptionalBool(root, "profile", false);
+        if (profile)
+            _pcSamples = new Dictionary<int, long>();
+
         var beforeSearchCycles = _totalCycles;
         var depthCycles = new Dictionary<string, long>();
         var depthAddress = _symbols.TryGetValue("SearchCompletedDepth", out var depthSymbol) ? depthSymbol : -1;
@@ -174,6 +192,8 @@ internal sealed class HeadlessBridge : IDisposable
                 depthCycles.TryAdd(depth.ToString(), _totalCycles - beforeSearchCycles);
         });
         var timedOut = RoutineTimedOut;
+        var pcSamples = _pcSamples;
+        _pcSamples = null;
         var totalCycles = _totalCycles;
         var bestMoveFrom = ReadByte("BestMoveFrom");
         var bestMoveTo = ReadByte("BestMoveTo");
@@ -204,6 +224,7 @@ internal sealed class HeadlessBridge : IDisposable
             searchRootMoveCount = TryReadByte("SearchRootMoveCount"),
             searchUsedBook = TryReadByte("SearchUsedBook"),
             depthCycles,
+            pcSamples = pcSamples?.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
             pc = _backend.Processor.ProgramCounter,
         };
     }
@@ -572,6 +593,11 @@ internal sealed class HeadlessBridge : IDisposable
     private static long GetOptionalLong(JsonElement root, string name, long fallback)
     {
         return root.TryGetProperty(name, out var value) ? value.GetInt64() : fallback;
+    }
+
+    private static bool GetOptionalBool(JsonElement root, string name, bool fallback)
+    {
+        return root.TryGetProperty(name, out var value) ? value.GetBoolean() : fallback;
     }
 
     private static string GetOptionalString(JsonElement root, string name, string fallback)

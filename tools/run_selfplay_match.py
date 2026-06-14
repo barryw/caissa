@@ -68,6 +68,8 @@ def play_one_game(args_dict: dict) -> GameOutcome:
     start_fen = args_dict["start_fen"]
     a_color = args_dict["a_color"]          # color engine A plays this game
     difficulty = args_dict["difficulty"]
+    difficulty_a = args_dict.get("difficulty_a") or difficulty
+    difficulty_b = args_dict.get("difficulty_b") or difficulty
     timeout_cycles = args_dict["timeout_cycles"]
     max_plies = args_dict["max_plies"]
     adj_cp = args_dict["adjudicate_win_cp"]
@@ -96,7 +98,8 @@ def play_one_game(args_dict: dict) -> GameOutcome:
                 a_is_white = a_color == "white"
                 use_a = white_to_move == a_is_white
                 runner = runner_a if use_a else runner_b
-                resp = runner.best_move(fen_to_c64(board.fen()), DIFFICULTY[difficulty], timeout_cycles)
+                side_difficulty = difficulty_a if use_a else difficulty_b
+                resp = runner.best_move(fen_to_c64(board.fen()), DIFFICULTY[side_difficulty], timeout_cycles)
                 uci = c64_encoded_move_to_uci(board.fen(), int(resp["encoded"]))
                 move = None
                 if uci is not None:
@@ -186,6 +189,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--engine-b-sym", type=Path, default=repo_root / "build" / "engine_harness.sym")
     p.add_argument("--games", type=int, default=40, help="total games (rounded up to an even number of color-balanced pairs)")
     p.add_argument("--difficulty", default="hard", choices=sorted(DIFFICULTY))
+    p.add_argument("--difficulty-a", default=None, choices=sorted(DIFFICULTY),
+                   help="override search depth for engine A only (e.g. beast vs hard to test whether depth -> strength)")
+    p.add_argument("--difficulty-b", default=None, choices=sorted(DIFFICULTY))
     p.add_argument("--c64-timeout", type=int, default=80_000_000, help="per-move cycle cap (committed-best returned on overrun)")
     p.add_argument("--max-plies", type=int, default=160)
     p.add_argument("--adjudicate-win-cp", type=int, default=300)
@@ -214,6 +220,8 @@ def main(argv: list[str]) -> int:
                 "start_fen": fen,
                 "a_color": a_color,
                 "difficulty": args.difficulty,
+                "difficulty_a": args.difficulty_a,
+                "difficulty_b": args.difficulty_b,
                 "timeout_cycles": args.c64_timeout,
                 "max_plies": args.max_plies,
                 "adjudicate_win_cp": args.adjudicate_win_cp,
