@@ -12,7 +12,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -430,6 +430,45 @@ def send_engine_move_with_ack(
     if last_error is not None:
         raise last_error
     raise RuntimeError("move send was not attempted")
+
+
+def make_recovery_callback(
+    args: argparse.Namespace,
+    records: list[MatchMove],
+) -> "Callable[[ViceColossus], None]":
+    """Build the relaunch-replay callback the driver invokes after a relaunch.
+
+    The fresh emulator boots from the starting position, so we re-inject every
+    move that is already on the board IN ORDER (engine moves via the keyboard
+    buffer; Colossus replies arrive on their own) and wait for each ply to
+    reappear on the screen. Replay is deterministic from the recorded move list,
+    so the restored board state is identical to the one that was lost.
+    """
+
+    def replay(vice: ViceColossus) -> None:
+        log_progress(args, f"recovery: replaying {len(records)} plies onto fresh Colossus")
+        # The relaunched x64sc has the monitor port up but Colossus is still
+        # autostarting; wait for the board before injecting anything.
+        vice.wait_for_boot(args.colossus_boot_timeout_seconds, args.poll_seconds)
+        vice.disable_prediction()
+        for record in list(records):
+            target_ply = record.ply
+            if record.actor == "c64":
+                # Re-inject our move and wait for it to register.
+                send_engine_move_with_ack(args, vice, record.move, target_ply)
+                log_progress(args, f"recovery: re-injected engine ply {target_ply:02d} {record.move}")
+            else:
+                # Colossus computes its own reply; just wait for it to show.
+                vice.wait_for_ply(
+                    target_ply,
+                    args.colossus_timeout_seconds,
+                    poll_seconds=args.poll_seconds,
+                )
+                log_progress(args, f"recovery: Colossus ply {target_ply:02d} restored")
+        vice.disable_prediction()
+        log_progress(args, "recovery: board state restored, resuming game")
+
+    return replay
 
 
 def append_move_record(
@@ -1246,6 +1285,14 @@ def run_match(args: argparse.Namespace) -> MatchResult:
         if args.c64_backend == "sim6502"
         else None
     )
+    # Remember boot settings so the driver can relaunch identically on recovery.
+    vice.boot_timeout = args.colossus_boot_timeout_seconds
+    vice.boot_poll_seconds = args.poll_seconds
+    # On an unreachable monitor (dead/wedged x64sc), relaunch and replay the
+    # game so far to restore identical board state, then retry the operation.
+    if args.boot and args.recover:
+        vice.recovery_callback = make_recovery_callback(args, records)
+
     try:
         if args.boot:
             log_progress(args, "launching x64sc + booting Colossus in VICE")
@@ -1280,18 +1327,22 @@ def run_match(args: argparse.Namespace) -> MatchResult:
                     tags=["colossus"],
                 )
                 try:
-                    move_uci, cycles, _raw = run_c64_ai(
-                        repo_root=args.repo_root,
-                        image=args.sim6502_image,
-                        pull=args.sim6502_pull,
-                        position=position,
-                        difficulty=args.difficulty,
-                        timeout=args.c64_timeout,
-                        book_enabled=False,
-                        runner_target=args.runner_target,
-                        c64_backend=args.c64_backend,
-                        sim6502_runner=sim_runner,
-                    )
+                    # The engine think can run for minutes; keep the VICE
+                    # monitor/emulator warm with a background heartbeat so the
+                    # next inject does not hit a wedged/dead listener.
+                    with vice.heartbeat(args.heartbeat_seconds):
+                        move_uci, cycles, _raw = run_c64_ai(
+                            repo_root=args.repo_root,
+                            image=args.sim6502_image,
+                            pull=args.sim6502_pull,
+                            position=position,
+                            difficulty=args.difficulty,
+                            timeout=args.c64_timeout,
+                            book_enabled=False,
+                            runner_target=args.runner_target,
+                            c64_backend=args.c64_backend,
+                            sim6502_runner=sim_runner,
+                        )
                 except RunnerError:
                     raise
 
@@ -1449,6 +1500,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--boot-timeout-seconds", type=float, default=45.0)
     parser.add_argument("--input-timeout-seconds", type=float, default=20.0)
     parser.add_argument("--colossus-timeout-seconds", type=float, default=1800.0)
+    parser.add_argument(
+        "--heartbeat-seconds",
+        type=float,
+        default=20.0,
+        help="VICE backend: ping the monitor this often while the engine thinks "
+        "to keep x64sc/the monitor listener warm across long thinks.",
+    )
+    parser.add_argument(
+        "--recover",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="VICE backend: if the monitor becomes unreachable, relaunch x64sc, "
+        "reboot Colossus, and replay the game so far to continue (deterministic).",
+    )
     parser.add_argument("--post-colossus-delay-seconds", type=float, default=2.5)
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument(
