@@ -125,11 +125,16 @@ clean can't nuke it.** Beast is the backup of record.
   non-overlapping dirs (src vs tools). Tell agents: never `make clean`.
 
 ## What's running right now
-- Nothing live. **Ladder v7 finished: 0W / 4D / 32L** (vs 1320: 0-2-14, vs 1520:
-  0-2-12, vs 1720: 0-0-6). Part A + Ne2 moved NOTHING at game level —
-  **eval-bound confirmed, hard.** PGNs: reaches equal endgames, gets outplayed.
+- **Nothing live. Beast idle.** Ladders v7 AND v8 both ≈ **713 Elo** (v8 = book +
+  hash fix; book/hash moved ZERO game-level Elo). The **SF ladder is FLOORED at
+  0/48** (engine ~600 Elo below SF1320) so it CANNOT measure sub-100-Elo eval
+  gains — **use self-play A/B (`tools/run_selfplay_match.py`) for eval tuning**,
+  ladder only as an occasional milestone check once we climb ~400 Elo.
 
-## DONE this session: opening book wired (task #12) — commit pending
+## Engine strength now: ~754 Elo (713 + mobility +41)
++41 Elo banked this session (mobility). Eval is the wall, confirmed 3×.
+
+## DONE this session: opening book wired (task #12) — `74db46e`
 The book is **live in the headless/test build too** (not just C64), because our
 ladder + VICE-vs-Colossus harnesses both drive OUR side through the sim6502
 bridge = the test build. A C64-only book would never run in any harness.
@@ -161,19 +166,48 @@ may help the eval-bound weakness. All gates green post-fix. See
 [[zobrist-hash-entropy-bug]]. **Recompile the book with
 `tools/compile_opening_book.py` after ANY future key-affecting change.**
 
-## Next moves (priority order)
-1. **Re-run the ladder on beast** with book live + hash fixed — first game-level
-   read of both changes. If still ~713, eval is the remaining wall; if up, the
-   TT/book changes are helping. (Ladder cmd in the Beast section.)
-2. **Eval-term tuning via GAMES** — PST/development/center/king-safety/mobility,
-   validated on the ladder/VICE not the corpus. The real path to 1700.
-3. **Perf backlog** (`docs/optimization-backlog.md`) — buys more depth.
-4. **Perf backlog** (`docs/optimization-backlog.md`) — buys more depth: dead-code
-   (QSave* ~650 bytes), cache SearchDepth*8 offset, Zobrist LUT reuse, etc.
-5. **Repo rename to `caissa`** (task #11) + wire display name into README / banner /
-   PGN [White] tag (currently "C64 AI") — do when tree quiet.
-6. Run a full VICE game vs Colossus on the hardened harness (task #9) for the real
-   verdict.
+## DONE this session: eval-tuning loop + first lever + Texel infra
+- **`tools/run_selfplay_match.py`** (`2fa3f0c`) — engine-A-prg vs engine-B-prg,
+  N games from `tools/selfplay_openings.txt` (48 book-edge FENs), both colors,
+  parallel; reports W/D/L + Wilson 95% + Elo-diff. A=B → exactly 50.0%. THE eval
+  tuning signal (ladder is floored). Run on beast (26 jobs, ~28s/game, draw-heavy
+  → ~300 games for a ±50 Elo read). `difficulty hard` headless = depth 3 (the
+  depth-6 cap is LEVEL_BEAST-only) → fast.
+- **`3d4e64e` mobility halved → +41 Elo.** `EvaluateMobility` applied raw square
+  count at 10cp/sq UNCAPPED + uniform (queen +270cp → premature sorties). Halved
+  (one lsr). Self-play 240g: 55.8% (+41). quarter/queen-quarter both worse → half
+  is optimal.
+- **Texel tuner built** (`12bc270` bridge `eval` cmd + verified Python eval port
+  600/600 exact; `a1d684f` dataset gen + numpy optimizer). VERDICT: material+PST
+  already near-optimal (~2% MSE headroom) AND 10cp granularity rounds fine tweaks
+  away → not written back. Ready to pay off after Part B / porting other terms.
+- **Lever hunt (self-play A/B, all reverted except mobility):** pawn-attack
+  penalty halve = **-38** (load-bearing, compensates shallow search); doubled/
+  isolated halve = **-2** (neutral). META: eval weights are mostly well-tuned;
+  mobility was the lone gross error. Easy scalar-weight wins are TAPPED OUT.
+
+## Next moves (priority order) — easy eval wins are done; structural work next
+1. **Part B — centipawn rescale** (pawn=10→100, all eval constants ×10, widen to
+   16-bit, re-verify 6 suites/9 gates/corpus). The recurring wall: unlocks
+   granularity so Texel + fine terms actually bite. Then re-run Texel and/or port
+   the other eval terms (mobility/pawn-struct/king-safety/pressure) into
+   `tools/texel_eval.py` for a full automated tune. Modest direct gain, big enabler.
+2. **Search depth** (`docs/optimization-backlog.md`) — buy depth 7+; eval-bound at
+   depth 6 but deeper + decent eval compound. Different vein from eval.
+3. **New eval terms / king-attack scaling** — structural additions, not scalar
+   retuning (which is tapped out).
+4. **Repo rename to `caissa`** (task #11) + display name in README/banner/PGN
+   [White] tag (currently "C64 AI") — do when tree quiet.
+5. Full VICE game vs Colossus on the hardened harness (task #9) — the real verdict
+   (now with book live + hash fixed).
+
+## Eval-tuning workflow (proven this session)
+1. `cp build/engine_harness.{prg,sym} /tmp/base.{prg,sym}` (save current best).
+2. Edit eval weight in `src/ai/eval.s` (or PST in `pst.s`), `make engine-build`.
+3. rsync candidate + baseline to beast `build/`, run `run_selfplay_match.py`
+   A=candidate B=baseline `--games 300 --jobs 26` (~6-12 min).
+4. WIN (>50%, lower CI near/above 50) → corpus-gate + `make test`/`benchmark` →
+   commit. LOSE/NEUTRAL → revert, rebuild. Dataset: `build/texel_data.json` (22k).
 
 ## Memory pointers (~/.claude/.../memory/)
 strength-campaign-2026-06.md (full detail), colossus-raw-emulation-bug.md (VICE +
@@ -181,8 +215,9 @@ hazard), beast-remote-setup.md, colossus-cleanroom-boundary.md, engine-name.md,
 MEMORY.md (index). docs/optimization-backlog.md + docs/opening-book-plan.md in repo.
 
 ## Open tasks
-#4 analyze/improve (ongoing), #6 re-run beast matches (now with book live +
-hash fixed), #7 stockfish tuning loop, #9 full VICE Colossus game,
-#11 rename to caissa.
+#4 analyze/improve (ongoing), #9 full VICE Colossus game, #11 rename to caissa,
+#14 Part B centipawn rescale (NEW — granularity unlock for eval tuning),
+#15 search-depth / perf backlog for depth 7+ (NEW).
 DONE this session: #12 wire opening book (`74db46e`), #13 fix Zobrist PRNG
-entropy (`29f5cd8`).
+entropy (`29f5cd8`), eval self-play loop + mobility +41 (`2fa3f0c`/`3d4e64e`),
+Texel tuner infra (`12bc270`/`a1d684f`).
