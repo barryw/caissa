@@ -122,36 +122,42 @@ MaxDepthTable:
 ; gap (MATE_SCORE - STATIC_EVAL_LIMIT = 1000) far exceeds any real eval, so no
 ; realistic position is clamped.
 STATIC_EVAL_LIMIT = MATE_SCORE - 1000
-ROOT_MINOR_QUEEN_RAY_PENALTY = 90
-ROOT_MINOR_KNIGHT_DEST_PENALTY = 45
-ROOT_MINOR_ATTACKED_DEST_PENALTY = 80
-ROOT_HANGING_MINOR_PENALTY = 65
-ROOT_MISSED_PAWN_WIN_PENALTY = 70
-ROOT_EARLY_QUEEN_MOVE_PENALTY = 45
-ROOT_MISSED_ADVANCED_PAWN_PENALTY = 75
-ROOT_MISSED_CENTER_BREAK_PENALTY = 60
-ROOT_BLOCKED_BISHOP_RECAPTURE_PENALTY = 70
-ROOT_EARLY_KING_MOVE_PENALTY = 85
-ROOT_CHECKED_KING_MOVE_PENALTY = 60
-ROOT_EARLY_ROOK_MOVE_PENALTY = 70
-ROOT_EXPOSED_KING_FLANK_PAWN_PENALTY = 65
-ROOT_REVERSE_MOVE_PENALTY = 75
-ROOT_HISTORY_SEEN_PENALTY = 35
-ROOT_REPETITION_PENALTY = 85
-ROOT_MAJOR_CAPTURE_MIN_SCORE = 64
-ROOT_WINNING_CAPTURE_MIN_SCORE = 32
-FUTILITY_MARGIN = 30
+; Part B centipawn rescale: ROOT_*_PENALTY values are applied to / compared
+; against the negamax search score ($eb/$ec), which is in eval units (pawn=100
+; after the rescale). They are therefore x10 of their pre-rescale magnitude to
+; stay proportional. ROOT_MAJOR/WINNING_CAPTURE_MIN_SCORE are NOT eval units:
+; they are thresholds on the MVV/LVA capture-ordering score (victim*16-attacker
+; from MVV_LVA_ScoreValues), an independent scale, so they are left unchanged.
+ROOT_MINOR_QUEEN_RAY_PENALTY = 900
+ROOT_MINOR_KNIGHT_DEST_PENALTY = 450
+ROOT_MINOR_ATTACKED_DEST_PENALTY = 800
+ROOT_HANGING_MINOR_PENALTY = 650
+ROOT_MISSED_PAWN_WIN_PENALTY = 700
+ROOT_EARLY_QUEEN_MOVE_PENALTY = 450
+ROOT_MISSED_ADVANCED_PAWN_PENALTY = 750
+ROOT_MISSED_CENTER_BREAK_PENALTY = 600
+ROOT_BLOCKED_BISHOP_RECAPTURE_PENALTY = 700
+ROOT_EARLY_KING_MOVE_PENALTY = 850
+ROOT_CHECKED_KING_MOVE_PENALTY = 600
+ROOT_EARLY_ROOK_MOVE_PENALTY = 700
+ROOT_EXPOSED_KING_FLANK_PAWN_PENALTY = 650
+ROOT_REVERSE_MOVE_PENALTY = 750
+ROOT_HISTORY_SEEN_PENALTY = 350
+ROOT_REPETITION_PENALTY = 850
+ROOT_MAJOR_CAPTURE_MIN_SCORE = 64; MVV/LVA ordering threshold (NOT eval units)
+ROOT_WINNING_CAPTURE_MIN_SCORE = 32; MVV/LVA ordering threshold (NOT eval units)
+FUTILITY_MARGIN = 300
 LMR_MIN_DEPTH = 2
 LMR_FULL_MOVES = 1
 LMP_MAX_DEPTH = 2
 LMP_FULL_MOVES = 8
-ASPIRATION_DELTA = 20
+ASPIRATION_DELTA = 200
 PVS_MIN_DEPTH = 4
 CHECK_EXTENSION_DEPTH = 2
 NULL_MOVE_MIN_DEPTH = 3
 NULL_MOVE_REDUCTION = 3
 NULL_MOVE_MIN_PIECES = 8
-NULL_MOVE_EVAL_MARGIN = 8
+NULL_MOVE_EVAL_MARGIN = 80
 
 ; Last move returned by FindBestMove. This lets the engine avoid immediately
 ; undoing its own previous quiet move even on hosts that have not wired full
@@ -3509,10 +3515,11 @@ CommittedBestTo:
 ; Output: A = score (signed 8-bit, clamped below the mate score band)
 ; Clobbers: Uses EvaluatePosition temps
 ;
-; Margin for the lazy stand-pat evaluation, in engine units (10 = one pawn).
-; Must exceed the largest realistic swing the skipped terms can add on top of
-; material + PST (pressure, mobility, king safety, pawn structure combined).
-LAZY_EVAL_MARGIN = 24
+; Margin for the lazy stand-pat evaluation, in engine units (Part B: 100 = one
+; pawn = one centipawn). Must exceed the largest realistic swing the skipped
+; terms can add on top of material + PST (pressure, mobility, king safety, pawn
+; structure combined). x10 of the pre-rescale value to track the new scale.
+LAZY_EVAL_MARGIN = 240
 
 ;
 ; EvaluateLazy
@@ -3706,17 +3713,18 @@ done:
 
 ;
 ; PENALTY16 - subtract an immediate unsigned penalty from the 16-bit root score
-; pair $eb/$ec, clamping signed underflow to the NEG_INFINITY pair. Mirrors the
-; old 8-bit `lda $eb / sec / sbc #amt / bvc ok / lda #NEG_INFINITY / sta $eb`.
+; pair $eb/$ec, clamping signed underflow to the NEG_INFINITY pair.
+; Part B: the rescaled (x10) penalties exceed a byte, so the high byte uses the
+; immediate's high part instead of a constant 0.
 ;
 .macro PENALTY16 amt
   .local ok
   lda $eb
   sec
-  sbc #amt
+  sbc #<(amt)
   sta $eb
   lda $ec
-  sbc #$00
+  sbc #>(amt)
   sta $ec
   bvc ok
   lda #NEG_INFINITY
@@ -4576,13 +4584,15 @@ ApplyRootPawnSafetyPenalty:
   jsr IsPiecePawnAttacked
   bcc __ai_search_done_1
 
+; Part B: PawnAttackPenalty is now a 16-bit (x10) table; subtract the full
+; 16-bit penalty from the root score $eb/$ec, clamping signed underflow.
   ldy $f2
   lda $eb
   sec
-  sbc PawnAttackPenalty, y
+  sbc PawnAttackPenalty_Lo, y
   sta $eb
   lda $ec
-  sbc #$00
+  sbc PawnAttackPenalty_Hi, y
   sta $ec
   bvc __ai_search_store_score_0
   lda #NEG_INFINITY
@@ -5273,7 +5283,8 @@ ApplyRootReverseMovePenalty:
   cmp LastEngineMoveFrom
   bne __ai_search_reverse_done_0
 
-  lda #ROOT_REVERSE_MOVE_PENALTY
+  lda #<ROOT_REVERSE_MOVE_PENALTY
+  ldx #>ROOT_REVERSE_MOVE_PENALTY
   jmp ApplyRootPenaltyAmount
 
 __ai_search_reverse_done_0:
@@ -5297,11 +5308,13 @@ ApplyRootHistoryPenalty:
   cmp #$02
   bcc __ai_search_history_seen_once_0
 
-  lda #ROOT_REPETITION_PENALTY
+  lda #<ROOT_REPETITION_PENALTY
+  ldx #>ROOT_REPETITION_PENALTY
   jmp ApplyRootPenaltyAmount
 
 __ai_search_history_seen_once_0:
-  lda #ROOT_HISTORY_SEEN_PENALTY
+  lda #<ROOT_HISTORY_SEEN_PENALTY
+  ldx #>ROOT_HISTORY_SEEN_PENALTY
   jmp ApplyRootPenaltyAmount
 
 __ai_search_history_done_0:
@@ -5346,9 +5359,10 @@ __ai_search_repeat_side_ready_0:
 
 ;
 ; ApplyRootPenaltyAmount
-; Subtract A (unsigned penalty) from the 16-bit root score $eb/$ec and clamp
-; signed underflow to the NEG_INFINITY pair ($8080).
-; Input: A = unsigned penalty amount (high byte assumed 0)
+; Subtract a 16-bit unsigned penalty (A = low, X = high) from the 16-bit root
+; score $eb/$ec and clamp signed underflow to the NEG_INFINITY pair ($8080).
+; Part B: the rescaled (x10) penalties exceed a byte, so the penalty is 16-bit.
+; Input: A = penalty low byte, X = penalty high byte
 ; Input/Output: $eb/$ec = signed root score (lo/hi)
 ; Clobbers: A, $f0
 ;
@@ -5358,8 +5372,10 @@ ApplyRootPenaltyAmount:
   sec
   sbc $f0
   sta $eb
+  txa
+  sta $f0
   lda $ec
-  sbc #$00
+  sbc $f0
   sta $ec
   bvc __ai_search_penalty_store_0
   lda #NEG_INFINITY
@@ -6068,7 +6084,8 @@ __ai_search_black_f_pawn_available_0:
   jmp __ai_search_penalize_pawn_kick_0
 
 __ai_search_penalize_pawn_kick_0:
-  lda #ROOT_MISSED_CENTER_BREAK_PENALTY
+  lda #<ROOT_MISSED_CENTER_BREAK_PENALTY
+  ldx #>ROOT_MISSED_CENTER_BREAK_PENALTY
   jmp ApplyRootPenaltyAmount
 
 __ai_search_pawn_kick_done_0:
@@ -6201,7 +6218,8 @@ __ai_search_black_center_break_0:
   beq __ai_search_center_break_done_0
 
 __ai_search_penalize_center_break_0:
-  lda #ROOT_MISSED_CENTER_BREAK_PENALTY
+  lda #<ROOT_MISSED_CENTER_BREAK_PENALTY
+  ldx #>ROOT_MISSED_CENTER_BREAK_PENALTY
   jmp ApplyRootPenaltyAmount
 
 __ai_search_center_break_done_0:
@@ -6294,7 +6312,8 @@ __ai_search_is_queen_recapture_0:
 ApplyRootEarlyQueenRecapturePenalty:
   jsr RootEarlyQueenPawnRecapture
   bcc __ai_search_queen_recapture_done_0
-  lda #ROOT_EARLY_QUEEN_MOVE_PENALTY
+  lda #<ROOT_EARLY_QUEEN_MOVE_PENALTY
+  ldx #>ROOT_EARLY_QUEEN_MOVE_PENALTY
   jmp ApplyRootPenaltyAmount
 
 __ai_search_queen_recapture_done_0:
@@ -6392,7 +6411,8 @@ __ai_search_black_check_e6_recap_0:
   bne __ai_search_blocked_bishop_done_0
 
 __ai_search_penalize_blocked_bishop_0:
-  lda #ROOT_BLOCKED_BISHOP_RECAPTURE_PENALTY
+  lda #<ROOT_BLOCKED_BISHOP_RECAPTURE_PENALTY
+  ldx #>ROOT_BLOCKED_BISHOP_RECAPTURE_PENALTY
   jmp ApplyRootPenaltyAmount
 
 __ai_search_blocked_bishop_done_0:
@@ -6513,7 +6533,8 @@ ApplyRootCheckedKingMovePenalty:
   cmp #EMPTY_PIECE
   bne __ai_search_checked_king_done_0
 
-  lda #ROOT_CHECKED_KING_MOVE_PENALTY
+  lda #<ROOT_CHECKED_KING_MOVE_PENALTY
+  ldx #>ROOT_CHECKED_KING_MOVE_PENALTY
   jmp ApplyRootPenaltyAmount
 
 __ai_search_checked_king_done_0:
@@ -6569,7 +6590,8 @@ __ai_search_black_flank_king_0:
   beq __ai_search_flank_pawn_done_0
 
 __ai_search_penalize_flank_pawn_0:
-  lda #ROOT_EXPOSED_KING_FLANK_PAWN_PENALTY
+  lda #<ROOT_EXPOSED_KING_FLANK_PAWN_PENALTY
+  ldx #>ROOT_EXPOSED_KING_FLANK_PAWN_PENALTY
   jmp ApplyRootPenaltyAmount
 
 __ai_search_flank_pawn_done_0:

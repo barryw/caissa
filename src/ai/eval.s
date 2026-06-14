@@ -17,11 +17,11 @@ EvalWorkType = $f2
 ; Values chosen to fit in single byte operations while preserving
 ; relative values: P=1, N=3.2, B=3.3, R=5, Q=9
 ;
-PAWN_VALUE = 10
-KNIGHT_VALUE = 32
-BISHOP_VALUE = 33
-ROOK_VALUE = 50
-QUEEN_VALUE = 90
+PAWN_VALUE = 100
+KNIGHT_VALUE = 320
+BISHOP_VALUE = 330
+ROOK_VALUE = 500
+QUEEN_VALUE = 900
 KING_VALUE = 0; Kings not counted in material
 
 ;
@@ -29,42 +29,51 @@ KING_VALUE = 0; Kings not counted in material
 ; Penalize pieces currently attacked by enemy pawns. A pawn fork/threat is
 ; cheap to detect and catches many otherwise invisible one-ply tactics.
 ;
-PAWN_ATTACK_MINOR_PENALTY = 60
-PAWN_ATTACK_ROOK_PENALTY = 60
-PAWN_ATTACK_QUEEN_PENALTY = 85
-QUEEN_ATTACK_MINOR_PENALTY = 75
-MINOR_ATTACK_ROOK_PENALTY = 28
-MINOR_ATTACK_QUEEN_PENALTY = 35
-KNIGHT_OUTPOST_BONUS = 25
-PINNED_PAWN_PENALTY = 12
-PINNED_MINOR_PENALTY = 25
-PINNED_ROOK_PENALTY = 35
-PINNED_QUEEN_PENALTY = 45
-PINNED_ATTACKED_PENALTY = 20
+; Part B centipawn rescale: every eval term constant below is x10 of its
+; pre-rescale value (pawn = 100 = literal centipawns). This is a pure
+; resolution change; no move decision is intended to differ.
+PAWN_ATTACK_MINOR_PENALTY = 600
+PAWN_ATTACK_ROOK_PENALTY = 600
+PAWN_ATTACK_QUEEN_PENALTY = 850
+QUEEN_ATTACK_MINOR_PENALTY = 750
+MINOR_ATTACK_ROOK_PENALTY = 280
+MINOR_ATTACK_QUEEN_PENALTY = 350
+KNIGHT_OUTPOST_BONUS = 250
+PINNED_PAWN_PENALTY = 120
+PINNED_MINOR_PENALTY = 250
+PINNED_ROOK_PENALTY = 350
+PINNED_QUEEN_PENALTY = 450
+PINNED_ATTACKED_PENALTY = 200
 
 ;
 ; Pawn Structure Evaluation Constants
 ;
-DOUBLED_PAWN_PENALTY = 15
-ISOLATED_PAWN_PENALTY = 20
-PASSED_PAWN_BONUS_BASE = 20
-ADVANCED_PAWN_BONUS = 8
-DEEP_ADVANCED_PAWN_BONUS = 16
-ROOK_BEHIND_PASSER_BONUS = 20
-CONNECTED_PASSER_BONUS = 12
-PROTECTED_PASSER_BONUS = 8
-BLOCKADED_PASSER_PENALTY = 10
-BISHOP_PAIR_BONUS = 20
-ROOK_OPEN_FILE_BONUS = 25
-ROOK_SEMI_OPEN_FILE_BONUS = 12
-HEAVY_SEVENTH_RANK_BONUS = 18
-ENDGAME_NONPAWN_LIMIT = 1; K+P and single-piece endings
-ENDGAME_KING_ACTIVITY_BONUS = 30
-ENDGAME_ROOK_OPEN_FILE_BONUS = 60
-ENDGAME_ROOK_KING_CUTOFF_BONUS = 25
+DOUBLED_PAWN_PENALTY = 150
+ISOLATED_PAWN_PENALTY = 200
+PASSED_PAWN_BONUS_BASE = 200
+ADVANCED_PAWN_BONUS = 80
+DEEP_ADVANCED_PAWN_BONUS = 160
+ROOK_BEHIND_PASSER_BONUS = 200
+CONNECTED_PASSER_BONUS = 120
+PROTECTED_PASSER_BONUS = 80
+BLOCKADED_PASSER_PENALTY = 100
+BISHOP_PAIR_BONUS = 200
+ROOK_OPEN_FILE_BONUS = 250
+ROOK_SEMI_OPEN_FILE_BONUS = 120
+HEAVY_SEVENTH_RANK_BONUS = 180
+ENDGAME_NONPAWN_LIMIT = 1; K+P and single-piece endings (a COUNT, not eval units)
+ENDGAME_KING_ACTIVITY_BONUS = 300
+ENDGAME_ROOK_OPEN_FILE_BONUS = 600
+ENDGAME_ROOK_KING_CUTOFF_BONUS = 250
 
 ;
 ; King Safety Evaluation Constants
+; Part B: these stay at the PRE-rescale (x1) magnitude. EvaluateSingleKingSafety
+; is kept byte-for-byte identical to the pre-rescale code (signed *byte*
+; accumulator, including the wraparound when a king's raw safety exceeds +/-127).
+; EvaluateKingSafety then multiplies that signed byte by 10, so the contribution
+; is exactly (old signed byte) x 10 and the baseline is reproduced move-identically
+; (overflow artifact included).
 ;
 CASTLED_BONUS = 30; Bonus for being on castled squares
 PAWN_SHIELD_BONUS = 10; Bonus per pawn in shield
@@ -77,58 +86,98 @@ KING_ZONE_ATTACK_PENALTY = 5; Penalty per attacked square around the king
 
 ; Passed pawn bonus by rank (row 0 = rank 8, row 7 = rank 1)
 ; White pawns advance toward row 0, black toward row 7
-PassedPawnBonus:
-  .byte 40, 30, 25, 20, 15, 10, 0, 0; Rank 8 unused; rank 7=30 down to rank 3=10
+; Part B centipawn rescale: 16-bit (x10) since rank-8 entry (400) exceeds a byte.
+PassedPawnBonus_Lo:
+  .byte <400, <300, <250, <200, <150, <100, <0, <0
+PassedPawnBonus_Hi:
+  .byte >400, >300, >250, >200, >150, >100, >0, >0
 
 ;
 ; Piece value lookup table
 ; Indexed by (piece & $07) - piece type
 ; Index 0 = empty, 1-6 = pawn through king
+; Part B centipawn rescale: 16-bit (x10). PAWN=100 .. QUEEN=900 exceed a byte.
 ;
-PieceValues:
-  .byte 0; 0: empty/invalid
-  .byte PAWN_VALUE; 1: pawn
-  .byte KNIGHT_VALUE; 2: knight
-  .byte BISHOP_VALUE; 3: bishop
-  .byte ROOK_VALUE; 4: rook
-  .byte QUEEN_VALUE; 5: queen
-  .byte KING_VALUE; 6: king
+PieceValues_Lo:
+  .byte <0; 0: empty/invalid
+  .byte <PAWN_VALUE; 1: pawn
+  .byte <KNIGHT_VALUE; 2: knight
+  .byte <BISHOP_VALUE; 3: bishop
+  .byte <ROOK_VALUE; 4: rook
+  .byte <QUEEN_VALUE; 5: queen
+  .byte <KING_VALUE; 6: king
+PieceValues_Hi:
+  .byte >0
+  .byte >PAWN_VALUE
+  .byte >KNIGHT_VALUE
+  .byte >BISHOP_VALUE
+  .byte >ROOK_VALUE
+  .byte >QUEEN_VALUE
+  .byte >KING_VALUE
 
-PawnAttackPenalty:
-  .byte 0; 0: empty/invalid
-  .byte 0; 1: pawn
-  .byte PAWN_ATTACK_MINOR_PENALTY; 2: knight
-  .byte PAWN_ATTACK_MINOR_PENALTY; 3: bishop
-  .byte PAWN_ATTACK_ROOK_PENALTY; 4: rook
-  .byte PAWN_ATTACK_QUEEN_PENALTY; 5: queen
-  .byte 0; 6: king
+; Part B: penalty lookup tables are 16-bit (x10 values exceed a byte). Each is
+; a parallel _Lo/_Hi pair indexed by piece type; consumers load the pair into
+; A (lo) / X (hi) and call AddEval16 / SubEval16.
+PawnAttackPenalty_Lo:
+  .byte <0; 0: empty/invalid
+  .byte <0; 1: pawn
+  .byte <PAWN_ATTACK_MINOR_PENALTY; 2: knight
+  .byte <PAWN_ATTACK_MINOR_PENALTY; 3: bishop
+  .byte <PAWN_ATTACK_ROOK_PENALTY; 4: rook
+  .byte <PAWN_ATTACK_QUEEN_PENALTY; 5: queen
+  .byte <0; 6: king
+PawnAttackPenalty_Hi:
+  .byte >0, >0
+  .byte >PAWN_ATTACK_MINOR_PENALTY
+  .byte >PAWN_ATTACK_MINOR_PENALTY
+  .byte >PAWN_ATTACK_ROOK_PENALTY
+  .byte >PAWN_ATTACK_QUEEN_PENALTY
+  .byte >0
 
-QueenAttackPenalty:
-  .byte 0; 0: empty/invalid
-  .byte 0; 1: pawn
-  .byte QUEEN_ATTACK_MINOR_PENALTY; 2: knight
-  .byte QUEEN_ATTACK_MINOR_PENALTY; 3: bishop
-  .byte 0; 4: rook
-  .byte 0; 5: queen
-  .byte 0; 6: king
+QueenAttackPenalty_Lo:
+  .byte <0; 0: empty/invalid
+  .byte <0; 1: pawn
+  .byte <QUEEN_ATTACK_MINOR_PENALTY; 2: knight
+  .byte <QUEEN_ATTACK_MINOR_PENALTY; 3: bishop
+  .byte <0; 4: rook
+  .byte <0; 5: queen
+  .byte <0; 6: king
+QueenAttackPenalty_Hi:
+  .byte >0, >0
+  .byte >QUEEN_ATTACK_MINOR_PENALTY
+  .byte >QUEEN_ATTACK_MINOR_PENALTY
+  .byte >0, >0, >0
 
-MinorAttackPenalty:
-  .byte 0; 0: empty/invalid
-  .byte 0; 1: pawn
-  .byte 0; 2: knight
-  .byte 0; 3: bishop
-  .byte MINOR_ATTACK_ROOK_PENALTY; 4: rook
-  .byte MINOR_ATTACK_QUEEN_PENALTY; 5: queen
-  .byte 0; 6: king
+MinorAttackPenalty_Lo:
+  .byte <0; 0: empty/invalid
+  .byte <0; 1: pawn
+  .byte <0; 2: knight
+  .byte <0; 3: bishop
+  .byte <MINOR_ATTACK_ROOK_PENALTY; 4: rook
+  .byte <MINOR_ATTACK_QUEEN_PENALTY; 5: queen
+  .byte <0; 6: king
+MinorAttackPenalty_Hi:
+  .byte >0, >0, >0, >0
+  .byte >MINOR_ATTACK_ROOK_PENALTY
+  .byte >MINOR_ATTACK_QUEEN_PENALTY
+  .byte >0
 
-PinnedPiecePenalty:
-  .byte 0; 0: empty/invalid
-  .byte PINNED_PAWN_PENALTY; 1: pawn
-  .byte PINNED_MINOR_PENALTY; 2: knight
-  .byte PINNED_MINOR_PENALTY; 3: bishop
-  .byte PINNED_ROOK_PENALTY; 4: rook
-  .byte PINNED_QUEEN_PENALTY; 5: queen
-  .byte 0; 6: king
+PinnedPiecePenalty_Lo:
+  .byte <0; 0: empty/invalid
+  .byte <PINNED_PAWN_PENALTY; 1: pawn
+  .byte <PINNED_MINOR_PENALTY; 2: knight
+  .byte <PINNED_MINOR_PENALTY; 3: bishop
+  .byte <PINNED_ROOK_PENALTY; 4: rook
+  .byte <PINNED_QUEEN_PENALTY; 5: queen
+  .byte <0; 6: king
+PinnedPiecePenalty_Hi:
+  .byte >0
+  .byte >PINNED_PAWN_PENALTY
+  .byte >PINNED_MINOR_PENALTY
+  .byte >PINNED_MINOR_PENALTY
+  .byte >PINNED_ROOK_PENALTY
+  .byte >PINNED_QUEEN_PENALTY
+  .byte >0
 
 PinSliderTypes:
   .byte BISHOP_TYPE, ROOK_TYPE, BISHOP_TYPE, ROOK_TYPE
@@ -266,81 +315,55 @@ __ai_eval_piece_phase_done_0:
 ; cases keep the original "negate to unsigned magnitude" semantics so even
 ; a -128 entry behaves identically.
   ldy $f2
+; Load the lo/hi PST table pointers once (shared by both colors).
+  lda PST_Table_Lo, y
+  sta $f3
+  lda PST_Table_Hi, y
+  sta $f4; $f3/$f4 = PST low-byte table pointer
+  lda PST_TableHi_Lo, y
+  sta $f5
+  lda PST_TableHi_Hi, y
+  sta $f6; $f5/$f6 = PST high-byte table pointer
   lda $f1
   beq __ai_eval_pst_black_side_0
 
-; --- White: EvalScore += material; EvalScore += signed PST ---
-  lda PieceValues, y
+; --- White: EvalScore += material (16-bit); EvalScore += signed PST (16-bit) ---
+  lda PieceValues_Lo, y
   clc
   adc EvalScore
   sta EvalScore
-  bcc __ai_eval_white_mat_done_0
-  inc EvalScore + 1
-__ai_eval_white_mat_done_0:
-  lda PST_Table_Lo, y
-  sta $f3
-  lda PST_Table_Hi, y
-  sta $f4; $f3/$f4 = PST pointer
+  lda PieceValues_Hi, y
+  adc EvalScore + 1
+  sta EvalScore + 1
   ldx $f0
   ldy Sq88To64, x
-  lda ($f3), y; A = PST value (signed byte)
-  bmi __ai_eval_white_pst_neg_0
+  lda ($f3), y; PST lo byte
   clc
   adc EvalScore
   sta EvalScore
-  bcc __ai_eval_white_pst_done_0
-  inc EvalScore + 1
-__ai_eval_white_pst_done_0:
-  jmp PstNext
-__ai_eval_white_pst_neg_0:
-; Adding a sign-extended negative: high byte gets $ff + carry, i.e. it
-; stays put when the low add carries and decrements otherwise.
-  clc
-  adc EvalScore
-  sta EvalScore
-  bcs __ai_eval_white_pst_done_0
-  dec EvalScore + 1
+  lda ($f5), y; PST hi byte (sign-extended)
+  adc EvalScore + 1
+  sta EvalScore + 1
   jmp PstNext
 
-; --- Black: EvalScore -= material; EvalScore -= signed PST ---
+; --- Black: EvalScore -= material (16-bit); EvalScore -= signed PST (16-bit) ---
 __ai_eval_pst_black_side_0:
-  lda PieceValues, y
-  sta $f8
   sec
   lda EvalScore
-  sbc $f8
+  sbc PieceValues_Lo, y
   sta EvalScore
-  bcs __ai_eval_black_mat_done_0
-  dec EvalScore + 1
-__ai_eval_black_mat_done_0:
-  lda PST_Table_Lo, y
-  sta $f3
-  lda PST_Table_Hi, y
-  sta $f4; $f3/$f4 = PST pointer
+  lda EvalScore + 1
+  sbc PieceValues_Hi, y
+  sta EvalScore + 1
   ldx $f0
   ldy Sq88To64Mirror, x; mirrored square for black
-  lda ($f3), y; A = PST value (signed byte)
-  bmi __ai_eval_black_pst_neg_0
-  sta $f8
   sec
   lda EvalScore
-  sbc $f8
+  sbc ($f3), y; PST lo byte
   sta EvalScore
-  bcs __ai_eval_black_pst_done_0
-  dec EvalScore + 1
-__ai_eval_black_pst_done_0:
-  jmp PstNext
-__ai_eval_black_pst_neg_0:
-; Subtracting a negative = adding its unsigned magnitude (matches the old
-; PstBlackPiece negate path exactly, including a hypothetical -128).
-  eor #$ff
-  clc
-  adc #$01
-  clc
-  adc EvalScore
-  sta EvalScore
-  bcc __ai_eval_black_pst_done_0
-  inc EvalScore + 1
+  lda EvalScore + 1
+  sbc ($f5), y; PST hi byte (sign-extended)
+  sta EvalScore + 1
   jmp PstNext
 
 PstNext:
@@ -427,13 +450,15 @@ EvaluatePawnPressure:
   lda $f1
   beq __ai_eval_black_attacked_0
   ldy $f2
-  lda PawnAttackPenalty, y
-  jmp SubtractEvalUnsigned
+  lda PawnAttackPenalty_Lo, y
+  ldx PawnAttackPenalty_Hi, y
+  jmp SubEval16
 
 __ai_eval_black_attacked_0:
   ldy $f2
-  lda PawnAttackPenalty, y
-  jmp AddEvalUnsigned
+  lda PawnAttackPenalty_Lo, y
+  ldx PawnAttackPenalty_Hi, y
+  jmp AddEval16
 
 __ai_eval_done_1:
   rts
@@ -529,13 +554,15 @@ EvaluateQueenPressure:
   lda $f1
   beq __ai_eval_black_attacked_1
   ldy $f2
-  lda QueenAttackPenalty, y
-  jmp SubtractEvalUnsigned
+  lda QueenAttackPenalty_Lo, y
+  ldx QueenAttackPenalty_Hi, y
+  jmp SubEval16
 
 __ai_eval_black_attacked_1:
   ldy $f2
-  lda QueenAttackPenalty, y
-  jmp AddEvalUnsigned
+  lda QueenAttackPenalty_Lo, y
+  ldx QueenAttackPenalty_Hi, y
+  jmp AddEval16
 
 __ai_eval_done_2:
   rts
@@ -563,18 +590,25 @@ EvaluateMinorPressure:
 
 __ai_eval_apply_minor_pressure_0:
   ldy $f2
-  lda MinorAttackPenalty, y
-  beq __ai_eval_done_3
+  lda MinorAttackPenalty_Lo, y
+  ldx MinorAttackPenalty_Hi, y
+; Zero check: only types with a nonzero penalty (rook/queen) reach here, but
+; preserve the original skip-on-zero behavior across the full 16-bit value.
   sta $f3
+  stx $f4
+  ora $f4
+  beq __ai_eval_done_3
 
   lda $f1
   beq __ai_eval_black_attacked_2
   lda $f3
-  jmp SubtractEvalUnsigned
+  ldx $f4
+  jmp SubEval16
 
 __ai_eval_black_attacked_2:
   lda $f3
-  jmp AddEvalUnsigned
+  ldx $f4
+  jmp AddEval16
 
 __ai_eval_done_3:
   rts
@@ -712,6 +746,19 @@ ApplyMobilityScore:
 ; (~46-50%) -- half-uniform is the optimum among {x1, x0.5, x0.25, queen-x0.25}.
   lsr
   beq __ai_eval_done_4
+; Part B centipawn rescale: the mobility term is a raw (half) square-count in
+; eval units with no scaling constant, so it must be multiplied by 10 like every
+; other term. The half-count is small (<= ~13), so A*10 stays under 256 and the
+; 8-bit Add/SubtractEvalUnsigned path is still exact. A*10 = A*8 + A*2.
+  sta $f7; $f7 = half-count
+  asl
+  asl
+  asl; A = half-count * 8
+  sta $f3
+  lda $f7
+  asl; half-count * 2
+  clc
+  adc $f3; A = half-count * 10
   ldx $f1
   beq __ai_eval_black_piece_0
   jmp AddEvalUnsigned
@@ -1225,6 +1272,38 @@ SubtractEvalUnsigned:
   rts
 
 ;
+; AddEval16 / SubEval16
+; Part B 16-bit term helpers. Input: A = value low byte, X = value high byte.
+; AddEval16 does EvalScore += value; SubEval16 does EvalScore -= value. The
+; value is treated as a 16-bit quantity (the rescaled term constants are all
+; nonnegative, so the high byte is the true high byte, not a sign extension).
+; Clobbers: A, $f3.
+;
+AddEval16:
+  sta $f3
+  clc
+  lda EvalScore
+  adc $f3
+  sta EvalScore
+  txa
+  adc EvalScore + 1
+  sta EvalScore + 1
+  rts
+
+SubEval16:
+  sta $f3
+  sec
+  lda EvalScore
+  sbc $f3
+  sta EvalScore
+  txa
+  sta $f3
+  lda EvalScore + 1
+  sbc $f3
+  sta EvalScore + 1
+  rts
+
+;
 ; EvaluateKingPins
 ; Penalize pieces pinned to their king by enemy bishops, rooks, or queens.
 ; A pinned defender is a tactical hostage: it cannot move freely and often
@@ -1310,15 +1389,26 @@ __ai_eval_pin_have_candidate_0:
 
 __ai_eval_pin_apply_0:
   ldy $f5
-  lda PinnedPiecePenalty, y
+  lda PinnedPiecePenalty_Lo, y
+  ldx PinnedPiecePenalty_Hi, y
+; Skip when the penalty is zero (king/empty types never reach here, but the
+; original guarded on a zero table entry).
+  sta $f8
+  stx $f9
+  ora $f9
   beq __ai_eval_pin_next_dir_0
-  ldx $f1
-  beq __ai_eval_pin_black_piece_0
-  jsr SubtractEvalUnsigned
+  lda $f1
+  bne __ai_eval_pin_white_piece_0
+; Pinned side is black ($f1 == BLACK_COLOR == 0): add penalty (good for white).
+  lda $f8
+  ldx $f9
+  jsr AddEval16
   jmp ApplyPinnedAttackPressure
 
-__ai_eval_pin_black_piece_0:
-  jsr AddEvalUnsigned
+__ai_eval_pin_white_piece_0:
+  lda $f8
+  ldx $f9
+  jsr SubEval16
 ; Fall through to pinned attack pressure
 
 ;
@@ -1579,14 +1669,12 @@ __ai_eval_black_passed_continue_0:
   sec
   sbc $f2
   tay
-  lda PassedPawnBonus, y
-  sta $f3
   sec
   lda EvalScore
-  sbc $f3
+  sbc PassedPawnBonus_Lo, y
   sta EvalScore
   lda EvalScore + 1
-  sbc #$00
+  sbc PassedPawnBonus_Hi, y
   sta EvalScore + 1
   jsr CheckBlackConnectedPasser
   bcc __ai_eval_black_connected_done_0
@@ -1640,14 +1728,12 @@ __ai_eval_check_white_passed_0:
 ; White passed pawn - bonus for white
 ; Bonus = PassedPawnBonus[row] since white advances toward row 0
   ldy $f2
-  lda PassedPawnBonus, y
-  sta $f3
   clc
   lda EvalScore
-  adc $f3
+  adc PassedPawnBonus_Lo, y
   sta EvalScore
   lda EvalScore + 1
-  adc #$00
+  adc PassedPawnBonus_Hi, y
   sta EvalScore + 1
   jsr CheckWhiteConnectedPasser
   bcc __ai_eval_white_connected_done_0
@@ -2161,25 +2247,13 @@ __ai_eval_no_black_rook_0:
 EvaluateEndgame:
   lda whitekingsq
   jsr EvaluateEndgameKingActivity
-  sta $f0
-  clc
-  lda EvalScore
-  adc $f0
-  sta EvalScore
-  lda EvalScore + 1
-  adc #$00
-  sta EvalScore + 1
+; A = activity lo, X = activity hi (good for white).
+  jsr AddEval16
 
   lda blackkingsq
   jsr EvaluateEndgameKingActivity
-  sta $f0
-  sec
-  lda EvalScore
-  sbc $f0
-  sta EvalScore
-  lda EvalScore + 1
-  sbc #$00
-  sta EvalScore + 1
+; A = activity lo, X = activity hi (good for black = bad for white).
+  jsr SubEval16
 
   lda EvalPawnCount
   beq __ai_eval_done_5
@@ -2214,8 +2288,11 @@ __ai_eval_white_rook_0:
   tay
   lda WhitePawnsPerFile, y
   bne __ai_eval_next_square_1
-  lda #ENDGAME_ROOK_OPEN_FILE_BONUS
-  jsr AddEvalUnsigned
+  stx $f5; preserve board scan index across the 16-bit add (AddEval16 reads X)
+  lda #<ENDGAME_ROOK_OPEN_FILE_BONUS
+  ldx #>ENDGAME_ROOK_OPEN_FILE_BONUS
+  jsr AddEval16
+  ldx $f5
   lda blackkingsq
   and #$07
   sec
@@ -2238,8 +2315,11 @@ __ai_eval_black_rook_0:
   tay
   lda BlackPawnsPerFile, y
   bne __ai_eval_next_square_1
-  lda #ENDGAME_ROOK_OPEN_FILE_BONUS
-  jsr SubtractEvalUnsigned
+  stx $f5; preserve board scan index across the 16-bit sub (SubEval16 reads X)
+  lda #<ENDGAME_ROOK_OPEN_FILE_BONUS
+  ldx #>ENDGAME_ROOK_OPEN_FILE_BONUS
+  jsr SubEval16
+  ldx $f5
   lda whitekingsq
   and #$07
   sec
@@ -2271,13 +2351,15 @@ __ai_eval_scan_check_done_1:
 ;
 ; EvaluateEndgameKingActivity
 ; Input: A = king square (0x88)
-; Output: A = unsigned activity bonus
+; Output: A = unsigned activity bonus low byte, X = high byte (Part B: the
+;         bonus can reach 600 after the x10 rescale, so it is now 16-bit).
 ; Clobbers: $f0-$f1
 ;
 EvaluateEndgameKingActivity:
   sta $f0
   lda #$00
-  sta $f1
+  sta $f1; $f1 = activity accumulator low byte
+  sta $f7; $f7 = activity accumulator high byte
 
   lda $f0
   and #$07; file
@@ -2285,10 +2367,13 @@ EvaluateEndgameKingActivity:
   bcc __ai_eval_activity_file_done_0
   cmp #$06
   bcs __ai_eval_activity_file_done_0
-  lda $f1
   clc
-  adc #ENDGAME_KING_ACTIVITY_BONUS
+  lda $f1
+  adc #<ENDGAME_KING_ACTIVITY_BONUS
   sta $f1
+  lda $f7
+  adc #>ENDGAME_KING_ACTIVITY_BONUS
+  sta $f7
 
 __ai_eval_activity_file_done_0:
   lda $f0
@@ -2300,64 +2385,92 @@ __ai_eval_activity_file_done_0:
   bcc __ai_eval_activity_done_0
   cmp #$06
   bcs __ai_eval_activity_done_0
-  lda $f1
   clc
-  adc #ENDGAME_KING_ACTIVITY_BONUS
+  lda $f1
+  adc #<ENDGAME_KING_ACTIVITY_BONUS
   sta $f1
+  lda $f7
+  adc #>ENDGAME_KING_ACTIVITY_BONUS
+  sta $f7
 
 __ai_eval_activity_done_0:
+  ldx $f7
   lda $f1
   rts
 
-;
-; EvaluateKingSafety
-; Score king safety: castling position, pawn shield, exposure
-; Adds/subtracts from EvalScore
-; Clobbers: A, X, Y, $f0-$f4
-;
 EvaluateKingSafety:
+; Part B centipawn rescale: EvaluateSingleKingSafety is unchanged and still
+; returns a signed *byte* (pre-rescale scale, wraparound included). Multiply that
+; byte by 10 into a 16-bit signed value, then add (white) / subtract (black) the
+; full 16-bit product, so the contribution is exactly (old byte) x 10 and the
+; baseline -- overflow artifact and all -- is reproduced move-identically.
 ; Evaluate white king safety
   lda whitekingsq
   jsr EvaluateSingleKingSafety
-; A = signed safety score (positive = safe, negative = unsafe)
-; Add signed byte to EvalScore (good for white)
+  jsr KingSafetyByteX10; A = lo, X = hi of (signed byte) * 10
   sta $f0
+  stx $f7
   clc
   lda EvalScore
   adc $f0
   sta EvalScore
-  ldx $f0
-  bpl __ai_eval_white_safety_positive_0
   lda EvalScore + 1
-  adc #$ff
-  jmp __ai_eval_white_safety_done_0
-__ai_eval_white_safety_positive_0:
-  lda EvalScore + 1
-  adc #$00
-__ai_eval_white_safety_done_0:
+  adc $f7
   sta EvalScore + 1
 
 ; Evaluate black king safety
   lda blackkingsq
   jsr EvaluateSingleKingSafety
-; A = signed safety score
-; Subtract signed byte from EvalScore (good for black = bad for white)
+  jsr KingSafetyByteX10; A = lo, X = hi of (signed byte) * 10
   sta $f0
+  stx $f7
   sec
   lda EvalScore
   sbc $f0
   sta EvalScore
-  ldx $f0
-  bpl __ai_eval_black_safety_positive_0
   lda EvalScore + 1
-  sbc #$ff
-  jmp __ai_eval_black_safety_done_0
-__ai_eval_black_safety_positive_0:
-  lda EvalScore + 1
-  sbc #$00
-__ai_eval_black_safety_done_0:
+  sbc $f7
   sta EvalScore + 1
 
+  rts
+
+;
+; KingSafetyByteX10
+; Multiply a SIGNED byte (A) by 10, returning a 16-bit signed result in A (low)
+; and X (high). Used to scale the pre-rescale king-safety byte up to centipawns.
+; n*10 fits in [-1280, 1270]. Implemented as sign-extend to 16-bit, then *10 via
+; *8 + *2 with 16-bit shifts. Clobbers: A, X, Y, $f5, $f6.
+;
+KingSafetyByteX10:
+  ldx #$00
+  cmp #$80
+  bcc __ai_ksafe_x10_pos_0
+  ldx #$ff; sign-extend negative byte
+__ai_ksafe_x10_pos_0:
+  sta $f5; $f5/$f6 = sign-extended 16-bit value n
+  stx $f6
+; t = n * 2
+  asl $f5
+  rol $f6
+; save t in Y-less temps: reuse A/X via stack-free copy
+  lda $f5
+  ldy $f6; Y = (n*2) high
+  pha; (n*2) low on stack
+; t = t * 4  -> n * 8 (continue shifting $f5/$f6)
+  asl $f5
+  rol $f6
+  asl $f5
+  rol $f6; $f5/$f6 = n * 8
+; result = n*8 + n*2
+  pla; A = (n*2) low
+  clc
+  adc $f5
+  sta $f5
+  tya; (n*2) high
+  adc $f6
+  sta $f6; $f5/$f6 = n*10
+  lda $f5
+  ldx $f6
   rts
 
 ;
