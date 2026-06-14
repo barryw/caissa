@@ -71,6 +71,7 @@ def play_one_game(args_dict: dict) -> GameOutcome:
     timeout_cycles = args_dict["timeout_cycles"]
     max_plies = args_dict["max_plies"]
     adj_cp = args_dict["adjudicate_win_cp"]
+    adj_streak = args_dict["adjudicate_streak"]
 
     runner_a = Sim6502HeadlessRunner(
         repo_root=repo_root,
@@ -85,6 +86,7 @@ def play_one_game(args_dict: dict) -> GameOutcome:
 
     board = chess.Board(start_fen)
     termination = "maxplies"
+    decisive_streak = 0  # consecutive plies one side has held a >= adj_cp material lead
     try:
         with runner_a, runner_b:
             while not board.is_game_over(claim_draw=True) and board.fullmove_number * 2 < max_plies + 4:
@@ -109,6 +111,22 @@ def play_one_game(args_dict: dict) -> GameOutcome:
                     result = "0-1" if loser_white else "1-0"
                     return _outcome(idx, a_color, result, board.ply(), termination)
                 board.push(move)
+
+                # Early material adjudication. At depth-6 (LEVEL_BEAST) every move
+                # costs billions of cycles, so grinding a decided game to max_plies
+                # is the dominant wall-time cost. Once one side has held a decisive
+                # material lead for adj_streak consecutive plies, call it. Both
+                # engines share the adjudicator so the verdict is unbiased; disable
+                # with --adjudicate-streak 0.
+                if adj_streak > 0:
+                    bal = material_cp(board)
+                    if bal >= adj_cp or bal <= -adj_cp:
+                        decisive_streak += 1
+                        if decisive_streak >= adj_streak:
+                            result = "1-0" if bal >= adj_cp else "0-1"
+                            return _outcome(idx, a_color, result, board.ply(), "adjudicated-early")
+                    else:
+                        decisive_streak = 0
     except Sim6502BridgeError as exc:
         # Treat a bridge failure as a no-result draw rather than crashing the pool.
         return GameOutcome(idx, a_color, "1/2-1/2", 0.5, board.ply(), f"bridge-error:{exc}"[:60])
@@ -171,6 +189,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--c64-timeout", type=int, default=80_000_000, help="per-move cycle cap (committed-best returned on overrun)")
     p.add_argument("--max-plies", type=int, default=160)
     p.add_argument("--adjudicate-win-cp", type=int, default=300)
+    p.add_argument("--adjudicate-streak", type=int, default=6,
+                   help="adjudicate a win after this many consecutive plies of a >= win-cp material lead (0 disables); cuts decided games short, key for depth-6 wall time")
     p.add_argument("--start-fen-file", type=Path, default=repo_root / "tools" / "stockfish_opening_fens.txt")
     p.add_argument("--jobs", type=int, default=6)
     p.add_argument("--json", type=Path, default=None)
@@ -197,6 +217,7 @@ def main(argv: list[str]) -> int:
                 "timeout_cycles": args.c64_timeout,
                 "max_plies": args.max_plies,
                 "adjudicate_win_cp": args.adjudicate_win_cp,
+                "adjudicate_streak": args.adjudicate_streak,
                 "a_prg": str(args.engine_a_prg), "a_sym": str(args.engine_a_sym),
                 "b_prg": str(args.engine_b_prg), "b_sym": str(args.engine_b_sym),
             })
