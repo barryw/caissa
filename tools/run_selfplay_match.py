@@ -176,6 +176,31 @@ def elo_diff(rate: float) -> float | None:
     return -400.0 * math.log10(1.0 / rate - 1.0)
 
 
+def _expected_score(elo: float) -> float:
+    return 1.0 / (1.0 + 10.0 ** (-elo / 400.0))
+
+
+def sprt_llr(scores: list[float], elo1: float) -> float:
+    """Generalized SPRT log-likelihood ratio for H0: elo=0 vs H1: elo=elo1.
+
+    Normal-approximation GSPRT on the per-game score (0/0.5/1), with the
+    variance estimated from the sample. >0 favours H1 (A is better), <0 favours
+    H0. Used to stop a match the moment the evidence is decisive either way.
+    """
+    n = len(scores)
+    if n < 2:
+        return 0.0
+    mu0, mu1 = 0.5, _expected_score(elo1)
+    mean = sum(scores) / n
+    var = sum((s - mean) ** 2 for s in scores) / n
+    # Floor the variance well above zero: an all-draws (zero-variance) start
+    # must not blow the LLR up to +/-millions. 0.05 is a realistic minimum for a
+    # game-score distribution and keeps the test stable on drawish samples.
+    var = max(var, 0.05)
+    total = sum(scores)
+    return (mu1 - mu0) / var * (total - n * (mu0 + mu1) / 2.0)
+
+
 def load_start_fens(path: Path) -> list[str]:
     return [ln.strip() for ln in path.read_text().splitlines() if ln.strip() and not ln.startswith("#")]
 
@@ -199,6 +224,12 @@ def main(argv: list[str]) -> int:
                    help="adjudicate a win after this many consecutive plies of a >= win-cp material lead (0 disables); cuts decided games short, key for depth-6 wall time")
     p.add_argument("--start-fen-file", type=Path, default=repo_root / "tools" / "stockfish_opening_fens.txt")
     p.add_argument("--jobs", type=int, default=6)
+    p.add_argument("--sprt", action="store_true",
+                   help="stop early when the result is decisive (GSPRT, H0: elo=0 vs H1: elo=sprt-elo1)")
+    p.add_argument("--sprt-elo1", type=float, default=30.0,
+                   help="H1 Elo threshold for SPRT (the smallest gain worth keeping; bigger -> decides faster but only catches bigger effects)")
+    p.add_argument("--sprt-alpha", type=float, default=0.05, help="SPRT alpha=beta error rate")
+    p.add_argument("--sprt-min", type=int, default=16, help="minimum games before SPRT can stop")
     p.add_argument("--json", type=Path, default=None)
     p.add_argument("--label", default="A=candidate vs B=baseline")
     args = p.parse_args(argv)
@@ -230,8 +261,12 @@ def main(argv: list[str]) -> int:
                 "b_prg": str(args.engine_b_prg), "b_sym": str(args.engine_b_sym),
             })
 
+    sprt_bound = math.log((1 - args.sprt_alpha) / args.sprt_alpha) if args.sprt else None
+    sprt_result = None
     print(f"{args.label}: {len(tasks)} games, difficulty={args.difficulty}, "
-          f"timeout={args.c64_timeout:,} cyc, jobs={args.jobs}")
+          f"timeout={args.c64_timeout:,} cyc, jobs={args.jobs}"
+          + (f", SPRT[elo1={args.sprt_elo1}, a=b={args.sprt_alpha}, bound=±{sprt_bound:.2f}, min={args.sprt_min}]"
+             if args.sprt else ""))
     outcomes: list[GameOutcome] = []
     done = 0
     with ProcessPoolExecutor(max_workers=args.jobs) as pool:
@@ -241,8 +276,21 @@ def main(argv: list[str]) -> int:
             outcomes.append(o)
             done += 1
             score = sum(x.a_score for x in outcomes)
+            llr_str = ""
+            if args.sprt and done >= args.sprt_min:
+                llr = sprt_llr([x.a_score for x in outcomes], args.sprt_elo1)
+                llr_str = f" LLR={llr:+.2f}"
+                if llr >= sprt_bound:
+                    sprt_result = f"H1 accepted: A is >= +{args.sprt_elo1} Elo (LLR {llr:+.2f})"
+                elif llr <= -sprt_bound:
+                    sprt_result = f"H0 accepted: A is NOT better (LLR {llr:+.2f})"
             print(f"  [{done}/{len(tasks)}] A({o.a_color[0]}) {o.result:7} {o.termination:22} "
-                  f"plies={o.plies:3} | A score so far {score:.1f}/{done}")
+                  f"plies={o.plies:3} | A {score:.1f}/{done}{llr_str}")
+            if sprt_result is not None:
+                print(f"  *** SPRT stop after {done} games: {sprt_result} ***")
+                for f in futs:
+                    f.cancel()
+                break
 
     n = len(outcomes)
     a_score = sum(o.a_score for o in outcomes)
@@ -260,12 +308,14 @@ def main(argv: list[str]) -> int:
                "B STRONGER (95%)" if hi < 0.5 else
                "inconclusive (need more games)")
     print(f"Verdict: {verdict}")
+    if args.sprt:
+        print(f"SPRT: {sprt_result or 'inconclusive (hit game cap before a decision)'}")
 
     if args.json:
         args.json.write_text(json.dumps({
             "label": args.label, "games": n, "a_wins": wins, "a_draws": draws, "a_losses": losses,
             "a_score": a_score, "rate": rate, "wilson95": [lo, hi], "elo_diff": ed,
-            "difficulty": args.difficulty, "timeout_cycles": args.c64_timeout,
+            "sprt": sprt_result, "difficulty": args.difficulty, "timeout_cycles": args.c64_timeout,
             "outcomes": [vars(o) for o in sorted(outcomes, key=lambda x: x.index)],
         }, indent=2))
         print(f"wrote {args.json}")
