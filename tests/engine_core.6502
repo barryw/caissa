@@ -1980,6 +1980,33 @@ suites {
       assert(peekbyte([EvalScore] + $01) == $00, "Non-pin score should stay neutral")
     }
 
+    test("eval-detects-multiple-king-pins", "A pin in a later ray direction must not be dropped after the first pin") {
+      ; Regression for the $f0 (king-square) clobber in ApplyPinnedAttackPressure:
+      ; applying the first pin overwrote the king square in $f0, so every later
+      ; ray scanned from the pinned piece instead of the king and silently
+      ; dropped further pins. Two white knights are pinned to the white king at
+      ; $44 -- one down the file (AllDirectionOffsets index 1 = -16), one along
+      ; the rank (index 4 = +1). The second pin lives in a later ray direction,
+      ; so the bug counted only the first.
+      memfill([Board88], 128, $30)
+      [Board88] + $44 = $b6        ; white king
+      [Board88] + $34 = $b2        ; white knight pinned along -16 (ray index 1)
+      [Board88] + $24 = $34        ; black rook pinning it
+      [Board88] + $45 = $b2        ; white knight pinned along +1 (ray index 4)
+      [Board88] + $46 = $34        ; black rook pinning it
+      [whitekingsq] = $44
+      [blackkingsq] = $00
+      [EvalScore] = $00
+      [EvalScore] + $01 = $00
+
+      jsr([EvaluateKingPins], stop_on_rts = true, fail_on_brk = true)
+
+      ; Two pinned white knights = 2 x -PINNED_MINOR_PENALTY (250 after Part B)
+      ; = -500 = $fe0c. The bug yields only -250 = $ff06.
+      assert(peekbyte([EvalScore]) == $0c, "Both pinned knights must be penalized (low byte of -500)")
+      assert(peekbyte([EvalScore] + $01) == $fe, "Both pinned knights must be penalized (high byte of -500)")
+    }
+
     test("root-early-major-penalties-track-development", "Early queen and rook penalties require undeveloped home minors") {
       memfill([Board88], 128, $30)
       [Board88] + $74 = $b6

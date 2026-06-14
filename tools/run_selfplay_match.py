@@ -285,7 +285,7 @@ def main(argv: list[str]) -> int:
                 elif llr <= -sprt_bound:
                     sprt_result = f"H0 accepted: A is NOT better (LLR {llr:+.2f})"
             print(f"  [{done}/{len(tasks)}] A({o.a_color[0]}) {o.result:7} {o.termination:22} "
-                  f"plies={o.plies:3} | A {score:.1f}/{done}{llr_str}")
+                  f"plies={o.plies:3} | A {score:.1f}/{done}{llr_str}", flush=True)
             if sprt_result is not None:
                 print(f"  *** SPRT stop after {done} games: {sprt_result} ***")
                 for f in futs:

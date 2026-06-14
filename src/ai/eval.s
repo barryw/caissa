@@ -1329,8 +1329,17 @@ __ai_eval_pin_dir_loop_0:
   ldy $f2
   lda AllDirectionOffsets, y
   sta $f3; $f3 = ray delta
-  lda $f0
-  sta $f4; $f4 = current ray square
+; Start the ray from the king square, re-derived from the pinned side each
+; iteration ($f1: white -> whitekingsq, black -> blackkingsq). ApplyPinned-
+; AttackPressure overwrites $f0 with the pinned-piece square for its attack
+; probes; deriving the origin here (instead of reading $f0) keeps every later
+; direction scanning from the king, so multiple pins are no longer dropped.
+  ldx whitekingsq
+  lda $f1
+  bne __ai_eval_pin_king_origin_0
+  ldx blackkingsq
+__ai_eval_pin_king_origin_0:
+  stx $f4; $f4 = current ray square (king origin)
   lda #$00
   sta $f5; $f5 = candidate pinned piece type
 
@@ -1411,7 +1420,9 @@ __ai_eval_pin_white_piece_0:
 ; A pinned piece already has limited choices. If a pawn or knight is also
 ; attacking it, add pressure for the side doing the attacking.
 ; Inputs: $f1=pinned color, $f2=direction index, $f5=piece type, $f6=square.
-; Clobbers: A, X, Y, $f0, $f2-$f5, $f7
+; Clobbers: A, X, Y, $f0, $f3-$f5, $f7 ($f2 is clobbered then restored). $f0 is
+; left holding the pinned-piece square; the caller no longer depends on $f0 (the
+; ray loop re-derives the king origin from the side each iteration).
 ;
 ApplyPinnedAttackPressure:
   lda $f2

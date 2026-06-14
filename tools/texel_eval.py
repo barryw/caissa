@@ -826,17 +826,14 @@ class _Eval:
         self._pins_from_king(self.bk, 0)
 
     def _pins_from_king(self, king_sq, king_color):
-        # FAITHFUL 6502 QUIRK: ApplyPinnedAttackPressure stores the pinned-piece
-        # square into $f0 (the king-square slot) and NEVER restores it. The
-        # direction loop re-reads $f0 as each ray's origin, so once any pin in
-        # this king's scan triggers the attack-pressure probe, all LATER
-        # directions ray-scan from the pinned piece square, not the king. This
-        # is load-bearing: it drops pins that would otherwise be found on later
-        # directions. `ray_origin` models the live $f0.
+        # The ray loop re-derives the king square as the origin each direction
+        # (eval.s EvaluatePinsFromKing), so every direction scans from the king
+        # and multiple pins are all found. (Earlier the engine read $f0, which
+        # ApplyPinnedAttackPressure clobbered with the pinned-piece square and
+        # never restored, dropping pins on later directions -- fixed.)
         b = self.b
-        ray_origin = king_sq
         for d, delta in enumerate(ALL_DIRECTION_OFFSETS):
-            ray = ray_origin
+            ray = king_sq
             candidate_type = 0
             candidate_sq = 0
             while True:
@@ -872,10 +869,10 @@ class _Eval:
                         self.sub(pen)
                     else:  # pinned side black -> add (good for white)
                         self.add(pen)
-                    # ApplyPinnedAttackPressure ALWAYS runs for an applied pin and
-                    # clobbers $f0 := pinned-piece square (never restored).
+                    # ApplyPinnedAttackPressure runs for an applied pin (it
+                    # clobbers $f0, but the loop re-derives the king origin so the
+                    # next direction is unaffected).
                     self._pinned_attack_pressure(king_color, candidate_type, candidate_sq)
-                    ray_origin = candidate_sq
                     break
 
     def _pinned_attack_pressure(self, pinned_color, ptype, sq):
