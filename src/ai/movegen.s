@@ -102,13 +102,15 @@ AddMove:
 ;
 GenerateKnightMoves:
   sta $f7; $f7 = from square
+  sta __ai_movegen_knight_base_0+1; SMC: patch the (invariant) from square as base
   stx $f8; $f8 = our color
   lda #$00
   sta $f9; $f9 = offset index
 
 __ai_movegen_knight_loop_0:
   ldx $f9; X = offset index
-  lda $f7; Start with from square
+__ai_movegen_knight_base_0:
+  lda #$00; patched: from square ($f7)
   clc
   adc KnightOffsets, x; Add knight offset
   sta $fa; $fa = target square
@@ -167,7 +169,7 @@ __ai_movegen_direction_loop_0:
 ; Get direction offset
   ldy $f9
   lda ($fd), y; $fd/$fe = direction table pointer
-  sta $fa; $fa = direction offset
+  sta __ai_movegen_slide_delta_0+1; SMC: patch the step delta as an immediate
 
 ; Start sliding from the from square (reset each direction)
   lda $f7
@@ -177,7 +179,8 @@ __ai_movegen_slide_loop_0:
 ; Move one step in direction
   lda $fc
   clc
-  adc $fa; Add direction offset
+__ai_movegen_slide_delta_0:
+  adc #$00; patched: step delta
   sta $fc; $fc = new target square
 
 ; Check if on board
@@ -270,13 +273,15 @@ GenerateQueenMoves:
 ;
 GenerateKingMoves:
   sta $f7; $f7 = from square
+  sta __ai_movegen_king_base_0+1; SMC: patch the (invariant) from square as base
   stx $f8; $f8 = our color
   lda #$00
   sta $f9; $f9 = direction index
 
 __ai_movegen_king_loop_0:
   ldx $f9; X = direction index
-  lda $f7; Start with from square
+__ai_movegen_king_base_0:
+  lda #$00; patched: from square ($f7)
   clc
   adc AllDirectionOffsets, x; Add direction offset
   sta $fa; $fa = target square
@@ -1726,13 +1731,15 @@ __ai_movegen_not_capture_0:
 ;
 GenerateKnightCaptures:
   sta $f7
+  sta __ai_movegen_knightcap_base_0+1; SMC: patch the (invariant) from square as base
   stx $f8
   lda #$00
   sta $f9
 
 __ai_movegen_knight_cap_loop_0:
   ldx $f9
-  lda $f7
+__ai_movegen_knightcap_base_0:
+  lda #$00; patched: from square ($f7)
   clc
   adc KnightOffsets, x
   sta $fa
@@ -1764,14 +1771,15 @@ GenerateSlidingCaptures:
 __ai_movegen_slide_cap_dir_loop_0:
   ldy $f9
   lda ($fd), y
-  sta $fa; $fa = direction offset
+  sta __ai_movegen_slidecap_delta_0+1; SMC: patch the step delta as an immediate
   lda $f7
   sta $fc; $fc = current square
 
 __ai_movegen_slide_cap_loop_0:
   lda $fc
   clc
-  adc $fa
+__ai_movegen_slidecap_delta_0:
+  adc #$00; patched: step delta
   sta $fc
   and #OFFBOARD_MASK
   bne __ai_movegen_slide_cap_next_dir_0
@@ -1833,13 +1841,15 @@ GenerateQueenCaptures:
 ;
 GenerateKingCaptures:
   sta $f7
+  sta __ai_movegen_kingcap_base_0+1; SMC: patch the (invariant) from square as base
   stx $f8
   lda #$00
   sta $f9
 
 __ai_movegen_king_cap_loop_0:
   ldx $f9
-  lda $f7
+__ai_movegen_kingcap_base_0:
+  lda #$00; patched: from square ($f7)
   clc
   adc AllDirectionOffsets, x
   sta $fa

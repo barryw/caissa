@@ -47,6 +47,11 @@ IsSquareAttacked:
   sta __engine_attack_knight_cmp_0+1
   eor #(KNIGHT_SPR ^ KING_SPR)
   sta __engine_attack_king_cmp_0+1
+; Patch the (invariant) attack square into the knight/king loop bases so the
+; per-step add reads an immediate instead of reloading attack_sq each iteration.
+  lda attack_sq
+  sta __engine_attack_knight_base_0+1
+  sta __engine_attack_king_base_0+1
 
 ;
 ; 1. Check for knight attacks
@@ -56,7 +61,8 @@ IsSquareAttacked:
 ;
   ldx #$00
 __engine_attack_knight_loop_0:
-  lda attack_sq
+__engine_attack_knight_base_0:
+  lda #$00; patched: attack_sq
   clc
   adc KnightOffsets, x
   tay
@@ -76,7 +82,8 @@ __engine_attack_knight_next_0:
 ;
   ldx #$00
 __engine_attack_king_loop_0:
-  lda attack_sq
+__engine_attack_king_base_0:
+  lda #$00; patched: attack_sq
   clc
   adc AllDirectionOffsets, x
   tay
@@ -108,20 +115,19 @@ __engine_attack_check_diag_0:
 __engine_attack_diag_loop_0:
   stx ray_dir
   lda DiagonalOffsets, x
-  sta move_delta
-  lda attack_sq
-  sta ray_sq
+  sta __engine_attack_diag_delta_0+1; SMC: patch the ray delta as an immediate
+  ldx attack_sq; X carries the running ray square (no ray_sq spill/reload)
   ldy #$00
 
 __engine_attack_diag_ray_0:
-  lda ray_sq
+  txa
   clc
-  adc move_delta
-  sta ray_sq
+__engine_attack_diag_delta_0:
+  adc #$00; patched: diagonal ray delta
+  tax
   and #OFFBOARD_MASK
   bne __engine_attack_diag_next_dir_0
 
-  ldx ray_sq
   lda Board88, x
   cmp #EMPTY_SPR
   bne __engine_attack_diag_hit_0
@@ -167,19 +173,18 @@ __engine_attack_diag_next_dir_0:
   ldy #$00
 __engine_attack_ortho_loop_0:
   lda OrthogonalOffsets, y
-  sta move_delta
-  lda attack_sq
-  sta ray_sq
+  sta __engine_attack_ortho_delta_0+1; SMC: patch the ray delta as an immediate
+  ldx attack_sq; X carries the running ray square (no ray_sq spill/reload)
 
 __engine_attack_ortho_ray_0:
-  lda ray_sq
+  txa
   clc
-  adc move_delta
-  sta ray_sq
+__engine_attack_ortho_delta_0:
+  adc #$00; patched: orthogonal ray delta
+  tax
   and #OFFBOARD_MASK
   bne __engine_attack_ortho_next_dir_0
 
-  ldx ray_sq
   lda Board88, x
   cmp #EMPTY_SPR
   beq __engine_attack_ortho_ray_0

@@ -818,10 +818,13 @@ CountKnightMobility:
   lda #$00
   sta $f3; $f3 = mobility count
   sta $f4; $f4 = offset index
+  lda $f0
+  sta __ai_eval_knight_base_0+1; SMC: patch the (invariant) piece square as base
 
 __ai_eval_knight_loop_0:
   ldy $f4
-  lda $f0
+__ai_eval_knight_base_0:
+  lda #$00; patched: piece square ($f0)
   clc
   adc KnightOffsets, y
   sta $f5
@@ -858,24 +861,22 @@ CountSlidingMobility:
   sta $f7; $f7 = direction count
   lda #$00
   sta $f3; $f3 = mobility count
-  sta $f4; $f4 = direction index
+  ldy #$00; Y = direction index
 
 __ai_eval_dir_loop_0:
-  ldy $f4
   lda ($fd), y
-  sta $f6; $f6 = ray delta
-  lda $f0
-  sta $f5; $f5 = current ray square
+  sta __ai_eval_mob_delta_0+1; SMC: patch ray delta as an immediate
+  ldx $f0; X carries the running ray square (no $f5 spill/reload)
 
 __ai_eval_ray_loop_0:
-  lda $f5
+  txa
   clc
-  adc $f6
-  sta $f5
+__ai_eval_mob_delta_0:
+  adc #$00; patched: ray delta
+  tax
   and #OFFBOARD_MASK
   bne __ai_eval_next_dir_0
 
-  ldx $f5
   lda Board88, x
   cmp #EMPTY_PIECE
   bne __ai_eval_occupied_0
@@ -889,9 +890,8 @@ __ai_eval_occupied_0:
   inc $f3
 
 __ai_eval_next_dir_0:
-  inc $f4
-  lda $f4
-  cmp $f7
+  iny
+  cpy $f7
   bne __ai_eval_dir_loop_0
 
   lda $f3
@@ -965,12 +965,15 @@ __ai_eval_black_piece_2:
 
 __ai_eval_set_enemy_knight_0:
   sta $f4
+  lda $f0
+  sta __ai_eval_knight_base_1+1; SMC: patch the (invariant) piece square as base
   lda #$00
   sta $f3
 
 __ai_eval_knight_loop_1:
   ldy $f3
-  lda $f0
+__ai_eval_knight_base_1:
+  lda #$00; patched: piece square ($f0)
   clc
   adc KnightOffsets, y
   sta $f5
@@ -1012,25 +1015,22 @@ __ai_eval_black_piece_bishop_0:
 
 __ai_eval_set_enemy_bishop_0:
   sta $f6; $f6 = enemy bishop piece byte
-  lda #$00
-  sta $f3; $f3 = direction index
+  ldy #$00; Y = direction index
 
 __ai_eval_bishop_dir_loop_0:
-  ldy $f3
   lda DiagonalOffsets, y
-  sta $f4; $f4 = ray delta
-  lda $f0
-  sta $f5; $f5 = current ray square
+  sta __ai_eval_bishop_delta_0+1; SMC: patch ray delta as an immediate
+  ldx $f0; X carries the running ray square
 
 __ai_eval_bishop_ray_loop_0:
-  lda $f5
+  txa
   clc
-  adc $f4
-  sta $f5
+__ai_eval_bishop_delta_0:
+  adc #$00; patched: ray delta
+  tax
   and #OFFBOARD_MASK
   bne __ai_eval_bishop_next_dir_0
 
-  ldx $f5
   lda Board88, x
   cmp #EMPTY_PIECE
   beq __ai_eval_bishop_ray_loop_0
@@ -1038,9 +1038,8 @@ __ai_eval_bishop_ray_loop_0:
   beq __ai_eval_attacked_by_bishop_0
 
 __ai_eval_bishop_next_dir_0:
-  inc $f3
-  lda $f3
-  cmp #DiagonalOffsetsEnd - DiagonalOffsets
+  iny
+  cpy #DiagonalOffsetsEnd - DiagonalOffsets
   bne __ai_eval_bishop_dir_loop_0
 
   clc
@@ -1079,25 +1078,22 @@ __ai_eval_black_piece_3:
 
 __ai_eval_set_enemy_queen_0:
   sta $f6; $f6 = enemy queen piece byte
-  lda #$00
-  sta $f3; $f3 = direction index
+  ldy #$00; Y = direction index
 
 __ai_eval_dir_loop_1:
-  ldy $f3
   lda AllDirectionOffsets, y
-  sta $f4; $f4 = ray delta
-  lda $f0
-  sta $f5; $f5 = current ray square
+  sta __ai_eval_queen_delta_0+1; SMC: patch ray delta as an immediate
+  ldx $f0; X carries the running ray square
 
 __ai_eval_ray_loop_1:
-  lda $f5
+  txa
   clc
-  adc $f4
-  sta $f5
+__ai_eval_queen_delta_0:
+  adc #$00; patched: ray delta
+  tax
   and #OFFBOARD_MASK
   bne __ai_eval_next_dir_1
 
-  ldx $f5
   lda Board88, x
   cmp #EMPTY_PIECE
   beq __ai_eval_ray_loop_1
@@ -1105,9 +1101,8 @@ __ai_eval_ray_loop_1:
   beq __ai_eval_attacked_2
 
 __ai_eval_next_dir_1:
-  inc $f3
-  lda $f3
-  cmp #$08
+  iny
+  cpy #$08
   bne __ai_eval_dir_loop_1
 
 __ai_eval_not_attacked_1:
