@@ -707,8 +707,9 @@ ApplyMobilityScore:
 ; Raw square-count was applied at a full eval unit (10cp) per square, uncapped
 ; and identical for every piece -- a centralized queen scored +250cp+ of pure
 ; mobility, biasing the engine toward premature queen/rook sorties. Halve it
-; toward standard mobility weights (self-play A/B: half ~57% vs the full-weight
-; baseline, quarter ~50% -- half is the sweet spot among {x1, x0.5, x0.25}).
+; toward standard mobility weights. Self-play A/B (240 games): half ~55.8%
+; (+41 Elo) vs the full-weight baseline; quarter and queen-quarter both lose
+; (~46-50%) -- half-uniform is the optimum among {x1, x0.5, x0.25, queen-x0.25}.
   lsr
   beq __ai_eval_done_4
   ldx $f1
