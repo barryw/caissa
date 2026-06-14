@@ -25,11 +25,16 @@ ZobristPRNG:
   ldx #$08; 8 iterations per output byte
 
 __ai_zobrist_prng_loop_0:
-; Galois LFSR step: shift right, XOR if LSB was 1
-  lda $fb
-  lsr; Shift LSB into carry
-  ror $fc; Rotate high byte right through carry
-  ror $fb; Rotate low byte right through carry
+; Galois LFSR step: shift the 16-bit register [$fc:$fb] right by one bit and,
+; if the bit shifted out of bit 0 was set, XOR the feedback mask $B400 into the
+; high byte. Maximal period 65535 (taps 16,14,13,11).
+;
+; The old code did `lda $fb / lsr / ror $fc / ror $fb`, which ROTATED bit 0 back
+; into bit 15 instead of shifting it out -- that collapsed the output into a
+; 5-bit-per-byte subspace (~10 effective hash bits, heavy collisions). Shift the
+; real register: high byte first, then low byte takes high's bit 0 into bit 7.
+  lsr $fc; high >> 1, carry = old bit0 of high byte
+  ror $fb; low >> 1 with high's bit0 entering bit7; carry = bit shifted out
 
   bcc __ai_zobrist_no_xor_0; If carry clear (LSB was 0), skip XOR
 ; XOR with feedback polynomial $B400
