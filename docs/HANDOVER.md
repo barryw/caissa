@@ -149,30 +149,25 @@ bridge = the test build. A C64-only book would never run in any harness.
   hits in deep non-book positions (legality net is strong); 90 tests / 9 gates /
   8-of-8 corpus all green.
 
-## ⚠️ NEW high-leverage finding: the 16-bit Zobrist hash is only ~10 bits
-`ComputeZobristHash` keys cluster badly: **32 distinct values per byte → ~9.6
-effective bits, 780 distinct keys over 1500 positions** (PRNG output sits in a
-5-bit-per-byte GF(2) subspace; `ZobristPRNG` `lda $fb / eor $fc` is the suspect).
-Blast radius:
-- **Book:** 21/219 entries dropped to collisions (~90% coverage). Graceful, no
-  downside, but caps the book.
-- **TT:** entries verify on the full 16-bit key (tt.s +0/+1) but with ~10-bit
-  entropy, ALIASED positions pass verification → wrong score/flag cutoffs. This
-  plausibly contributes to the "eval-bound" weakness — search may be partly
-  TT-corruption-bound.
-- **Repetition:** hash-based; false-repetition risk (re-validation TBD).
-Fixing the PRNG to full 16-bit entropy is a core change (re-baselines TT keys →
-tests/benchmarks/corpus) but high-value: lifts book to ~100% AND may unstick
-search strength. Strong candidate for the next pass.
+## DONE this session: Zobrist hash entropy fixed (task #13) — `29f5cd8`
+`ZobristPRNG`'s "Galois LFSR step" ROTATED the 16-bit register (bit0→bit15)
+instead of shifting bit0 out through the feedback tap — output collapsed into a
+5-bit-per-byte subspace (~9.6 effective hash bits). Fixed to a correct Galois
+shift (`lsr $fc / ror $fb`, XOR $B4 on carry). Measured over 1500 positions:
+byte coverage **32 → 254/255**, distinct keys **780 → 1445** (~16 real bits),
+book collisions **21 → 1** (book now 218/219 entries; recompiled). This also
+removes a large class of aliased-position TT cutoffs the weak hash allowed —
+may help the eval-bound weakness. All gates green post-fix. See
+[[zobrist-hash-entropy-bug]]. **Recompile the book with
+`tools/compile_opening_book.py` after ANY future key-affecting change.**
 
 ## Next moves (priority order)
-1. **Fix the Zobrist PRNG entropy** (see ⚠️ above) — likely the highest-leverage
-   single change now: book coverage + TT reliability + possible strength unlock.
-   Re-baseline tests/benchmarks/corpus after.
+1. **Re-run the ladder on beast** with book live + hash fixed — first game-level
+   read of both changes. If still ~713, eval is the remaining wall; if up, the
+   TT/book changes are helping. (Ladder cmd in the Beast section.)
 2. **Eval-term tuning via GAMES** — PST/development/center/king-safety/mobility,
    validated on the ladder/VICE not the corpus. The real path to 1700.
-3. **Re-run the ladder with the book live** to measure the book's game-level
-   effect (and again after the hash fix).
+3. **Perf backlog** (`docs/optimization-backlog.md`) — buys more depth.
 4. **Perf backlog** (`docs/optimization-backlog.md`) — buys more depth: dead-code
    (QSave* ~650 bytes), cache SearchDepth*8 offset, Zobrist LUT reuse, etc.
 5. **Repo rename to `caissa`** (task #11) + wire display name into README / banner /
@@ -186,7 +181,8 @@ hazard), beast-remote-setup.md, colossus-cleanroom-boundary.md, engine-name.md,
 MEMORY.md (index). docs/optimization-backlog.md + docs/opening-book-plan.md in repo.
 
 ## Open tasks
-#4 analyze/improve (ongoing), #6 re-run beast matches (now with book live),
-#7 stockfish tuning loop, #9 full VICE Colossus game, #11 rename to caissa,
-#13 fix Zobrist PRNG entropy (NEW, high-leverage — see ⚠️ above).
-DONE: #12 wire opening book (this session, commit pending).
+#4 analyze/improve (ongoing), #6 re-run beast matches (now with book live +
+hash fixed), #7 stockfish tuning loop, #9 full VICE Colossus game,
+#11 rename to caissa.
+DONE this session: #12 wire opening book (`74db46e`), #13 fix Zobrist PRNG
+entropy (`29f5cd8`).
