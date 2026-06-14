@@ -30,20 +30,28 @@ suites {
     test("search-aspiration-window-bounds", "Aspiration setup derives a bounded window from prior iteration score") {
       [IterDepth] = $02
       [IterScore] = $0a
+      ; Part A: IterScore is 16-bit. Prior score +10 = $000a.
+      [IterScoreHi] = $00
       [SearchAspirationAttempts] = $00
 
       jsr([SetupAspirationWindow], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte($e8) == $f6, "Aspiration alpha should be previous score minus window")
-      assert(peekbyte($e9) == $1e, "Aspiration beta should be previous score plus window")
+      ; alpha = 10 - 20 = -10 = $fff6 ; beta = 10 + 20 = 30 = $001e
+      assert(peekbyte($e8) == $f6, "Aspiration alpha lo should be previous score minus window")
+      assert(peekbyte($ed) == $ff, "Aspiration alpha hi should sign-extend -10")
+      assert(peekbyte($e9) == $1e, "Aspiration beta lo should be previous score plus window")
+      assert(peekbyte($ee) == $00, "Aspiration beta hi should be zero for +30")
       assert(peekbyte([SearchAspirationAttempts]) == $01, "Aspiration attempt counter should increment")
       assert(peekbyte([SearchAspirationActive]) == $01, "Aspiration should be marked active")
 
       [IterDepth] = $01
       jsr([SetupAspirationWindow], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte($e8) == $80, "Depth-one search should use full alpha")
-      assert(peekbyte($e9) == $7f, "Depth-one search should use full beta")
+      ; Full window is the 16-bit extremes: -infinity $8080, +infinity $7f7f.
+      assert(peekbyte($e8) == $80, "Depth-one search should use full alpha lo")
+      assert(peekbyte($ed) == $80, "Depth-one search should use full alpha hi")
+      assert(peekbyte($e9) == $7f, "Depth-one search should use full beta lo")
+      assert(peekbyte($ee) == $7f, "Depth-one search should use full beta hi")
       assert(peekbyte([SearchAspirationActive]) == $00, "Depth-one search should not use aspiration")
     }
 
@@ -61,7 +69,9 @@ suites {
       jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
 
       $e8 = $80
+      $ed = $80
       $e9 = $7f
+      $ee = $7f
       a = $04
       jsr([Negamax], stop_on_rts = true, fail_on_brk = true)
 
@@ -449,10 +459,12 @@ suites {
       [BestMoveFrom] = $72
       [BestMoveTo] = $73
       $eb = $20
+      $ec = $00
 
       jsr([ApplyRootAllowsMatePenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $80, "Move allowing Qe2 mate should be rejected")
+      assert(peekbyte($ec) == $80, "Move allowing Qe2 mate should be rejected (16-bit hi)")
       assert(peekbyte([BestMoveFrom]) == $72, "Mate probe should restore current best move from")
       assert(peekbyte([BestMoveTo]) == $73, "Mate probe should restore current best move to")
       assert(peekbyte([SearchDepth]) == $00, "Mate probe should restore search depth")
@@ -461,16 +473,19 @@ suites {
       [NegamaxState] + $03 = $51
       [NegamaxState] + $04 = $33
       $eb = $78
+      $ec = $00
 
       jsr([ApplyRootAllowsMatePenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $80, "Mate-score candidates still cannot allow mate in one")
+      assert(peekbyte($ec) == $80, "Mate-score candidates still cannot allow mate in one (16-bit hi)")
       assert(peekbyte([SearchDepth]) == $00, "Second mate probe should restore search depth")
       assert(peekbyte([SearchSide]) == $80, "Second mate probe should restore side to move")
 
       [NegamaxState] + $03 = $51
       [NegamaxState] + $04 = $15
       $eb = $20
+      $ec = $00
 
       jsr([ApplyRootAllowsMatePenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -671,16 +686,19 @@ suites {
       [NegamaxState] + $03 = $16
       [NegamaxState] + $04 = $07
       $eb = $20
+      $ec = $00
 
       jsr([ApplyRootAllowsMatePenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $80, "Kh8 should be rejected because Bh6 mates immediately")
+      assert(peekbyte($ec) == $80, "Kh8 should be rejected because Bh6 mates immediately (16-bit hi)")
       assert(peekbyte([SearchDepth]) == $00, "King-move mate probe should restore search depth")
       assert(peekbyte([SearchSide]) == $00, "King-move mate probe should restore side to move")
 
       [NegamaxState] + $03 = $16
       [NegamaxState] + $04 = $26
       $eb = $20
+      $ec = $00
 
       jsr([ApplyRootAllowsMatePenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -1492,7 +1510,9 @@ suites {
       jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
 
       $e8 = $80
+      $ed = $ff
       $e9 = $90
+      $ee = $ff
       jsr([Quiesce], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte([QInCheck] + $01) == $01, "Checked quiescence should enter full-evasion mode before any cutoff")
@@ -1974,6 +1994,7 @@ suites {
       [NegamaxState] + $03 = $73
       [NegamaxState] + $04 = $64
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootEarlyQueenPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -1983,6 +2004,7 @@ suites {
       [MoveListFrom] + $00 = $73
       [MoveListTo] + $00 = $64
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootEarlyQueenPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2003,6 +2025,7 @@ suites {
       [NegamaxState] + $03 = $73
       [NegamaxState] + $04 = $37
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootEarlyQueenPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2018,6 +2041,7 @@ suites {
       [NegamaxState] + $03 = $70
       [NegamaxState] + $04 = $60
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootEarlyRookPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2025,6 +2049,7 @@ suites {
 
       [Board88] + $71 = $b2
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootEarlyRookPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2044,6 +2069,7 @@ suites {
       [NegamaxState] + $03 = $52
       [NegamaxState] + $04 = $61
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootEarlyKingPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2059,6 +2085,7 @@ suites {
       [NegamaxState] + $03 = $74
       [NegamaxState] + $04 = $73
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootEarlyKingPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2079,14 +2106,17 @@ suites {
       [NegamaxState] + $03 = $70
       [NegamaxState] + $04 = $71
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootHangingQueenPenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $80, "White ignoring a rook attack on the queen should be rejected")
+      assert(peekbyte($ec) == $80, "White ignoring a rook attack on the queen should be rejected (16-bit hi)")
 
       [NegamaxState] + $03 = $44
       [NegamaxState] + $04 = $43
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootHangingQueenPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2105,6 +2135,7 @@ suites {
       [NegamaxState] + $03 = $43
       [NegamaxState] + $04 = $34
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootHangingQueenPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2123,6 +2154,7 @@ suites {
       [NegamaxState] + $03 = $25
       [NegamaxState] + $04 = $04
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootHangingQueenPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2141,14 +2173,17 @@ suites {
       [NegamaxState] + $03 = $01
       [NegamaxState] + $04 = $02
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootHangingQueenPenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $80, "Black ignoring a rook attack on the queen should be rejected")
+      assert(peekbyte($ec) == $80, "Black ignoring a rook attack on the queen should be rejected (16-bit hi)")
 
       [NegamaxState] + $03 = $34
       [NegamaxState] + $04 = $33
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootHangingQueenPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2167,10 +2202,12 @@ suites {
       [NegamaxState] + $03 = $73
       [NegamaxState] + $04 = $55
       $eb = $70
+      $ec = $00
 
       jsr([ApplyRootMajorSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $80, "Queen should not move to f3 while a black queen attacks f3")
+      assert(peekbyte($ec) == $80, "Queen should not move to f3 while a black queen attacks f3 (16-bit hi)")
 
       memfill([Board88], 128, $30)
       [Board88] + $75 = $b6
@@ -2183,6 +2220,7 @@ suites {
       [NegamaxState] + $03 = $55
       [NegamaxState] + $04 = $45
       $eb = $70
+      $ec = $00
 
       jsr([ApplyRootMajorSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2200,6 +2238,7 @@ suites {
       [NegamaxState] + $03 = $45
       [NegamaxState] + $04 = $44
       $eb = $70
+      $ec = $00
 
       jsr([ApplyRootMajorSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2316,10 +2355,12 @@ suites {
       [NegamaxState] + $03 = $46
       [NegamaxState] + $04 = $36
       $eb = $20
+      $ec = $00
 
       jsr([ApplyRootQueenDangerPawnPenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $80, "g4-g5 should be rejected while the queen is close to the white king")
+      assert(peekbyte($ec) == $80, "g4-g5 should be rejected while the queen is close to the white king (16-bit hi)")
 
       memfill([Board88], 128, $30)
       [Board88] + $62 = $b6
@@ -2334,6 +2375,7 @@ suites {
       [NegamaxState] + $03 = $64
       [NegamaxState] + $04 = $54
       $eb = $20
+      $ec = $00
 
       jsr([ApplyRootQueenDangerPawnPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2390,6 +2432,7 @@ suites {
       [NegamaxState] + $03 = $60
       [NegamaxState] + $04 = $50
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootLoosePiecePenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2398,6 +2441,7 @@ suites {
       [NegamaxState] + $03 = $44
       [NegamaxState] + $04 = $45
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootLoosePiecePenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2416,6 +2460,7 @@ suites {
       [NegamaxState] + $03 = $25
       [NegamaxState] + $04 = $17
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootLoosePiecePenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2435,6 +2480,7 @@ suites {
       [NegamaxState] + $03 = $60
       [NegamaxState] + $04 = $50
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootLoosePiecePenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2453,6 +2499,7 @@ suites {
       [NegamaxState] + $03 = $60
       [NegamaxState] + $04 = $50
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootLoosePiecePenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2461,6 +2508,7 @@ suites {
       [NegamaxState] + $03 = $44
       [NegamaxState] + $04 = $35
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootLoosePiecePenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2480,6 +2528,7 @@ suites {
       [NegamaxState] + $03 = $60
       [NegamaxState] + $04 = $50
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootLoosePiecePenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2499,6 +2548,7 @@ suites {
       [NegamaxState] + $03 = $76
       [NegamaxState] + $04 = $55
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootMissedOpeningCenterBreakPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2507,6 +2557,7 @@ suites {
       [NegamaxState] + $03 = $63
       [NegamaxState] + $04 = $43
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootMissedOpeningCenterBreakPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2527,6 +2578,7 @@ suites {
       [NegamaxState] + $03 = $73
       [NegamaxState] + $04 = $43
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootEarlyQueenRecapturePenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2535,6 +2587,7 @@ suites {
       [NegamaxState] + $03 = $54
       [NegamaxState] + $04 = $43
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootEarlyQueenRecapturePenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2554,6 +2607,7 @@ suites {
       [NegamaxState] + $03 = $62
       [NegamaxState] + $04 = $53
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootBlockedBishopRecapturePenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2562,6 +2616,7 @@ suites {
       [NegamaxState] + $03 = $75
       [NegamaxState] + $04 = $53
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootBlockedBishopRecapturePenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2579,6 +2634,7 @@ suites {
       [NegamaxState] + $03 = $12
       [NegamaxState] + $04 = $23
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootBlockedBishopRecapturePenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2641,6 +2697,7 @@ suites {
       [NegamaxState] + $03 = $63
       [NegamaxState] + $04 = $53
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootMissedAdvancedPawnPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2649,6 +2706,7 @@ suites {
       [NegamaxState] + $03 = $52
       [NegamaxState] + $04 = $44
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootMissedAdvancedPawnPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2666,6 +2724,7 @@ suites {
       [NegamaxState] + $03 = $75
       [NegamaxState] + $04 = $20
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootMissedAdvancedPawnPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2674,6 +2733,7 @@ suites {
       [NegamaxState] + $03 = $44
       [NegamaxState] + $04 = $35
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootMissedAdvancedPawnPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2686,6 +2746,7 @@ suites {
       [NegamaxState] + $03 = $75
       [NegamaxState] + $04 = $20
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootMissedAdvancedPawnPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2706,14 +2767,17 @@ suites {
       [NegamaxState] + $03 = $67
       [NegamaxState] + $04 = $57
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootQueenDangerPawnPenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $80, "A quiet h-pawn move should still be rejected under queen pressure")
+      assert(peekbyte($ec) == $80, "A quiet h-pawn move should still be rejected under queen pressure (16-bit hi)")
 
       [NegamaxState] + $03 = $63
       [NegamaxState] + $04 = $53
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootQueenDangerPawnPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2734,15 +2798,18 @@ suites {
       [NegamaxState] + $03 = $25
       [NegamaxState] + $04 = $65
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootQueenPawnRaidPenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $80, "Qxf2 should be rejected while the white queen is near the black king")
+      assert(peekbyte($ec) == $80, "Qxf2 should be rejected while the white queen is near the black king (16-bit hi)")
 
       [Board88] + $37 = $30
       [Board88] + $40 = $b5
       jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootQueenPawnRaidPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2761,13 +2828,16 @@ suites {
       [NegamaxState] + $03 = $44
       [NegamaxState] + $04 = $34
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootMajorSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $80, "A rook moving onto a bishop attack should be rejected")
+      assert(peekbyte($ec) == $80, "A rook moving onto a bishop attack should be rejected (16-bit hi)")
 
       [Board88] + $34 = $35
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootMajorSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
 
@@ -2775,10 +2845,12 @@ suites {
 
       [Board88] + $34 = $31
       $eb = $50
+      $ec = $00
 
       jsr([ApplyRootMajorSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $80, "A rook winning only a pawn while landing attacked should be rejected")
+      assert(peekbyte($ec) == $80, "A rook winning only a pawn while landing attacked should be rejected (16-bit hi)")
 
       memfill([Board88], 128, $30)
       [Board88] + $67 = $b6
@@ -2791,10 +2863,12 @@ suites {
       [NegamaxState] + $03 = $05
       [NegamaxState] + $04 = $15
       $eb = $70
+      $ec = $00
 
       jsr([ApplyRootMajorSafetyPenalty], stop_on_rts = true, fail_on_brk = true)
 
       assert(peekbyte($eb) == $80, "A high-scoring rook move onto a queen attack should still be rejected")
+      assert(peekbyte($ec) == $80, "A high-scoring rook move onto a queen attack should still be rejected (16-bit hi)")
     }
 
     test("null-move-probes-deep-safe-node", "Guarded null move can probe a deep safe node and restore state", timeout = 13000000) {
@@ -2846,6 +2920,11 @@ suites {
       [NegamaxState] + $0d = $04
       [NegamaxState] + $0e = $80
       [NegamaxState] + $0f = $9b
+      ; 16-bit (Part A): hi bytes sign-extend the 8-bit alpha/beta. alpha $80
+      ; and beta $9b are both negative, so their hi bytes are $ff. Index 1 =
+      ; SearchDepth 1.
+      [NegamaxAlphaHi] + $01 = $ff
+      [NegamaxBetaHi] + $01 = $ff
 
       jsr([TryNullMovePrune], stop_on_rts = true, fail_on_brk = true)
 
@@ -2867,6 +2946,9 @@ suites {
       [NegamaxState] + $0d = $03
       [NegamaxState] + $0e = $80
       [NegamaxState] + $0f = $9b
+      ; 16-bit: alpha $80 and beta $9b are negative -> hi $ff.
+      [NegamaxAlphaHi] + $01 = $ff
+      [NegamaxBetaHi] + $01 = $ff
 
       jsr([TryNullMovePrune], stop_on_rts = true, fail_on_brk = true)
 
@@ -2910,6 +2992,9 @@ suites {
       [NegamaxState] + $0d = $04
       [NegamaxState] + $0e = $80
       [NegamaxState] + $0f = $20
+      ; 16-bit (Part A): alpha $80 sign-extends to hi $ff; beta $20 (+32) hi $00.
+      [NegamaxAlphaHi] + $01 = $ff
+      [NegamaxBetaHi] + $01 = $00
 
       jsr([TryNullMovePrune], stop_on_rts = true, fail_on_brk = true)
 
@@ -2935,6 +3020,7 @@ suites {
       [SearchNullMoveEvalSkips] = $00
       [NegamaxState] + $0d = $04
       [NegamaxState] + $0f = $00
+      [NegamaxBetaHi] + $01 = $00
 
       jsr([TryNullMovePrune], stop_on_rts = true, fail_on_brk = true)
 
@@ -2969,6 +3055,7 @@ suites {
       [SearchNullMoveEvalSkips] = $00
       [NegamaxState] + $0d = $04
       [NegamaxState] + $0f = $00
+      [NegamaxBetaHi] + $01 = $00
 
       jsr([TryNullMovePrune], stop_on_rts = true, fail_on_brk = true)
 

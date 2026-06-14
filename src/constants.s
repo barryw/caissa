@@ -189,9 +189,25 @@ TIME_BEAST = 18000; 5 minutes
 ; AI Search Constants
 ;
 
-MATE_SCORE = 120; Score for checkmate (+120 = we win, -120 = we lose)
+; --- 16-bit signed score band (Part A) ---
+; Search carries full 16-bit signed scores. Eval is no longer clamped to a
+; narrow 8-bit window, so mate must sit far above the widest realistic static
+; eval magnitude (a few thousand engine units even with promotion swarms).
+; Mate is reported FLAT (no ply distance), preserving the prior +/-MATE_SCORE
+; semantics, just at 16-bit width.
+;
+; Score ABI: 16-bit two's complement. Lo byte in A, hi byte in $ec on return
+; from Evaluate / EvaluateLazy / Negamax / Quiesce. Score temp pair = $eb (lo)
+; / $ec (hi). Window pairs: alpha $e8/$ed, beta $e9/$ee, stand-pat $ea/$ef.
+MATE_SCORE = 30000; Score for checkmate (+ = we win, - = we lose), flat
 DRAW_SCORE = 0; Score for stalemate/draw
-NEG_INFINITY = $80; -128 as signed byte (worst possible)
+; 16-bit window extremes. NEG_INFINITY keeps its historical $80 LO byte so the
+; many `lda #NEG_INFINITY` / `cmp #NEG_INFINITY` low-byte sites stay valid; the
+; paired HI byte makes the full value $8000 (-32768).
+NEG_INFINITY = $80; LO of -32768 (worst possible)
+NEG_INFINITY_HI = $80; HI of -32768
+POS_INFINITY = $7f; LO of +32767 (best possible)
+POS_INFINITY_HI = $7f; HI of +32767
 MAX_DEPTH = 8; Maximum search depth
 MAX_KILLER_DEPTH = MAX_DEPTH; Maximum killer move storage depth
 

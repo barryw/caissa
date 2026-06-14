@@ -110,7 +110,9 @@ suites {
       [BlackPieceCount] = $02
 
       $e8 = $80
+      $ed = $80
       $e9 = $7f
+      $ee = $7f
       a = $01
       jsr([Negamax], stop_on_rts = true, fail_on_brk = true)
 
@@ -183,7 +185,9 @@ suites {
       [BlackPieceCount] = $04
 
       $e8 = $80
+      $ed = $80
       $e9 = $7f
+      $ee = $7f
       a = $05
       jsr([Negamax], stop_on_rts = true, fail_on_brk = true)
 

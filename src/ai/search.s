@@ -116,7 +116,12 @@ MaxDepthTable:
 
 ; Keep static evaluation below the mate score band. Mate is reported as
 ; exactly +/-MATE_SCORE, so non-terminal scores must never look like mate.
-STATIC_EVAL_LIMIT = MATE_SCORE - 11
+; Part A: with 16-bit scores the eval is no longer truncated to a narrow 8-bit
+; window; this limit only guards the (unreachable in practice) case where a
+; pathological promotion swarm pushes static eval toward the mate band. The
+; gap (MATE_SCORE - STATIC_EVAL_LIMIT = 1000) far exceeds any real eval, so no
+; realistic position is clamped.
+STATIC_EVAL_LIMIT = MATE_SCORE - 1000
 ROOT_MINOR_QUEEN_RAY_PENALTY = 90
 ROOT_MINOR_KNIGHT_DEST_PENALTY = 45
 ROOT_MINOR_ATTACKED_DEST_PENALTY = 80
@@ -3521,42 +3526,68 @@ LAZY_EVAL_MARGIN = 24
 EvaluateLazy:
   lda #$01
   sta EvalLazyStage
-  jsr Evaluate
+  jsr Evaluate; 16-bit stage-one score (lo A / hi $ec)
   ldx #$00
   stx EvalLazyStage
-  sta $f6; stage-one score
+  sta $f6; stage-one score lo
+  lda $ec
+  sta $f7; stage-one score hi
 
-; Fail-high check: stage1 >= beta + margin?
-  lda $e9
+; Fail-high check: stage1 >= beta + margin? (16-bit)
+  lda $e9; beta lo
   clc
-  adc #LAZY_EVAL_MARGIN
+  adc #<LAZY_EVAL_MARGIN
+  sta $f8
+  lda $ee; beta hi
+  adc #>LAZY_EVAL_MARGIN
+  sta $f9
   bvc __ai_search_lazy_hi_bound_ok_0
-  lda #$7f
+  lda #POS_INFINITY
+  sta $f8
+  lda #POS_INFINITY_HI
+  sta $f9
 __ai_search_lazy_hi_bound_ok_0:
-  sta $f7
+; stage1 - (beta+margin); >= 0 -> return stage1.
   lda $f6
   sec
-  sbc $f7
+  sbc $f8
+  lda $f7
+  sbc $f9
   bvc __ai_search_lazy_hi_cmp_ok_0
   eor #$80
 __ai_search_lazy_hi_cmp_ok_0:
   bmi __ai_search_lazy_not_high_0
+  lda $f7
+  sta $ec
   lda $f6
   rts
 
 __ai_search_lazy_not_high_0:
-; Fail-low check: stage1 <= alpha - margin?
-  lda $e8
+; Fail-low check: stage1 <= alpha - margin? (16-bit)
+  lda $e8; alpha lo
   sec
-  sbc #LAZY_EVAL_MARGIN
+  sbc #<LAZY_EVAL_MARGIN
+  sta $f8
+  lda $ed; alpha hi
+  sbc #>LAZY_EVAL_MARGIN
+  sta $f9
   bvc __ai_search_lazy_lo_bound_ok_0
-  lda #$80
+  lda #NEG_INFINITY
+  sta $f8
+  lda #NEG_INFINITY_HI
+  sta $f9
 __ai_search_lazy_lo_bound_ok_0:
-  sta $f7
+; stage1 - (alpha-margin); <= 0 -> return stage1 (low), else full eval.
   lda $f6
   sec
-  sbc $f7
-  beq __ai_search_lazy_low_0
+  sbc $f8
+  sta $fa
+  lda $f7
+  sbc $f9
+  sta $fb
+  ora $fa
+  beq __ai_search_lazy_low_0; equal -> low
+  lda $fb
   bvc __ai_search_lazy_lo_cmp_ok_0
   eor #$80
 __ai_search_lazy_lo_cmp_ok_0:
@@ -3565,97 +3596,175 @@ __ai_search_lazy_lo_cmp_ok_0:
   jmp Evaluate
 
 __ai_search_lazy_low_0:
+  lda $f7
+  sta $ec
   lda $f6
   rts
 
 Evaluate:
   jsr EvaluatePosition
 
-; EvalScore is 16-bit, positive = white advantage
-; Convert to 8-bit from perspective of SearchSide
-
-; First clamp to 8-bit range
-; If high byte is $00, low byte is positive (0-255)
-; If high byte is $FF, low byte is negative (-1 to -256 as signed)
-; Otherwise overflow - clamp to max/min
-
-  lda EvalScore + 1; High byte
-  beq __ai_search_positive_0
-  cmp #$FF
-  beq __ai_search_negative_0
-
-; Overflow - determine direction and clamp
-  bmi __ai_search_clamp_neg_0
-  lda #STATIC_EVAL_LIMIT
-  jmp __ai_search_apply_side_0
-__ai_search_clamp_neg_0:
-  lda #<-STATIC_EVAL_LIMIT
-  jmp __ai_search_apply_side_0
-
-__ai_search_positive_0:
-; High byte is 0, check if low byte fits in signed positive
+; EvalScore is 16-bit, positive = white advantage. Part A returns the FULL
+; 16-bit score (lo in A, hi in $ec) from SearchSide's perspective, clamped only
+; to +/-STATIC_EVAL_LIMIT so it can never masquerade as a mate score.
+;
+; Clamp white-perspective EvalScore to [-STATIC_EVAL_LIMIT, +STATIC_EVAL_LIMIT].
+; high vs upper limit: EvalScore - STATIC_EVAL_LIMIT > 0 -> clamp to +limit.
   lda EvalScore
-  cmp #STATIC_EVAL_LIMIT + 1
-  bcc __ai_search_apply_side_0; Within static eval range
-  lda #STATIC_EVAL_LIMIT
+  sec
+  sbc #<STATIC_EVAL_LIMIT
+  lda EvalScore + 1
+  sbc #>STATIC_EVAL_LIMIT
+  bvc __ai_search_eval_hi_no_ov_0
+  eor #$80
+__ai_search_eval_hi_no_ov_0:
+  bmi __ai_search_eval_check_low_0; EvalScore < limit, check floor
+  beq __ai_search_eval_check_low_0; equal (EvalScore==limit) is in range
+; EvalScore > +limit -> clamp to +STATIC_EVAL_LIMIT
+  lda #<STATIC_EVAL_LIMIT
+  sta EvalScore
+  lda #>STATIC_EVAL_LIMIT
+  sta EvalScore + 1
   jmp __ai_search_apply_side_0
 
-__ai_search_negative_0:
-; High byte is $FF, low byte is negative
+__ai_search_eval_check_low_0:
+; EvalScore - (-STATIC_EVAL_LIMIT) < 0 -> clamp to -limit.
   lda EvalScore
-  cmp #<-STATIC_EVAL_LIMIT
-  bcs __ai_search_apply_side_0; >= static eval floor (as signed), fits
+  sec
+  sbc #<-STATIC_EVAL_LIMIT
+  lda EvalScore + 1
+  sbc #>-STATIC_EVAL_LIMIT
+  bvc __ai_search_eval_lo_no_ov_0
+  eor #$80
+__ai_search_eval_lo_no_ov_0:
+  bpl __ai_search_apply_side_0; EvalScore >= -limit, in range
+; EvalScore < -limit -> clamp to -STATIC_EVAL_LIMIT
   lda #<-STATIC_EVAL_LIMIT
+  sta EvalScore
+  lda #>-STATIC_EVAL_LIMIT
+  sta EvalScore + 1
 
 __ai_search_apply_side_0:
-; Now A has 8-bit score from white's perspective
-; If SearchSide is black ($00), negate the score
+; EvalScore is the clamped 16-bit white-perspective score.
+; If SearchSide is black ($00), negate to that side's perspective.
   ldx SearchSide
-  bne __ai_search_done_eval_0; White = $80, non-zero, keep as-is
+  bne __ai_search_eval_white_0; White = $80, keep as-is
 
-; Black to move - negate score
-  eor #$FF
-  clc
-  adc #$01
+; Black to move - 16-bit two's-complement negate.
+  sec
+  lda #$00
+  sbc EvalScore
+  sta EvalScore
+  lda #$00
+  sbc EvalScore + 1
+  sta EvalScore + 1
 
-__ai_search_done_eval_0:
+__ai_search_eval_white_0:
+  lda EvalScore + 1
+  sta $ec; hi byte of returned score
+  lda EvalScore; lo byte in A
   rts
 
 ;
-; NEGATE_SCORE_A - inline form of NegateSearchScore for hot paths.
-; Identical arithmetic; saves the jsr/rts overhead (12 cycles per use).
+; NEGATE_SCORE_A - inline 16-bit two's-complement negate for hot paths.
+; Part A: the search score is 16-bit (lo in A, hi in $ec). Negates the pair in
+; place, saturating -(-32768) to +32767 so the window extremes stay symmetric.
+; Input/Output: A = lo, $ec = hi. Clobbers: A, $ec, flags.
 ;
 .macro NEGATE_SCORE_A
   .local notmin
+  .local notmin_pull
   .local done
-  cmp #$80
+; Detect the NEG_INFINITY pair ($80 lo / $80 hi) and saturate to POS_INFINITY
+; ($7f / $7f) so the window extremes stay symmetric. X-safe: never touches X.
+  cmp #NEG_INFINITY
   bne notmin
-  lda #$7f
-  bne done; always taken ($7f is nonzero)
+  pha
+  lda $ec
+  cmp #NEG_INFINITY_HI
+  bne notmin_pull
+  pla; discard saved lo
+  lda #POS_INFINITY_HI
+  sta $ec
+  lda #POS_INFINITY
+  jmp done
+notmin_pull:
+  pla; restore lo
 notmin:
+; 16-bit negate: 0 - value.
   eor #$ff
   clc
   adc #$01
+  pha
+  lda $ec
+  eor #$ff
+  adc #$00
+  sta $ec
+  pla
 done:
 .endmacro
 
 ;
-; NegateSearchScore
-; Two's-complement negation with saturation for $80 (-128), which cannot be
-; represented as +128 in an 8-bit signed score. Search windows use $7f as the
-; positive bound, so clamp -(-128) to $7f.
-; Input/Output: A = signed score
-; Clobbers: flags only
+; PENALTY16 - subtract an immediate unsigned penalty from the 16-bit root score
+; pair $eb/$ec, clamping signed underflow to the NEG_INFINITY pair. Mirrors the
+; old 8-bit `lda $eb / sec / sbc #amt / bvc ok / lda #NEG_INFINITY / sta $eb`.
+;
+.macro PENALTY16 amt
+  .local ok
+  lda $eb
+  sec
+  sbc #amt
+  sta $eb
+  lda $ec
+  sbc #$00
+  sta $ec
+  bvc ok
+  lda #NEG_INFINITY
+  sta $eb
+  lda #NEG_INFINITY_HI
+  sta $ec
+ok:
+.endmacro
+
+;
+; SET_NEG_INF16 - set the 16-bit root score pair $eb/$ec to NEG_INFINITY.
+;
+.macro SET_NEG_INF16
+  lda #NEG_INFINITY
+  sta $eb
+  lda #NEG_INFINITY_HI
+  sta $ec
+.endmacro
+
+;
+; NegateSearchScore - 16-bit two's-complement negate (subroutine form).
+; Input/Output: A = lo, $ec = hi. Saturates the NEG_INFINITY pair to
+; POS_INFINITY. X-safe: does not clobber X.
 ;
 NegateSearchScore:
-  cmp #$80
+  cmp #NEG_INFINITY
   bne __ai_search_normal_negate_0
-  lda #$7f
+  pha
+  lda $ec
+  cmp #NEG_INFINITY_HI
+  bne __ai_search_negate_pull_0
+  pla
+  lda #POS_INFINITY_HI
+  sta $ec
+  lda #POS_INFINITY
   rts
+__ai_search_negate_pull_0:
+  pla
 __ai_search_normal_negate_0:
   eor #$ff
   clc
   adc #$01
+  pha
+  lda $ec
+  eor #$ff
+  adc #$00
+  sta $ec
+  pla
   rts
 
 ;
@@ -3696,36 +3805,44 @@ __ai_search_null_skip_0:
 __ai_search_null_try_0:
 ; Low beta windows are already cheap fail-high candidates. Only pay for the
 ; static eval gate when beta is positive enough that a weak position matters.
+; beta <= 0 (hi negative, or both bytes zero) -> skip the gate, pass straight.
   lda SearchDepth
   asl
   asl
   asl
   tax
-  lda NegamaxState + 7, x
-  beq __ai_search_null_eval_pass_0
-  bmi __ai_search_null_eval_pass_0
+  ldy SearchDepth
+  lda NegamaxBetaHi, y; beta hi
+  bmi __ai_search_null_eval_pass_0; beta < 0
+  bne __ai_search_null_beta_positive_0; beta hi > 0 -> beta > 0
+  lda NegamaxState + 7, x; beta hi == 0, check lo
+  beq __ai_search_null_eval_pass_0; beta == 0
+__ai_search_null_beta_positive_0:
 
-  jsr Evaluate
+  jsr Evaluate; 16-bit static eval (lo A / hi $ec)
   clc
-  adc #NULL_MOVE_EVAL_MARGIN
-  bvc __ai_search_null_eval_ready_0
-  lda #$7f
-__ai_search_null_eval_ready_0:
+  adc #<NULL_MOVE_EVAL_MARGIN
   sta NullStaticEval
+  lda $ec
+  adc #>NULL_MOVE_EVAL_MARGIN
+  sta NullStaticEvalHi
 
   lda SearchDepth
   asl
   asl
   asl
   tax
+  ldy SearchDepth
+; (NullStaticEval - beta) >= 0 -> proceed with null move (eval already strong).
   lda NullStaticEval
   sec
   sbc NegamaxState + 7, x
-  beq __ai_search_null_eval_pass_0
+  lda NullStaticEvalHi
+  sbc NegamaxBetaHi, y
   bvc __ai_search_null_eval_cmp_no_ov_0
   eor #$80
 __ai_search_null_eval_cmp_no_ov_0:
-  bpl __ai_search_null_eval_pass_0
+  bpl __ai_search_null_eval_pass_0; NullStaticEval >= beta
 
   inc SearchNullMoveEvalSkips
   clc
@@ -3764,15 +3881,30 @@ __ai_search_null_eval_pass_0:
   asl
   asl
   tax
-  lda NegamaxState + 7, x
+  ldy SearchDepth
+  dey; parent index for hi arrays
+; child alpha = -beta (16-bit)
+  lda NegamaxBetaHi, y
+  sta $ec
+  lda NegamaxState + 7, x; beta lo
   NEGATE_SCORE_A
   sta $e8
+  lda $ec
+  sta $ed
+; child beta = -beta + 1 = (child alpha) + 1 (16-bit), clamp overflow to +inf
+  lda $e8
   clc
   adc #$01
-  bvc __ai_search_null_beta_ready_0
-  lda #$7f
-__ai_search_null_beta_ready_0:
   sta $e9
+  lda $ed
+  adc #$00
+  sta $ee
+  bvc __ai_search_null_beta_ready_0
+  lda #POS_INFINITY
+  sta $e9
+  lda #POS_INFINITY_HI
+  sta $ee
+__ai_search_null_beta_ready_0:
 
   lda NegamaxState + 5, x
   sec
@@ -3783,6 +3915,8 @@ __ai_search_null_child_depth_ready_0:
   jsr Negamax
   NEGATE_SCORE_A
   sta NullMoveScore
+  lda $ec
+  sta NullMoveScoreHi
 
   lda SearchSide
   eor #WHITE_COLOR
@@ -3800,10 +3934,13 @@ __ai_search_null_child_depth_ready_0:
   asl
   asl
   tax
+  ldy SearchDepth
+; (NullMoveScore - beta) >= 0 -> cutoff.
   lda NullMoveScore
   sec
   sbc NegamaxState + 7, x
-  beq __ai_search_null_cutoff_0
+  lda NullMoveScoreHi
+  sbc NegamaxBetaHi, y
   bvc __ai_search_null_cmp_no_ov_0
   eor #$80
 __ai_search_null_cmp_no_ov_0:
@@ -3811,6 +3948,9 @@ __ai_search_null_cmp_no_ov_0:
 
 __ai_search_null_cutoff_0:
   inc SearchNullMoveCutoffs
+  ldy SearchDepth
+  lda NegamaxBetaHi, y
+  sta $ec
   lda NegamaxState + 7, x
   sec
   rts
@@ -3851,8 +3991,12 @@ __ai_search_quiesce_continue_0:
   ldx QuiesceDepth
   lda $e8
   sta QAlpha, x
+  lda $ed
+  sta QAlphaHi, x
   lda $e9
   sta QBeta, x
+  lda $ee
+  sta QBetaHi, x
   lda #$01
   sta QInCheck, x
 
@@ -3863,48 +4007,68 @@ __ai_search_quiesce_continue_0:
 
 __ai_search_q_no_checked_evasions_0:
   dec QuiesceDepth
+  lda #>-MATE_SCORE
+  sta $ec
   lda #<-MATE_SCORE
   rts
 
 __ai_search_q_not_in_check_0:
 ; Stand pat: evaluate current position
 ; If this position is already good enough, we don't need to search captures
-  jsr EvaluateLazy
-  sta $ea; $ea = stand_pat score
+  jsr EvaluateLazy; 16-bit stand_pat (lo A / hi $ec)
+  sta $ea; stand_pat lo
+  lda $ec
+  sta $ef; stand_pat hi
 
-; Beta cutoff: if stand_pat >= beta, return beta
-; This means the position is already so good we won't improve
+; Beta cutoff: if stand_pat >= beta, return beta (16-bit: stand_pat - beta >= 0)
+  lda $ea
   sec
-  sbc $e9; stand_pat - beta
+  sbc $e9; stand_pat lo - beta lo
+  lda $ef
+  sbc $ee; stand_pat hi - beta hi
   bvc __ai_search_q_no_ov1_0
   eor #$80; Overflow correction for signed compare
 __ai_search_q_no_ov1_0:
   bmi __ai_search_q_no_beta_cut_0
 ; stand_pat >= beta, return beta
   dec QuiesceDepth
+  lda $ee
+  sta $ec
   lda $e9
   rts
 
 __ai_search_q_no_beta_cut_0:
-; Update alpha if stand_pat > alpha
-  lda $ea; stand_pat
+; Update alpha if stand_pat > alpha (16-bit: stand_pat - alpha > 0)
+  lda $ea; stand_pat lo
   sec
-  sbc $e8; stand_pat - alpha
-  beq __ai_search_q_alpha_ok_0; Equal before overflow correction
+  sbc $e8; - alpha lo
+  sta $f0
+  lda $ef; stand_pat hi
+  sbc $ed; - alpha hi
+  sta $f1
+  ora $f0
+  beq __ai_search_q_alpha_ok_0; equal -> no update
+  lda $f1
   bvc __ai_search_q_no_ov2_0
   eor #$80
 __ai_search_q_no_ov2_0:
   bmi __ai_search_q_alpha_ok_0
   lda $ea
-  sta $e8; alpha = stand_pat
+  sta $e8; alpha = stand_pat lo
+  lda $ef
+  sta $ed; alpha = stand_pat hi
 
 __ai_search_q_alpha_ok_0:
 ; Save alpha/beta to quiescence state area
   ldx QuiesceDepth
   lda $e8
   sta QAlpha, x
+  lda $ed
+  sta QAlphaHi, x
   lda $e9
   sta QBeta, x
+  lda $ee
+  sta QBetaHi, x
   lda #$00
   sta QInCheck, x
 
@@ -3939,6 +4103,8 @@ __ai_search_q_no_pseudo_caps_0:
 __ai_search_q_no_evasions_0:
 
   dec QuiesceDepth
+  lda #>-MATE_SCORE
+  sta $ec
   lda #<-MATE_SCORE
   rts
 
@@ -3967,6 +4133,8 @@ __ai_search_q_return_quiet_alpha_0:
 __ai_search_q_return_quiet_now_0:
   ldx QuiesceDepth
   dec QuiesceDepth
+  lda QAlphaHi, x
+  sta $ec
   lda QAlpha, x
   rts
 
@@ -4090,23 +4258,33 @@ __ai_search_q_search_move_0:
   lda QFrom, y
   jsr MakeMove
 
-; Recurse: -Quiesce(-beta, -alpha)
+; Recurse: -Quiesce(-beta, -alpha) (16-bit windows)
   ldx QuiesceDepth
+  lda QBetaHi, x
+  sta $ec
   lda QBeta, x
   NEGATE_SCORE_A
-  sta $e8; child alpha = -beta
+  sta $e8; child alpha lo = -beta
+  lda $ec
+  sta $ed; child alpha hi
 
   ldx QuiesceDepth
+  lda QAlphaHi, x
+  sta $ec
   lda QAlpha, x
   NEGATE_SCORE_A
-  sta $e9; child beta = -alpha
+  sta $e9; child beta lo = -alpha
+  lda $ec
+  sta $ee; child beta hi
 
   jsr Quiesce
 
-; Negate score
+; Negate score (lo A / hi $ec)
   NEGATE_SCORE_A
   ldx QuiesceDepth
-  sta QScore, x; QScore = -child_score
+  sta QScore, x; QScore lo = -child_score
+  lda $ec
+  sta QScoreHi, x; QScore hi
 
 ; Unmake move
   ldy QuiesceDepth
@@ -4114,11 +4292,13 @@ __ai_search_q_search_move_0:
   lda QFrom, y
   jsr UnmakeMove
 
-; Beta cutoff?
+; Beta cutoff? (16-bit: QScore - QBeta >= 0)
   ldx QuiesceDepth
   lda QScore, x
   sec
-  sbc QBeta, x; score - beta
+  sbc QBeta, x; lo
+  lda QScoreHi, x
+  sbc QBetaHi, x; hi
   bvc __ai_search_q_no_ov3_0
   eor #$80
 __ai_search_q_no_ov3_0:
@@ -4126,23 +4306,33 @@ __ai_search_q_no_ov3_0:
 ; score >= beta, return beta
   ldx QuiesceDepth
   dec QuiesceDepth
+  lda QBetaHi, x
+  sta $ec
   lda QBeta, x
   rts
 
 __ai_search_q_no_cut_0:
-; Update alpha if score > alpha
+; Update alpha if score > alpha (16-bit: QScore - QAlpha > 0)
   ldx QuiesceDepth
   lda QScore, x
   sec
-  sbc QAlpha, x; score - alpha
-  beq __ai_search_q_next_cap_0; Equal before overflow correction
+  sbc QAlpha, x; lo
+  sta $f0
+  lda QScoreHi, x
+  sbc QAlphaHi, x; hi
+  sta $f1
+  ora $f0
+  beq __ai_search_q_next_cap_0; equal -> no update
+  lda $f1
   bvc __ai_search_q_no_ov4_0
   eor #$80
 __ai_search_q_no_ov4_0:
   bmi __ai_search_q_next_cap_0
   ldx QuiesceDepth
   lda QScore, x
-  sta QAlpha, x; alpha = score
+  sta QAlpha, x; alpha = score lo
+  lda QScoreHi, x
+  sta QAlphaHi, x; alpha = score hi
 
 __ai_search_q_next_cap_0:
 ; Child quiescence clobbered the shared move list, so rebuild it before the
@@ -4181,6 +4371,8 @@ __ai_search_q_regen_done_0:
 __ai_search_q_return_alpha_0:
   ldx QuiesceDepth
   dec QuiesceDepth
+  lda QAlphaHi, x
+  sta $ec
   lda QAlpha, x
   rts
 
@@ -4189,10 +4381,13 @@ __ai_search_q_return_alpha_0:
 .segment "BSS"
 
 QAlpha:   .res MAX_QUIESCE_DEPTH
+QAlphaHi: .res MAX_QUIESCE_DEPTH
 QBeta:    .res MAX_QUIESCE_DEPTH
+QBetaHi:  .res MAX_QUIESCE_DEPTH
 QFrom:    .res MAX_QUIESCE_DEPTH
 QTo:      .res MAX_QUIESCE_DEPTH
 QScore:   .res MAX_QUIESCE_DEPTH
+QScoreHi: .res MAX_QUIESCE_DEPTH
 QMoveIdx: .res MAX_QUIESCE_DEPTH
 QInCheck: .res MAX_QUIESCE_DEPTH
 ; Per-depth saved move lists. Regenerating + refiltering the shared move list
@@ -4279,16 +4474,14 @@ StoreTTCurrentNode:
   asl
   tax
 
+; Part A: best score is a real 16-bit value (lo in NegamaxState+1, hi in
+; NegamaxBestHi). Store both bytes; the prior sign-extend-of-8-bit hack is gone.
   lda NegamaxState + 1, x
   sta TTScoreLo
-  lda #$00
-  sta TTScoreHi
-  lda NegamaxState + 1, x
-  bpl __ai_search_score_done_0
-  lda #$ff
+  ldy SearchDepth
+  lda NegamaxBestHi, y
   sta TTScoreHi
 
-__ai_search_score_done_0:
   ldy SearchDepth
   lda NegamaxBestFrom, y
   sta TTStoreFrom
@@ -4387,10 +4580,16 @@ ApplyRootPawnSafetyPenalty:
   lda $eb
   sec
   sbc PawnAttackPenalty, y
+  sta $eb
+  lda $ec
+  sbc #$00
+  sta $ec
   bvc __ai_search_store_score_0
   lda #NEG_INFINITY
-__ai_search_store_score_0:
   sta $eb
+  lda #NEG_INFINITY_HI
+  sta $ec
+__ai_search_store_score_0:
 
 __ai_search_done_1:
   rts
@@ -4506,8 +4705,7 @@ ApplyRootMajorSafetyPenalty:
   jsr RootAttackedQueenMaterialCapture
   bcs __ai_search_done_2
 
-  lda #NEG_INFINITY
-  sta $eb
+  SET_NEG_INF16
 
 __ai_search_done_2:
   rts
@@ -4632,8 +4830,7 @@ __ai_search_check_quiet_pawn_queen_attack_1:
   jsr IsCurrentSideInCheck
   bcs __ai_search_queen_danger_pawn_done_0
 
-  lda #NEG_INFINITY
-  sta $eb
+  SET_NEG_INF16
 
 __ai_search_queen_danger_pawn_done_0:
   rts
@@ -4669,8 +4866,7 @@ ApplyRootQueenPawnRaidPenalty:
   jsr RootEnemyQueenNearKing
   bcc __ai_search_queen_raid_done_0
 
-  lda #NEG_INFINITY
-  sta $eb
+  SET_NEG_INF16
 
 __ai_search_queen_raid_done_0:
   rts
@@ -4706,35 +4902,30 @@ __ai_search_check_root_fallback_0:
 
   lda #$00
   sta $eb
+  sta $ec; 16-bit score temp (lo/hi)
   jsr ApplyRootMajorSafetyPenalty
-  lda $eb
-  cmp #NEG_INFINITY
+  jsr __ai_search_fallback_is_neg_inf_0
   beq __ai_search_next_root_fallback_0
 
   jsr ApplyRootHangingQueenPenalty
-  lda $eb
-  cmp #NEG_INFINITY
+  jsr __ai_search_fallback_is_neg_inf_0
   beq __ai_search_next_root_fallback_0
 
   jsr ApplyRootQueenDangerPawnPenalty
-  lda $eb
-  cmp #NEG_INFINITY
+  jsr __ai_search_fallback_is_neg_inf_0
   beq __ai_search_next_root_fallback_0
 
   jsr ApplyRootBlockedBishopRecapturePenalty
-  lda $eb
-  cmp #NEG_INFINITY
+  jsr __ai_search_fallback_is_neg_inf_0
   beq __ai_search_next_root_fallback_0
 
   jsr ApplyRootExposedKingFlankPawnPenalty
-  lda $eb
-  cmp #NEG_INFINITY
+  jsr __ai_search_fallback_is_neg_inf_0
   beq __ai_search_next_root_fallback_0
 
   jsr ApplyRootAllowsMatePenalty
   jsr RestoreMoveListForDepth
-  lda $eb
-  cmp #NEG_INFINITY
+  jsr __ai_search_fallback_is_neg_inf_0
   bne __ai_search_accept_root_fallback_0
 
 __ai_search_next_root_fallback_0:
@@ -4750,6 +4941,20 @@ __ai_search_accept_root_fallback_0:
   rts
 
 ;
+; __ai_search_fallback_is_neg_inf_0
+; Returns Z=1 iff the 16-bit score temp ($eb lo / $ec hi) equals the
+; NEG_INFINITY pair ($8000). Clobbers A.
+;
+__ai_search_fallback_is_neg_inf_0:
+  lda $eb
+  cmp #NEG_INFINITY
+  bne __ai_search_fallback_not_inf_0
+  lda $ec
+  cmp #NEG_INFINITY_HI
+__ai_search_fallback_not_inf_0:
+  rts
+
+;
 ; ApplyRootMinorSafetyPenalty
 ; Penalize root minor-piece moves that land on cheap tactical attacks. This is
 ; deliberately narrow: quiet moves and pawn grabs by knights/bishops should
@@ -4762,14 +4967,16 @@ ApplyRootMinorSafetyPenalty:
   ldx NegamaxState + 3; Root move from square
   lda Board88, x
   cmp #EMPTY_PIECE
-  beq __ai_search_done_3
+  beq __ai_search_minor_done_tramp_0
   sta $f3
   and #$07
   sta $f2
   cmp #KNIGHT_TYPE
   beq __ai_search_minor_piece_0
   cmp #BISHOP_TYPE
-  bne __ai_search_done_3
+  beq __ai_search_minor_piece_0
+__ai_search_minor_done_tramp_0:
+  jmp __ai_search_done_3
 
 __ai_search_minor_piece_0:
   lda $f3
@@ -4793,26 +5000,14 @@ __ai_search_check_attacks_0:
   jsr IsPieceQueenAttacked
   bcc __ai_search_check_knight_attack_0
 
-  lda $eb
-  sec
-  sbc #ROOT_MINOR_QUEEN_RAY_PENALTY
-  bvc __ai_search_store_queen_score_0
-  lda #NEG_INFINITY
-__ai_search_store_queen_score_0:
-  sta $eb
+  PENALTY16 ROOT_MINOR_QUEEN_RAY_PENALTY
   rts
 
 __ai_search_check_knight_attack_0:
   jsr IsPieceKnightAttacked
   bcc __ai_search_check_attacked_dest_0
 
-  lda $eb
-  sec
-  sbc #ROOT_MINOR_KNIGHT_DEST_PENALTY
-  bvc __ai_search_store_knight_score_0
-  lda #NEG_INFINITY
-__ai_search_store_knight_score_0:
-  sta $eb
+  PENALTY16 ROOT_MINOR_KNIGHT_DEST_PENALTY
   rts
 
 __ai_search_check_attacked_dest_0:
@@ -4829,13 +5024,7 @@ __ai_search_attack_color_set_1:
   jsr IsSquareAttacked
   bcc __ai_search_done_3
 
-  lda $eb
-  sec
-  sbc #ROOT_MINOR_ATTACKED_DEST_PENALTY
-  bvc __ai_search_store_attacked_dest_score_0
-  lda #NEG_INFINITY
-__ai_search_store_attacked_dest_score_0:
-  sta $eb
+  PENALTY16 ROOT_MINOR_ATTACKED_DEST_PENALTY
 
 __ai_search_done_3:
   rts
@@ -5019,8 +5208,7 @@ __ai_search_queen_attack_color_set_0:
   jsr RootMoveResolvesPieceAttack
   bcs __ai_search_done_4
 
-  lda #NEG_INFINITY
-  sta $eb
+  SET_NEG_INF16
   rts
 
 __ai_search_next_square_0:
@@ -5158,9 +5346,10 @@ __ai_search_repeat_side_ready_0:
 
 ;
 ; ApplyRootPenaltyAmount
-; Subtract A from $eb and clamp underflow to NEG_INFINITY.
-; Input: A = unsigned penalty amount
-; Input/Output: $eb = signed root score
+; Subtract A (unsigned penalty) from the 16-bit root score $eb/$ec and clamp
+; signed underflow to the NEG_INFINITY pair ($8080).
+; Input: A = unsigned penalty amount (high byte assumed 0)
+; Input/Output: $eb/$ec = signed root score (lo/hi)
 ; Clobbers: A, $f0
 ;
 ApplyRootPenaltyAmount:
@@ -5168,10 +5357,16 @@ ApplyRootPenaltyAmount:
   lda $eb
   sec
   sbc $f0
+  sta $eb
+  lda $ec
+  sbc #$00
+  sta $ec
   bvc __ai_search_penalty_store_0
   lda #NEG_INFINITY
-__ai_search_penalty_store_0:
   sta $eb
+  lda #NEG_INFINITY_HI
+  sta $ec
+__ai_search_penalty_store_0:
   rts
 
 ;
@@ -5489,8 +5684,7 @@ __ai_search_probe_candidate_mate_0:
   rts
 
 __ai_search_allows_mate_0:
-  lda #NEG_INFINITY
-  sta $eb
+  SET_NEG_INF16
   rts
 
 ;
@@ -5552,13 +5746,7 @@ __ai_search_scan_loop_1:
   jsr RootMoveCapturesPawnAttacker
   bcs __ai_search_done_5
 
-  lda $eb
-  sec
-  sbc #ROOT_HANGING_MINOR_PENALTY
-  bvc __ai_search_store_score_3
-  lda #NEG_INFINITY
-__ai_search_store_score_3:
-  sta $eb
+  PENALTY16 ROOT_HANGING_MINOR_PENALTY
   rts
 
 __ai_search_next_square_1:
@@ -5663,13 +5851,7 @@ __ai_search_rook_own_color_set_0:
   jsr RootMoveResolvesPieceAttack
   bcs __ai_search_done_14
 
-  lda $eb
-  sec
-  sbc #ROOT_HANGING_MINOR_PENALTY
-  bvc __ai_search_store_rook_score_0
-  lda #NEG_INFINITY
-__ai_search_store_rook_score_0:
-  sta $eb
+  PENALTY16 ROOT_HANGING_MINOR_PENALTY
   rts
 
 __ai_search_rook_next_square_1:
@@ -5803,13 +5985,7 @@ __ai_search_penalize_0:
   bcs __ai_search_done_6
 
 __ai_search_apply_penalty_0:
-  lda $eb
-  sec
-  sbc #ROOT_MISSED_PAWN_WIN_PENALTY
-  bvc __ai_search_store_score_4
-  lda #NEG_INFINITY
-__ai_search_store_score_4:
-  sta $eb
+  PENALTY16 ROOT_MISSED_PAWN_WIN_PENALTY
   rts
 
 __ai_search_next_square_2:
@@ -6267,13 +6443,7 @@ __ai_search_attack_color_set_2:
   jsr SideHasHomeMinor
   bcc __ai_search_done_7
 
-  lda $eb
-  sec
-  sbc #ROOT_EARLY_QUEEN_MOVE_PENALTY
-  bvc __ai_search_store_score_5
-  lda #NEG_INFINITY
-__ai_search_store_score_5:
-  sta $eb
+  PENALTY16 ROOT_EARLY_QUEEN_MOVE_PENALTY
 
 __ai_search_done_7:
   rts
@@ -6311,13 +6481,7 @@ ApplyRootEarlyKingPenalty:
   jsr RootEnemyQueenPressuresKing
   bcs __ai_search_done_8
 
-  lda $eb
-  sec
-  sbc #ROOT_EARLY_KING_MOVE_PENALTY
-  bvc __ai_search_store_score_6
-  lda #NEG_INFINITY
-__ai_search_store_score_6:
-  sta $eb
+  PENALTY16 ROOT_EARLY_KING_MOVE_PENALTY
 
 __ai_search_done_8:
   rts
@@ -6488,13 +6652,7 @@ ApplyRootEarlyRookPenalty:
   bcc __ai_search_done_9
 
 __ai_search_penalize_1:
-  lda $eb
-  sec
-  sbc #ROOT_EARLY_ROOK_MOVE_PENALTY
-  bvc __ai_search_store_score_7
-  lda #NEG_INFINITY
-__ai_search_store_score_7:
-  sta $eb
+  PENALTY16 ROOT_EARLY_ROOK_MOVE_PENALTY
 
 __ai_search_done_9:
   rts
@@ -6618,13 +6776,7 @@ __ai_search_attack_color_set_3:
   bcs __ai_search_done_10
 
 __ai_search_apply_penalty_1:
-  lda $eb
-  sec
-  sbc #ROOT_MISSED_ADVANCED_PAWN_PENALTY
-  bvc __ai_search_store_score_8
-  lda #NEG_INFINITY
-__ai_search_store_score_8:
-  sta $eb
+  PENALTY16 ROOT_MISSED_ADVANCED_PAWN_PENALTY
   rts
 
 __ai_search_next_square_3:
@@ -6683,14 +6835,22 @@ __ai_search_search_0:
   pla; Get depth back
   sta NegamaxState + 5, x; [offset+5] = depth remaining (survives recursion)
 
-; Store alpha/beta for this depth (read from entry parameters at $e8/$e9)
-  lda $e8
-  sta NegamaxState + 6, x; [offset+6] = alpha
-  lda $e9
-  sta NegamaxState + 7, x; [offset+7] = beta
+; Store alpha/beta for this depth (read from entry parameters at $e8/$ed lo/hi
+; and $e9/$ee lo/hi). NegamaxState +6/+7 hold the LO bytes; parallel hi arrays
+; NegamaxAlphaHi/NegamaxBetaHi (indexed by SearchDepth) hold the HI bytes.
   ldy SearchDepth
   lda $e8
+  sta NegamaxState + 6, x; [offset+6] = alpha lo
+  lda $ed
+  sta NegamaxAlphaHi, y; alpha hi
+  lda $e9
+  sta NegamaxState + 7, x; [offset+7] = beta lo
+  lda $ee
+  sta NegamaxBetaHi, y; beta hi
+  lda $e8
   sta NegamaxOrigAlpha, y
+  lda $ed
+  sta NegamaxOrigAlphaHi, y
 
 ; Probe transposition table
   jsr ComputeSearchZobristHash
@@ -6726,7 +6886,9 @@ __ai_search_search_0:
   cmp #TT_FLAG_EXACT
   bne __ai_search_tt_check_alpha_0
 
-  lda TTScoreLo; Return 8-bit score
+  lda TTScoreHi; Return 16-bit score
+  sta $ec
+  lda TTScoreLo
   rts
 
 __ai_search_tt_check_alpha_0:
@@ -6734,10 +6896,13 @@ __ai_search_tt_check_alpha_0:
   bne __ai_search_tt_check_beta_0
 
 ; ALPHA upper-bound hit: usable when stored score <= current alpha.
-  lda NegamaxState + 6, x; alpha
+; 16-bit signed compare alpha - score; >=0 means score <= alpha (usable).
+  ldy SearchDepth
+  lda NegamaxState + 6, x; alpha lo
   sec
-  sbc TTScoreLo; alpha - score
-  beq __ai_search_tt_return_score_0
+  sbc TTScoreLo
+  lda NegamaxAlphaHi, y; alpha hi
+  sbc TTScoreHi
   bvc __ai_search_tt_alpha_no_ov_0
   eor #$80
 __ai_search_tt_alpha_no_ov_0:
@@ -6749,16 +6914,21 @@ __ai_search_tt_check_beta_0:
   bne __ai_search_tt_miss_0
 
 ; BETA lower-bound hit: usable when stored score >= current beta.
+; 16-bit signed compare score - beta; >=0 means score >= beta (usable).
+  ldy SearchDepth
   lda TTScoreLo
   sec
-  sbc NegamaxState + 7, x; score - beta
-  beq __ai_search_tt_return_score_0
+  sbc NegamaxState + 7, x; beta lo
+  lda TTScoreHi
+  sbc NegamaxBetaHi, y; beta hi
   bvc __ai_search_tt_beta_no_ov_0
   eor #$80
 __ai_search_tt_beta_no_ov_0:
   bmi __ai_search_tt_miss_0; score < beta, cannot use bound
 
 __ai_search_tt_return_score_0:
+  lda TTScoreHi
+  sta $ec
   lda TTScoreLo
   rts
 
@@ -6813,10 +6983,14 @@ __ai_search_do_check_mate_0:
   jsr IsSquareAttacked
 
   bcc __ai_search_stalemate_0
+  lda #>-MATE_SCORE
+  sta $ec
   lda #<-MATE_SCORE
   rts
 
 __ai_search_stalemate_0:
+  lda #>DRAW_SCORE
+  sta $ec
   lda #DRAW_SCORE
   rts
 
@@ -6828,12 +7002,14 @@ __ai_search_have_moves_0:
   asl
   tax
 
-; Initialize best score to -infinity
+; Initialize best score to -infinity (16-bit $8000)
+  ldy SearchDepth
   lda #NEG_INFINITY
-  sta NegamaxState + 1, x; [offset+1] = best score
+  sta NegamaxState + 1, x; [offset+1] = best score lo
+  lda #NEG_INFINITY_HI
+  sta NegamaxBestHi, y; best score hi
 
 ; Clear local best move for this node.
-  ldy SearchDepth
   lda #$ff
   sta NegamaxBestFrom, y
   sta NegamaxBestTo, y
@@ -6854,34 +7030,45 @@ __ai_search_have_moves_0:
   bne __ai_search_futility_done_0
   jsr IsCurrentSideInCheck
   bcs __ai_search_futility_done_0
-  jsr Evaluate
+  jsr Evaluate; 16-bit static eval: lo in A, hi in $ec
   clc
-  adc #FUTILITY_MARGIN
-  bvc __ai_search_futility_eval_ready_0
-  lda #$7f
-__ai_search_futility_eval_ready_0:
-  sta $f0
+  adc #<FUTILITY_MARGIN
+  sta $f0; static+margin lo
+  lda $ec
+  adc #>FUTILITY_MARGIN
+  sta $f1; static+margin hi
 
   lda SearchDepth
   asl
   asl
   asl
   tax
+  ldy SearchDepth
+; (static+margin) - alpha. Enable futility when static+margin <= alpha, i.e.
+; when the 16-bit difference is <= 0 (negative or exactly zero).
   lda $f0
   sec
-  sbc NegamaxState + 6, x; static+margin - alpha
-  beq __ai_search_enable_futility_0
+  sbc NegamaxState + 6, x; lo diff
+  sta $f4
+  lda $f1
+  sbc NegamaxAlphaHi, y; hi diff (raw)
+  sta $f5
+  ora $f4
+  beq __ai_search_enable_futility_0; difference == 0 -> static+margin == alpha
+  lda $f5
   bvc __ai_search_futility_no_ov_0
   eor #$80
 __ai_search_futility_no_ov_0:
-  bpl __ai_search_futility_done_0
+  bpl __ai_search_futility_done_0; static+margin > alpha -> no futility
 
 __ai_search_enable_futility_0:
   ldy SearchDepth
   lda #$01
   sta NegamaxFutility, y
-  lda NegamaxState + 6, x; Return alpha if every move is futile.
+  lda NegamaxState + 6, x; Return alpha if every move is futile (16-bit).
   sta NegamaxState + 1, x
+  lda NegamaxAlphaHi, y
+  sta NegamaxBestHi, y
 
 __ai_search_futility_done_0:
 
@@ -6949,9 +7136,15 @@ __ai_search_search_current_move_0:
   lda NegamaxState + 5, x
   cmp #LMP_MAX_DEPTH + 1
   bcs __ai_search_lmp_done_0
+; best still at -infinity (no real move scored yet)? 16-bit sentinel test.
   lda NegamaxState + 1, x
   cmp #NEG_INFINITY
+  bne __ai_search_lmp_not_floor_0
+  ldy SearchDepth
+  lda NegamaxBestHi, y
+  cmp #NEG_INFINITY_HI
   beq __ai_search_lmp_done_0
+__ai_search_lmp_not_floor_0:
   lda NegamaxState + 2, x
   cmp #LMP_FULL_MOVES
   bcc __ai_search_lmp_done_0
@@ -7046,9 +7239,16 @@ __ai_search_lmr_done_0:
   bcc __ai_search_pvs_full_width_0
   lda NegamaxState + 2, x
   beq __ai_search_pvs_full_width_0
+; alpha == -infinity ($8000)? Then no narrow window is meaningful.
   lda NegamaxState + 6, x
   cmp #NEG_INFINITY
+  bne __ai_search_pvs_alpha_not_floor_0
+  ldy SearchDepth
+  lda NegamaxAlphaHi, y
+  cmp #NEG_INFINITY_HI
   beq __ai_search_pvs_full_width_0
+__ai_search_pvs_alpha_not_floor_0:
+  ldy SearchDepth
   lda #$01
   sta NegamaxPVSUsed, y
   inc SearchPVSSearches
@@ -7080,30 +7280,68 @@ __ai_search_pvs_full_width_0:
   sbc #$01; Parent's depth index
   tay
   lda NegamaxPVSUsed, y
-  beq __ai_search_child_full_window_0
+  bne __ai_search_child_null_window_0
+  jmp __ai_search_child_full_window_0
 
-  lda NegamaxState + 6, x; alpha
+__ai_search_child_null_window_0:
+; Null window: child alpha = -(alpha + 1), child beta = -alpha. X = parent
+; offset, Y = parent index for the hi arrays.
+  lda NegamaxState + 6, x; alpha lo
   clc
   adc #$01
+  sta $eb
+  lda NegamaxAlphaHi, y; alpha hi
+  adc #$00
+  sta $ec
+; clamp (alpha+1) to +32767 on signed overflow past the top.
   bvc __ai_search_pvs_alpha_plus_one_ok_0
-  lda #$7f
+  lda #POS_INFINITY
+  sta $eb
+  lda #POS_INFINITY_HI
+  sta $ec
 __ai_search_pvs_alpha_plus_one_ok_0:
+  lda $eb
   NEGATE_SCORE_A
-  sta $e8; child alpha = -(alpha + 1)
+  sta $e8; child alpha lo = -(alpha + 1)
+  lda $ec
+  sta $ed; child alpha hi
 
-  lda NegamaxState + 6, x; alpha
+  lda NegamaxState + 6, x; alpha lo
+  ldy SearchDepth
+  dey; parent index for hi array (SearchDepth-1)
+  pha
+  lda NegamaxAlphaHi, y
+  sta $ec
+  pla
   NEGATE_SCORE_A
-  sta $e9; child beta = -alpha
+  sta $e9; child beta lo = -alpha
+  lda $ec
+  sta $ee; child beta hi
   jmp __ai_search_child_window_ready_0
 
 __ai_search_child_full_window_0:
-  lda NegamaxState + 7, x; beta
+; Full window: child alpha = -beta, child beta = -alpha. X = parent offset.
+  ldy SearchDepth
+  dey; parent index for hi arrays
+  lda NegamaxState + 7, x; beta lo
+  pha
+  lda NegamaxBetaHi, y
+  sta $ec
+  pla
   NEGATE_SCORE_A; -beta
-  sta $e8; child alpha = -beta
+  sta $e8; child alpha lo = -beta
+  lda $ec
+  sta $ed; child alpha hi
 
-  lda NegamaxState + 6, x; alpha
+  lda NegamaxState + 6, x; alpha lo
+  pha
+  lda NegamaxAlphaHi, y
+  sta $ec
+  pla
   NEGATE_SCORE_A; -alpha
-  sta $e9; child beta = -alpha
+  sta $e9; child beta lo = -alpha
+  lda $ec
+  sta $ee; child beta hi
 
 __ai_search_child_window_ready_0:
   lda SearchDepth
@@ -7142,27 +7380,46 @@ __ai_search_child_window_ready_0:
   tax
   ldy SearchDepth
   lda NegamaxPVSUsed, y
-  beq __ai_search_pvs_research_done_0
+  bne __ai_search_pvs_check_research_0
+  jmp __ai_search_pvs_research_done_0
 
-; score > alpha?
+__ai_search_pvs_research_tramp_0:
+  jmp __ai_search_pvs_research_done_0
+
+__ai_search_pvs_check_research_0:
+; score > alpha? (16-bit signed: score - alpha > 0)
+  ldy SearchDepth
   lda $eb
   sec
   sbc NegamaxState + 6, x
-  beq __ai_search_pvs_research_done_0
+  sta $f0
+  lda $ec
+  sbc NegamaxAlphaHi, y
+  sta $f1
+  ora $f0
+  beq __ai_search_pvs_research_tramp_0; equal -> not > alpha
+  lda $f1
   bvc __ai_search_pvs_cmp_alpha_no_ov_0
   eor #$80
 __ai_search_pvs_cmp_alpha_no_ov_0:
-  bmi __ai_search_pvs_research_done_0
+  bmi __ai_search_pvs_research_tramp_0
 
-; score < beta?
+; score < beta? (16-bit signed: score - beta < 0)
+  ldy SearchDepth
   lda $eb
   sec
   sbc NegamaxState + 7, x
-  beq __ai_search_pvs_research_done_0
+  sta $f0
+  lda $ec
+  sbc NegamaxBetaHi, y
+  sta $f1
+  ora $f0
+  beq __ai_search_pvs_research_tramp_0; equal -> not < beta
+  lda $f1
   bvc __ai_search_pvs_cmp_beta_no_ov_0
   eor #$80
 __ai_search_pvs_cmp_beta_no_ov_0:
-  bpl __ai_search_pvs_research_done_0
+  bpl __ai_search_pvs_research_tramp_0
 
   inc SearchPVSResearches
 
@@ -7181,13 +7438,26 @@ __ai_search_pvs_cmp_beta_no_ov_0:
   asl
   tax
 ; PVS re-search setup is rare; keep the jsr form here so the long branches
-; above stay in range.
-  lda NegamaxState + 7, x
+; above stay in range. 16-bit: child alpha = -beta, child beta = -alpha.
+  ldy SearchDepth
+  dey; parent index for hi arrays
+  lda NegamaxBetaHi, y
+  sta $ec
+  lda NegamaxState + 7, x; beta lo
   jsr NegateSearchScore
-  sta $e8
-  lda NegamaxState + 6, x
+  sta $e8; child alpha lo = -beta
+  lda $ec
+  sta $ed; child alpha hi
+
+  ldy SearchDepth
+  dey
+  lda NegamaxAlphaHi, y
+  sta $ec
+  lda NegamaxState + 6, x; alpha lo
   jsr NegateSearchScore
-  sta $e9
+  sta $e9; child beta lo = -alpha
+  lda $ec
+  sta $ee; child beta hi
 
   lda SearchDepth
   sec
@@ -7196,7 +7466,7 @@ __ai_search_pvs_cmp_beta_no_ov_0:
   lda NegamaxChildDepth, y
   jsr Negamax
   NEGATE_SCORE_A
-  sta $eb
+  sta $eb; negated score (hi already in $ec)
 
   lda SearchDepth
   sec
@@ -7222,8 +7492,12 @@ __ai_search_pvs_research_done_0:
   jsr ApplyRootQueenPawnRaidPenalty
 
   lda $eb
-  cmp #MATE_SCORE
+  cmp #<MATE_SCORE
+  bne __ai_search_root_not_mate_0
+  lda $ec
+  cmp #>MATE_SCORE
   beq __ai_search_skip_root_pawn_safety_0
+__ai_search_root_not_mate_0:
 
   jsr ApplyRootPawnSafetyPenalty
   jsr ApplyRootHangingMinorPenalty
@@ -7250,25 +7524,34 @@ __ai_search_skip_root_pawn_safety_0:
   asl
   tax
 
-; Compare: if score > best, update best
-; Signed comparison: score - best
-  lda $eb; score
+; Compare: if score > best, update best (16-bit signed: score - best).
+; Equality test first (both bytes), then strict sign test.
+  ldy SearchDepth
+  lda $eb; score lo
   sec
-  sbc NegamaxState + 1, x; score - best
-  beq __ai_search_score_not_better_0; Equal before overflow correction
+  sbc NegamaxState + 1, x; score lo - best lo
+  sta $f0; lo diff
+  lda $ec; score hi
+  sbc NegamaxBestHi, y; score hi - best hi
+  sta $f1; hi diff (raw, pre V-correction)
+  ora $f0
+  beq __ai_search_score_not_better_0; both zero -> equal, not better
+  lda $f1; raw hi diff
   bvc __ai_search_no_overflow_0
   eor #$80; Flip sign bit for overflow case
 __ai_search_no_overflow_0:
-  bpl __ai_search_score_better_0
+  bpl __ai_search_score_better_0; >=0 and not equal -> score > best
 
 __ai_search_score_not_better_0:
   jmp __ai_search_not_better_0
 
 __ai_search_score_better_0:
-; Score is better - update best
+; Score is better - update best (16-bit).
   lda $eb
-  sta NegamaxState + 1, x; update best score
+  sta NegamaxState + 1, x; update best score lo
   ldy SearchDepth
+  lda $ec
+  sta NegamaxBestHi, y; update best score hi
   lda NegamaxState + 3, x
   sta NegamaxBestFrom, y
   lda NegamaxState + 4, x
@@ -7286,9 +7569,12 @@ __ai_search_score_better_0:
 
 __ai_search_not_at_root_0:
 ; Mate is the maximum meaningful score. Once a move proves mate, siblings
-; cannot improve it, so stop the node immediately.
+; cannot improve it, so stop the node immediately (16-bit equality).
   lda $eb
-  cmp #MATE_SCORE
+  cmp #<MATE_SCORE
+  bne __ai_search_not_forced_mate_0
+  lda $ec
+  cmp #>MATE_SCORE
   bne __ai_search_not_forced_mate_0
   jmp __ai_search_return_best_no_tt_0
 
@@ -7301,25 +7587,41 @@ __ai_search_not_forced_mate_0:
   asl
   tax
 
-; Signed comparison: best > alpha?
-  lda $eb; best (same as score that just improved)
+; Signed comparison: best > alpha? (16-bit: best - alpha)
+  ldy SearchDepth
+  lda $eb; best lo (same as score that just improved)
   sec
-  sbc NegamaxState + 6, x; best - alpha
-  beq __ai_search_not_better_0; Equal before overflow correction
+  sbc NegamaxState + 6, x; best lo - alpha lo
+  sta $f0
+  lda $ec; best hi
+  sbc NegamaxAlphaHi, y; best hi - alpha hi
+  sta $f1
+  ora $f0
+  beq __ai_search_not_better_0; equal -> best <= alpha, no update
+  lda $f1
   bvc __ai_search_no_overflow2_0
   eor #$80
 __ai_search_no_overflow2_0:
-  bmi __ai_search_not_better_0; If negative, best <= alpha
+  bmi __ai_search_not_better_0; If negative, best < alpha
 
-; Update alpha = best
+; Update alpha = best (16-bit)
   lda $eb
   sta NegamaxState + 6, x
+  lda $ec
+  sta NegamaxAlphaHi, y
 
-; Alpha-Beta cutoff: if alpha >= beta, prune
-; Signed comparison: alpha >= beta?
-  lda NegamaxState + 6, x; alpha
+; Alpha-Beta cutoff: if alpha >= beta, prune (16-bit: alpha - beta >= 0)
+  lda SearchDepth
+  asl
+  asl
+  asl
+  tax
+  ldy SearchDepth
+  lda NegamaxState + 6, x; alpha lo
   sec
-  sbc NegamaxState + 7, x; alpha - beta
+  sbc NegamaxState + 7, x; alpha lo - beta lo
+  lda NegamaxAlphaHi, y; alpha hi
+  sbc NegamaxBetaHi, y; alpha hi - beta hi
   bvc __ai_search_no_overflow3_0
   eor #$80
 __ai_search_no_overflow3_0:
@@ -7406,6 +7708,9 @@ __ai_search_return_best_no_tt_0:
   asl
   asl
   tax
+  ldy SearchDepth
+  lda NegamaxBestHi, y
+  sta $ec; return best hi
   lda NegamaxState + 1, x
   rts
 
@@ -7418,16 +7723,22 @@ __ai_search_search_done_0:
   tax
 
 ; Store exact scores, or fail-low upper bounds when the node never improved
-; beyond its original alpha.
+; beyond its original alpha (16-bit signed compare origalpha - best).
   ldy SearchDepth
   lda NegamaxOrigAlpha, y
   sec
-  sbc NegamaxState + 1, x; original alpha - best
-  beq __ai_search_store_alpha_bound_0
+  sbc NegamaxState + 1, x; origalpha lo - best lo
+  sta $f0
+  lda NegamaxOrigAlphaHi, y
+  sbc NegamaxBestHi, y; origalpha hi - best hi
+  sta $f1
+  ora $f0
+  beq __ai_search_store_alpha_bound_0; origalpha == best -> fail-low (ALPHA)
+  lda $f1
   bvc __ai_search_store_bound_no_ov_0
   eor #$80
 __ai_search_store_bound_no_ov_0:
-  bmi __ai_search_store_exact_0
+  bmi __ai_search_store_exact_0; origalpha < best -> EXACT
 
 __ai_search_store_alpha_bound_0:
   lda #TT_FLAG_ALPHA
@@ -7446,7 +7757,10 @@ __ai_search_store_node_0:
   asl
   tax
 
-; Return best score
+; Return best score (16-bit)
+  ldy SearchDepth
+  lda NegamaxBestHi, y
+  sta $ec
   lda NegamaxState + 1, x
   rts
 
@@ -7470,6 +7784,17 @@ NegamaxState:
 ; avoid expanding the hot NegamaxState stride.
 NegamaxOrigAlpha:
   .res MAX_DEPTH
+; Part A: 16-bit score hi-byte parallel arrays, indexed by SearchDepth. The
+; NegamaxState +1/+6/+7 fields remain the LO bytes (no stride/offset churn);
+; these carry the HI bytes of best/alpha/beta/origalpha.
+NegamaxBestHi:
+  .res MAX_DEPTH
+NegamaxAlphaHi:
+  .res MAX_DEPTH
+NegamaxBetaHi:
+  .res MAX_DEPTH
+NegamaxOrigAlphaHi:
+  .res MAX_DEPTH
 NegamaxHashLo:
   .res MAX_DEPTH
 NegamaxHashHi:
@@ -7490,7 +7815,11 @@ NullSavedNextMoveExtension:
   .res MAX_DEPTH
 NullMoveScore:
   .res 1
+NullMoveScoreHi:
+  .res 1
 NullStaticEval:
+  .res 1
+NullStaticEvalHi:
   .res 1
 
 .segment "CODE"
@@ -9779,9 +10108,15 @@ SetupFullSearchWindow:
   lda #NEG_INFINITY
   sta $e8
   sta AspirationAlpha
-  lda #$7f
+  lda #NEG_INFINITY_HI
+  sta $ed
+  sta AspirationAlphaHi
+  lda #POS_INFINITY
   sta $e9
   sta AspirationBeta
+  lda #POS_INFINITY_HI
+  sta $ee
+  sta AspirationBetaHi
   rts
 
 __ai_search_use_aspiration_0:
@@ -9789,23 +10124,43 @@ __ai_search_use_aspiration_0:
   lda #$01
   sta SearchAspirationActive
 
+; alpha = IterScore - ASPIRATION_DELTA (16-bit). Clamp underflow to -infinity.
   lda IterScore
   sec
-  sbc #ASPIRATION_DELTA
+  sbc #<ASPIRATION_DELTA
+  sta $e8
+  lda IterScoreHi
+  sbc #>ASPIRATION_DELTA
+  sta $ed
   bvc __ai_search_asp_alpha_ok_0
   lda #NEG_INFINITY
-__ai_search_asp_alpha_ok_0:
   sta $e8
+  lda #NEG_INFINITY_HI
+  sta $ed
+__ai_search_asp_alpha_ok_0:
+  lda $e8
   sta AspirationAlpha
+  lda $ed
+  sta AspirationAlphaHi
 
+; beta = IterScore + ASPIRATION_DELTA (16-bit). Clamp overflow to +infinity.
   lda IterScore
   clc
-  adc #ASPIRATION_DELTA
-  bvc __ai_search_asp_beta_ok_0
-  lda #$7f
-__ai_search_asp_beta_ok_0:
+  adc #<ASPIRATION_DELTA
   sta $e9
+  lda IterScoreHi
+  adc #>ASPIRATION_DELTA
+  sta $ee
+  bvc __ai_search_asp_beta_ok_0
+  lda #POS_INFINITY
+  sta $e9
+  lda #POS_INFINITY_HI
+  sta $ee
+__ai_search_asp_beta_ok_0:
+  lda $e9
   sta AspirationBeta
+  lda $ee
+  sta AspirationBetaHi
   rts
 
 ;
@@ -9819,20 +10174,28 @@ CheckAspirationFailure:
   rts
 
 __ai_search_check_aspiration_0:
-; Fail low when score <= alpha.
+; Fail low when score <= alpha (16-bit: IterScore - AspirationAlpha <= 0).
   lda IterScore
   sec
   sbc AspirationAlpha
-  beq __ai_search_aspiration_failed_0
+  sta $f0
+  lda IterScoreHi
+  sbc AspirationAlphaHi
+  sta $f1
+  ora $f0
+  beq __ai_search_aspiration_failed_0; equal -> fail low
+  lda $f1
   bvc __ai_search_asp_low_no_ov_0
   eor #$80
 __ai_search_asp_low_no_ov_0:
   bmi __ai_search_aspiration_failed_0
 
-; Fail high when score >= beta.
+; Fail high when score >= beta (16-bit: IterScore - AspirationBeta >= 0).
   lda IterScore
   sec
   sbc AspirationBeta
+  lda IterScoreHi
+  sbc AspirationBetaHi
   bvc __ai_search_asp_high_no_ov_0
   eor #$80
 __ai_search_asp_high_no_ov_0:
@@ -10268,8 +10631,10 @@ __ai_search_no_book_move_0:
 ; Check if there are any legal moves
   lda MoveCount
   sta SearchRootMoveCount
-  beq __ai_search_no_moves_time_0
+  bne __ai_search_have_root_moves_0
+  jmp __ai_search_no_moves_time_0
 
+__ai_search_have_root_moves_0:
 ; Initialize BestMove to a sane legal fallback before iterative search. If the
 ; search fails to lift any move above the score floor, do not keep a queen hang.
   jsr SetSafeRootFallbackMove
@@ -10294,6 +10659,8 @@ __ai_search_time_iter_loop_0:
   lda IterDepth
   jsr Negamax
   sta IterScore
+  lda $ec
+  sta IterScoreHi
 
   jsr CheckAspirationFailure
   bcc __ai_search_iteration_score_ready_0
@@ -10304,6 +10671,8 @@ __ai_search_time_iter_loop_0:
   lda IterDepth
   jsr Negamax
   sta IterScore
+  lda $ec
+  sta IterScoreHi
 
 __ai_search_iteration_score_ready_0:
   lda IterDepth
@@ -10320,10 +10689,14 @@ __ai_search_iteration_score_ready_0:
 ; Update thinking display with current depth and best move
   jsr EngineOnSearchIteration
 
-; Check if found mate (can stop early)
-  lda IterScore
+; Check if found mate (can stop early). 16-bit: IterScore == +MATE_SCORE.
+  lda IterScoreHi
   bmi __ai_search_check_max_depth_0; Negative scores are not winning mates
-  cmp #MATE_SCORE
+  lda IterScore
+  cmp #<MATE_SCORE
+  bne __ai_search_check_max_depth_0
+  lda IterScoreHi
+  cmp #>MATE_SCORE
   beq __ai_search_time_done_0; Found forced mate, stop searching
 
 __ai_search_check_max_depth_0:
@@ -10336,6 +10709,8 @@ __ai_search_check_max_depth_0:
 __ai_search_time_done_0:
   jsr EnsureBestMoveLegal
   jsr RememberBestMove
+  lda IterScoreHi
+  sta $ec; 16-bit score hi for callers that consume it
   lda IterScore
   rts
 
@@ -10382,13 +10757,19 @@ MaxSearchDepth:
   .res 1
 IterScore:
   .res 1
+IterScoreHi:
+  .res 1
 
 .segment "CODE"
 
 AspirationAlpha:
   .byte NEG_INFINITY
+AspirationAlphaHi:
+  .byte NEG_INFINITY_HI
 AspirationBeta:
-  .byte $7f
+  .byte POS_INFINITY
+AspirationBetaHi:
+  .byte POS_INFINITY_HI
 
 .segment "BSS"
 
