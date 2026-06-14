@@ -1,5 +1,18 @@
 # Opening Book — Compile & Wire Plan
 
+> **STATUS: IMPLEMENTED (2026-06-13).** `src/ai/opening_book.s` (probe),
+> `src/ai/opening_book_data.s` (198 entries, auto-generated),
+> `tools/compile_opening_book.py` (bridge-driven keys). Wired live in BOTH the
+> C64 and headless/test builds (the ladder + VICE harnesses drive our side
+> through the headless bridge, so a C64-only book would never run). Two
+> divergences from the plan below: (1) `platform_test.s` was flipped from the
+> clc/rts stub to the real `jmp LookupOpeningMove` so headless plays the book;
+> (2) the book data is a linked RODATA segment (`BookEntryCount`/`BookHashTable`
+> labels) rather than the fixed `$5600` reservation, which CODE already grows
+> past. Also discovered: the engine's 16-bit Zobrist hash has only ~10 effective
+> bits (32 distinct values/byte), so collisions dropped 21/219 entries; this is a
+> separate engine bug worth fixing (lifts coverage + helps the TT). See HANDOVER.
+
 This document is the hand-off for the **later src-touching step** that turns the
 engine-independent dataset `tools/opening_repertoire.json` into a working opening
 book inside the Caïssa C64 engine.

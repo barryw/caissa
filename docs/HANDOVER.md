@@ -125,20 +125,54 @@ clean can't nuke it.** Beast is the backup of record.
   non-overlapping dirs (src vs tools). Tell agents: never `make clean`.
 
 ## What's running right now
-- **Ladder v7** on beast (`build/elo_v7.json`) — full stack (Part A 16-bit + Ne2
-  eval fix). First real Elo read post-eval-work. Monitor armed.
+- Nothing live. **Ladder v7 finished: 0W / 4D / 32L** (vs 1320: 0-2-14, vs 1520:
+  0-2-12, vs 1720: 0-0-6). Part A + Ne2 moved NOTHING at game level —
+  **eval-bound confirmed, hard.** PGNs: reaches equal endgames, gets outplayed.
+
+## DONE this session: opening book wired (task #12) — commit pending
+The book is **live in the headless/test build too** (not just C64), because our
+ladder + VICE-vs-Colossus harnesses both drive OUR side through the sim6502
+bridge = the test build. A C64-only book would never run in any harness.
+- `src/ai/opening_book.s` — `LookupOpeningMove` 16-bit binary search (shared).
+- `src/ai/opening_book_data.s` — AUTO-GENERATED, 198 entries (4B each, sorted).
+- `tools/compile_opening_book.py` — drives the bridge `zobrist` command for each
+  FEN's key (NEVER reimplements the hash), uci→0x88 from/to, dedup, sort, emit.
+- Bridge gained a `zobrist` command + `searchUsedBook` in the bestmove reply
+  (`Program.cs`); runner gained `.zobrist()` (`sim6502_headless_runner.py`).
+- `platform_test.s` now `jmp LookupOpeningMove` / `jmp BookMoveAvoidsPawnAttack`
+  (was clc/sec stubs) so headless plays the book like the C64 build.
+- **search.s reorder:** the crude root positional heuristics
+  (`TryRootOpeningCenterPawnMove`, `TryRootDevelopingBishopRecaptureMove`) were
+  firing BEFORE the book and short-circuiting at depth 0 — book never ran. Moved
+  them to fire only on a book miss; mate-safety + tactics still precede the book.
+- Verified: 12/12 repertoire FENs hit (correct move, `usedBook=1`); 0/118 false
+  hits in deep non-book positions (legality net is strong); 90 tests / 9 gates /
+  8-of-8 corpus all green.
+
+## ⚠️ NEW high-leverage finding: the 16-bit Zobrist hash is only ~10 bits
+`ComputeZobristHash` keys cluster badly: **32 distinct values per byte → ~9.6
+effective bits, 780 distinct keys over 1500 positions** (PRNG output sits in a
+5-bit-per-byte GF(2) subspace; `ZobristPRNG` `lda $fb / eor $fc` is the suspect).
+Blast radius:
+- **Book:** 21/219 entries dropped to collisions (~90% coverage). Graceful, no
+  downside, but caps the book.
+- **TT:** entries verify on the full 16-bit key (tt.s +0/+1) but with ~10-bit
+  entropy, ALIASED positions pass verification → wrong score/flag cutoffs. This
+  plausibly contributes to the "eval-bound" weakness — search may be partly
+  TT-corruption-bound.
+- **Repetition:** hash-based; false-repetition risk (re-validation TBD).
+Fixing the PRNG to full 16-bit entropy is a core change (re-baselines TT keys →
+tests/benchmarks/corpus) but high-value: lifts book to ~100% AND may unstick
+search strength. Strong candidate for the next pass.
 
 ## Next moves (priority order)
-1. **Read ladder v7 result.** If still ~713, confirms eval needs deeper work via
-   GAME-based tuning (build that loop). If up, the direction is working.
-2. **Wire the opening book (task #12)** — the Colossus-killer, data is ready:
-   compile `tools/opening_repertoire.json` (219 pos) → key-sorted blob using the
-   engine's `ComputeZobristHash` via the bridge (16-bit keys, NEVER reimplement
-   the hash), write the `LookupOpeningMove` probe (referenced platform_c64.s:63,
-   undefined), wire `EngineLookupOpeningMove` in platform_test.s (stub clc/rts) for
-   headless/VICE. Plan: `docs/opening-book-plan.md`. Engine stays strong without it.
-3. **Eval-term tuning via GAMES** — PST/development/center/king-safety/mobility,
+1. **Fix the Zobrist PRNG entropy** (see ⚠️ above) — likely the highest-leverage
+   single change now: book coverage + TT reliability + possible strength unlock.
+   Re-baseline tests/benchmarks/corpus after.
+2. **Eval-term tuning via GAMES** — PST/development/center/king-safety/mobility,
    validated on the ladder/VICE not the corpus. The real path to 1700.
+3. **Re-run the ladder with the book live** to measure the book's game-level
+   effect (and again after the hash fix).
 4. **Perf backlog** (`docs/optimization-backlog.md`) — buys more depth: dead-code
    (QSave* ~650 bytes), cache SearchDepth*8 offset, Zobrist LUT reuse, etc.
 5. **Repo rename to `caissa`** (task #11) + wire display name into README / banner /
@@ -152,5 +186,7 @@ hazard), beast-remote-setup.md, colossus-cleanroom-boundary.md, engine-name.md,
 MEMORY.md (index). docs/optimization-backlog.md + docs/opening-book-plan.md in repo.
 
 ## Open tasks
-#4 analyze/improve (ongoing), #6 re-run beast matches, #7 stockfish tuning loop,
-#9 full VICE Colossus game, #11 rename to caissa, #12 wire opening book.
+#4 analyze/improve (ongoing), #6 re-run beast matches (now with book live),
+#7 stockfish tuning loop, #9 full VICE Colossus game, #11 rename to caissa,
+#13 fix Zobrist PRNG entropy (NEW, high-leverage — see ⚠️ above).
+DONE: #12 wire opening book (this session, commit pending).

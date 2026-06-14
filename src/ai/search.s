@@ -10506,14 +10506,9 @@ __ai_search_no_root_mate_0:
   bcs __ai_search_finish_root_shortcut_0
 __ai_search_no_root_mate_threat_0:
 
-  jsr TryRootOpeningCenterPawnMove
-  bcs __ai_search_finish_root_shortcut_0
-__ai_search_no_opening_center_pawn_0:
-
-  jsr TryRootDevelopingBishopRecaptureMove
-  bcs __ai_search_finish_root_shortcut_0
-__ai_search_no_bishop_recap_move_0:
-
+; Opening theory (book) outranks the crude root positional heuristics
+; (center-pawn push / bishop recapture). Those moved below the book probe and
+; now only fire on a book miss; mate safety and tactics still come first.
   jsr TryImmediateQueenPromotionMove
   bcs __ai_search_finish_root_shortcut_0
 __ai_search_no_immediate_promotion_0:
@@ -10605,6 +10600,19 @@ __ai_search_book_move_ok_0:
   jmp FinishBestMoveZero
 
 __ai_search_no_book_move_0:
+
+; Book missed (or a piece is hanging / a collision was rejected): only now fall
+; back to the crude root opening heuristics, before paying for a full search.
+  jsr TryRootOpeningCenterPawnMove
+  bcs __ai_search_book_fallback_shortcut_0
+__ai_search_no_opening_center_pawn_0:
+
+  jsr TryRootDevelopingBishopRecaptureMove
+  bcc __ai_search_no_bishop_recap_move_0
+__ai_search_book_fallback_shortcut_0:
+  jmp FinishBestMoveZero
+__ai_search_no_bishop_recap_move_0:
+
 ; Not in book - do normal search
   jsr ClearKillers
   jsr ClearHistory

@@ -14,3 +14,5 @@
 .include "search.s"
 .include "rules.s"
 .include "movegen_cold.s"
+.include "opening_book.s"
+.include "opening_book_data.s"

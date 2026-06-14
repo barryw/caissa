@@ -135,6 +135,7 @@ internal sealed class HeadlessBridge : IDisposable
                     "bestmove" => FindBestMove(id, root),
                     "ponder" => PonderSearch(id, root),
                     "ponderuse" => PonderUse(id, root),
+                    "zobrist" => ComputeZobrist(id, root),
                     _ => throw new InvalidOperationException($"Unknown command: {command}"),
                 });
             }
@@ -200,6 +201,7 @@ internal sealed class HeadlessBridge : IDisposable
             searchDepth = TryReadByte("SearchDepth"),
             searchCompletedDepth = TryReadByte("SearchCompletedDepth"),
             searchRootMoveCount = TryReadByte("SearchRootMoveCount"),
+            searchUsedBook = TryReadByte("SearchUsedBook"),
             depthCycles,
             pc = _backend.Processor.ProgramCounter,
         };
@@ -274,6 +276,32 @@ internal sealed class HeadlessBridge : IDisposable
             encoded,
             cycles = totalCycles,
             useCycles = totalCycles - beforeCycles,
+            pc = _backend.Processor.ProgramCounter,
+        };
+    }
+
+    private object ComputeZobrist(int id, JsonElement root)
+    {
+        // Drive the engine's own ComputeZobristHash so the opening-book compiler
+        // never has to reimplement the 16-bit hash in Python (square ordering,
+        // 0x88 skip, piece encoding, side/castle/en-passant XOR are all bug-for-
+        // bug identical to what the engine plays with).
+        RestoreBaseline();
+        var totalTimeout = GetOptionalLong(root, "timeoutCycles", 0);
+        ExecuteRequiredRoutine("InitZobristTables", totalTimeout);
+        WritePosition(root);
+        var clean = ExecuteRoutine(Symbol("ComputeZobristHash"), totalTimeout);
+        var keyLo = _backend.ReadByte(Symbol("ZobristHash"));
+        var keyHi = _backend.ReadByte(Symbol("ZobristHash") + 1);
+
+        return new
+        {
+            id,
+            ok = clean,
+            keyLo,
+            keyHi,
+            key = (keyHi << 8) | keyLo,
+            cycles = _totalCycles,
             pc = _backend.Processor.ProgramCounter,
         };
     }

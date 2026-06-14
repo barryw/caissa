@@ -37,10 +37,13 @@ __engine_platform_test_time_ok_0:
 EngineOnSearchIteration:
   rts
 
+; Headless/test build uses the real opening book too, so the ladder and the
+; VICE-vs-Colossus harness (both drive this build through the sim6502 bridge)
+; measure and play the book exactly as the C64 build would. Every failure path
+; (miss, 16-bit key collision, hung-piece guard) still degrades to a normal
+; search, so the engine stays correct with or without book data linked in.
 EngineLookupOpeningMove:
-  clc
-  rts
+  jmp LookupOpeningMove
 
 EngineBookMoveAvoidsPawnAttack:
-  sec
-  rts
+  jmp BookMoveAvoidsPawnAttack
