@@ -35,37 +35,37 @@ void eval_reset_weights(void) {
     g_w.queen = 874;
     g_w.king = 0;
 
-    g_w.pawn_attack_minor = 600;
-    g_w.pawn_attack_rook = 600;
-    g_w.pawn_attack_queen = 850;
-    g_w.queen_attack_minor = 750;
-    g_w.minor_attack_rook = 280;
-    g_w.minor_attack_queen = 350;
-    g_w.knight_outpost = 250;
+    g_w.pawn_attack_minor = 0;
+    g_w.pawn_attack_rook = 0;
+    g_w.pawn_attack_queen = 0;
+    g_w.queen_attack_minor = 0;
+    g_w.minor_attack_rook = 70;
+    g_w.minor_attack_queen = 0;
+    g_w.knight_outpost = 0;
 
-    g_w.pinned_pawn = 120;
-    g_w.pinned_minor = 250;
-    g_w.pinned_rook = 350;
-    g_w.pinned_queen = 450;
-    g_w.pinned_attacked = 200;
+    g_w.pinned_pawn = 0;
+    g_w.pinned_minor = 62;
+    g_w.pinned_rook = 87;
+    g_w.pinned_queen = 112;
+    g_w.pinned_attacked = 100;
 
-    g_w.doubled_pawn = 150;
-    g_w.isolated_pawn = 200;
-    g_w.advanced_pawn = 80;
-    g_w.deep_advanced_pawn = 160;
-    g_w.rook_behind_passer = 200;
-    g_w.connected_passer = 120;
-    g_w.protected_passer = 80;
-    g_w.blockaded_passer = 100;
-    g_w.bishop_pair = 200;
-    g_w.rook_open_file = 250;
-    g_w.rook_semi_open_file = 120;
-    g_w.heavy_seventh_rank = 180;
+    g_w.doubled_pawn = 37;
+    g_w.isolated_pawn = 0;
+    g_w.advanced_pawn = 0;
+    g_w.deep_advanced_pawn = 0;
+    g_w.rook_behind_passer = 150;
+    g_w.connected_passer = 0;
+    g_w.protected_passer = 0;
+    g_w.blockaded_passer = 150;
+    g_w.bishop_pair = 50;
+    g_w.rook_open_file = 0;
+    g_w.rook_semi_open_file = 30;
+    g_w.heavy_seventh_rank = 0;
 
     g_w.endgame_nonpawn_limit = 1;
-    g_w.endgame_king_activity = 300;
-    g_w.endgame_rook_open_file = 600;
-    g_w.endgame_rook_king_cutoff = 250;
+    g_w.endgame_king_activity = 0;
+    g_w.endgame_rook_open_file = 150;
+    g_w.endgame_rook_king_cutoff = 0;
 
     g_w.passed_pawn_bonus[0] = 400;
     g_w.passed_pawn_bonus[1] = 300;
@@ -76,12 +76,12 @@ void eval_reset_weights(void) {
     g_w.passed_pawn_bonus[6] = 0;
     g_w.passed_pawn_bonus[7] = 0;
 
-    g_w.castled = 30;
-    g_w.pawn_shield = 10;
-    g_w.open_file_penalty = 25;
-    g_w.semi_open_file_penalty = 12;
-    g_w.king_center = 30;
-    g_w.king_march_base = 8;
+    g_w.castled = 0;
+    g_w.pawn_shield = 0;
+    g_w.open_file_penalty = 0;
+    g_w.semi_open_file_penalty = 0;
+    g_w.king_center = 0;
+    g_w.king_march_base = 0;
     g_w.king_march_step = 8;
     g_w.king_zone_attack = 5;
 

@@ -365,11 +365,42 @@ static int cmd_bestmove(const char *fen, int depth, long nodes,
     return 0;
 }
 
+/* Texel MSE of eval_full vs SF labels over a TSV (fen\tcp per line).
+ * loss = mean( (sigmoid(eval/K) - sigmoid(label/K))^2 ), K=300 (matches texel_tune). */
+static int cmd_mse(const char *tsv, const char *wspec) {
+    if (build_weights(&g_w, wspec)) return 2;
+    FILE *f = fopen(tsv, "r");
+    if (!f) { fprintf(stderr, "cannot open %s\n", tsv); return 2; }
+    const double K = 300.0;
+    double sse = 0.0;
+    long n = 0;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        char *tab = strchr(line, '\t');
+        if (!tab) continue;
+        *tab = 0;
+        int label = atoi(tab + 1);
+        Board b;
+        if (board_from_fen(&b, line)) continue;
+        int ev = eval_full(&b);                 /* white-POV cp */
+        double pred = 1.0 / (1.0 + exp(-ev / K));
+        double targ = 1.0 / (1.0 + exp(-label / K));
+        double d = pred - targ;
+        sse += d * d;
+        n++;
+    }
+    fclose(f);
+    printf("%.8f %ld\n", n ? sse / n : 0.0, n);   /* MSE  count */
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s eval FEN | bestmove FEN [depth] | selfplay [opts]\n", argv[0]);
+        fprintf(stderr, "usage: %s eval FEN | bestmove FEN [depth] | selfplay [opts] | mse TSV [weights]\n", argv[0]);
         return 2;
     }
+    if (!strcmp(argv[1], "mse") && argc >= 3)
+        return cmd_mse(argv[2], argc >= 4 ? argv[3] : NULL);
     if (!strcmp(argv[1], "eval") && argc >= 3)
         return cmd_eval(argv[2], argc >= 4 ? argv[3] : NULL);   /* eval FEN [weights] */
     if (!strcmp(argv[1], "bestmove") && argc >= 3)
