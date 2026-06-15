@@ -347,11 +347,12 @@ static int cmd_eval(const char *fen, const char *wspec) {
     return 0;
 }
 
-static int cmd_bestmove(const char *fen, int depth, long nodes, const char *wspec) {
+static int cmd_bestmove(const char *fen, int depth, long nodes,
+                        const char *wspec, const char *scfg) {
     Board b;
     if (board_from_fen(&b, fen)) { fprintf(stderr, "bad fen\n"); return 2; }
     if (build_weights(&g_w, wspec)) return 2;   /* baseline, then optional overrides */
-    search_reset_config();
+    if (build_search(&g_sc, scfg)) return 2;    /* defaults, then optional overrides */
     search_set_budget(nodes);
     if (nodes) depth = 64;            /* budget-bound: let ID run deep */
     SearchInfo info;
@@ -375,7 +376,8 @@ int main(int argc, char **argv) {
     if (!strcmp(argv[1], "bestmove") && argc >= 3)
         return cmd_bestmove(argv[2], argc >= 4 ? atoi(argv[3]) : 5,
                             argc >= 5 ? atol(argv[4]) : 0,
-                            argc >= 6 ? argv[5] : NULL); /* bestmove FEN depth [nodes] [weights] */
+                            argc >= 6 ? argv[5] : NULL,  /* [weights] */
+                            argc >= 7 ? argv[6] : NULL); /* [searchcfg]: FEN depth nodes weights searchcfg */
     if (!strcmp(argv[1], "selfplay")) return cmd_selfplay(argc - 2, argv + 2);
     fprintf(stderr, "unknown subcommand %s\n", argv[1]);
     return 2;
