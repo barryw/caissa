@@ -18,10 +18,10 @@ EvalWorkType = $f2
 ; relative values: P=1, N=3.2, B=3.3, R=5, Q=9
 ;
 PAWN_VALUE = 100
-KNIGHT_VALUE = 320
-BISHOP_VALUE = 330
-ROOK_VALUE = 500
-QUEEN_VALUE = 900
+KNIGHT_VALUE = 366
+BISHOP_VALUE = 302
+ROOK_VALUE = 466
+QUEEN_VALUE = 874
 KING_VALUE = 0; Kings not counted in material
 
 ;
