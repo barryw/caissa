@@ -1,0 +1,90 @@
+/* board.h -- 0x88 board core for the native reference engine.
+ *
+ * Layout is BIT-IDENTICAL to tools/texel_eval.py so the eval port stays exact:
+ *   index = (7 - rank)*16 + file   (a8 = 0, h1 = 119)
+ *   offboard test: (idx & 0x88) != 0
+ *   piece byte = type | (0x80 if white); empty = 0
+ *   type: 1=P 2=N 3=B 4=R 5=Q 6=K   (matches PAWN_T..KING_T)
+ *
+ * This header is the FROZEN shared contract: movegen.c and eval.c code against
+ * it and must NOT modify it. Search/selfplay use make/unmake + zobrist here.
+ */
+#ifndef CREF_BOARD_H
+#define CREF_BOARD_H
+
+#include <stdint.h>
+
+#define WHITE_FLAG 0x80
+#define PT(p)       ((p) & 7)          /* piece type 1..6, 0 if empty */
+#define IS_WHITE(p) ((p) & WHITE_FLAG) /* nonzero if white piece */
+#define OFFBOARD(i) ((i) & 0x88)
+
+enum { PT_PAWN = 1, PT_KNIGHT, PT_BISHOP, PT_ROOK, PT_QUEEN, PT_KING };
+
+/* castling-right bits */
+enum { CASTLE_WK = 1, CASTLE_WQ = 2, CASTLE_BK = 4, CASTLE_BQ = 8 };
+
+/* move flags */
+enum {
+    MF_CAPTURE    = 1,
+    MF_DOUBLE     = 2,   /* pawn double push (sets ep) */
+    MF_EP         = 4,   /* en-passant capture */
+    MF_CASTLE_K   = 8,   /* kingside castle */
+    MF_CASTLE_Q   = 16,  /* queenside castle */
+    MF_PROMO      = 32
+};
+
+typedef struct {
+    uint8_t from;    /* 0x88 square */
+    uint8_t to;      /* 0x88 square */
+    uint8_t promo;   /* promoted piece TYPE (PT_KNIGHT..PT_QUEEN), 0 if none */
+    uint8_t flags;   /* MF_* bitmask */
+} Move;
+
+typedef struct {
+    uint8_t sq[128];   /* 0x88 board, piece bytes */
+    int wtm;           /* 1 = white to move, 0 = black */
+    int wk, bk;        /* king 0x88 squares */
+    int castle;        /* CASTLE_* bitmask */
+    int ep;            /* ep target 0x88 square, or -1 */
+    int halfmove;      /* halfmove clock (50-move rule) */
+    int fullmove;
+    uint64_t hash;     /* incremental zobrist */
+} Board;
+
+typedef struct {
+    uint8_t captured;  /* piece byte captured (0 if none); for ep this is the pawn */
+    int cap_sq;        /* 0x88 square the captured piece sat on (differs for ep) */
+    int castle;        /* prior castling rights */
+    int ep;            /* prior ep square */
+    int halfmove;      /* prior halfmove clock */
+    int wk, bk;        /* prior king squares */
+    uint64_t hash;     /* prior hash */
+} Undo;
+
+/* 0x88 <-> 0..63 helpers (0..63 is python-chess square: a1=0, h8=63). */
+static inline int sq0x88_from_idx64(int s64) {
+    int rank = s64 >> 3, file = s64 & 7;
+    return (7 - rank) * 16 + file;
+}
+static inline int idx64_from_0x88(int i) {
+    int rank = 7 - (i >> 4), file = i & 7;
+    return rank * 8 + file;
+}
+
+/* Returns 0 on success, -1 on parse error. Initializes hash. */
+int board_from_fen(Board *b, const char *fen);
+/* Writes the FEN into out (>= 100 bytes). */
+void board_to_fen(const Board *b, char *out);
+
+void make_move(Board *b, Move m, Undo *u);
+void unmake_move(Board *b, Move m, const Undo *u);
+
+uint64_t board_zobrist(const Board *b);   /* full recompute (for verify) */
+
+/* "e2e4", "e7e8q" -> Move resolved against the current board. Returns 0 on
+ * success (writes *out), -1 if not a legal-shaped move on this board. */
+int move_from_uci(const Board *b, const char *uci, Move *out);
+void move_to_uci(Move m, char *out);      /* out >= 6 bytes */
+
+#endif
