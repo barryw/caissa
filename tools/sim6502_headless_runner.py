@@ -62,21 +62,47 @@ class Sim6502HeadlessRunner:
     def start(self) -> None:
         if self.proc is not None and self.proc.poll() is None:
             return
-        self._ensure_built()
+        # FAST6502_BRIDGE: drop-in functional-core bridge (~30x faster, bit-identical
+        # output incl. cycles). Set to the binary path (or "1"/"auto" for the default
+        # location). Bypasses the .NET build + spawn entirely.
+        fast_env = os.environ.get("FAST6502_BRIDGE")
+        fast_bin: Path | None = None
+        if fast_env and fast_env not in ("0", "", "false"):
+            fast_bin = (
+                self.repo_root / "tools" / "fast6502_bridge" / "fast6502_bridge"
+                if fast_env in ("1", "auto", "true")
+                else Path(fast_env)
+            )
+            if not fast_bin.exists():
+                raise Sim6502BridgeError(f"FAST6502_BRIDGE binary not found: {fast_bin}")
+        if fast_bin is None:
+            self._ensure_built()
         for path in (self.program_path, self.symbols_path):
             if not path.exists():
                 raise Sim6502BridgeError(f"Missing required file: {path}")
 
-        cmd = [
-            self.dotnet,
-            str(self.bridge_dll),
-            "--program",
-            str(self.program_path),
-            "--symbols",
-            str(self.symbols_path),
-            "--find-best-move",
-            self.find_best_move,
-        ]
+        cmd = (
+            [
+                str(fast_bin),
+                "--program",
+                str(self.program_path),
+                "--symbols",
+                str(self.symbols_path),
+                "--find-best-move",
+                self.find_best_move,
+            ]
+            if fast_bin is not None
+            else [
+                self.dotnet,
+                str(self.bridge_dll),
+                "--program",
+                str(self.program_path),
+                "--symbols",
+                str(self.symbols_path),
+                "--find-best-move",
+                self.find_best_move,
+            ]
+        )
         self.proc = subprocess.Popen(
             cmd,
             cwd=self.repo_root,
