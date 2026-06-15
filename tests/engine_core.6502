@@ -1529,7 +1529,7 @@ suites {
 
       jsr([ApplyBishopPairBonus], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $c8, "White bishop pair should add the bishop-pair bonus")
+      assert(peekbyte([EvalScore]) == $32, "White bishop pair should add the bishop-pair bonus")
       assert(peekbyte([EvalScore] + $01) == $00, "White bishop-pair bonus should keep score positive")
 
       [EvalScore] = $00
@@ -1539,7 +1539,7 @@ suites {
 
       jsr([ApplyBishopPairBonus], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $38, "Black bishop pair should subtract the bishop-pair bonus")
+      assert(peekbyte([EvalScore]) == $ce, "Black bishop pair should subtract the bishop-pair bonus")
       assert(peekbyte([EvalScore] + $01) == $ff, "Black bishop-pair bonus should keep score negative")
 
       memfill([Board88], 128, $30)
@@ -1566,8 +1566,8 @@ suites {
 
       jsr([EvaluateAdvancedPawn], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $50, "White pawn on the fifth rank should get the advanced bonus")
-      assert(peekbyte([EvalScore] + $01) == $00, "White advanced bonus should keep score positive")
+      assert(peekbyte([EvalScore]) == $00, "Advanced-pawn bonus is currently disabled by tuning (fifth rank, 0)")
+      assert(peekbyte([EvalScore] + $01) == $00, "Disabled advanced bonus keeps score neutral")
 
       [EvalScore] = $00
       [EvalScore] + $01 = $00
@@ -1577,7 +1577,7 @@ suites {
 
       jsr([EvaluateAdvancedPawn], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $a0, "White pawn on the sixth rank should get the deep advanced bonus")
+      assert(peekbyte([EvalScore]) == $00, "Deep-advanced-pawn bonus is currently disabled by tuning (sixth rank, 0)")
 
       [EvalScore] = $00
       [EvalScore] + $01 = $00
@@ -1587,8 +1587,8 @@ suites {
 
       jsr([EvaluateAdvancedPawn], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $60, "Black pawn on the sixth rank should subtract the deep advanced bonus")
-      assert(peekbyte([EvalScore] + $01) == $ff, "Black advanced bonus should keep score negative")
+      assert(peekbyte([EvalScore]) == $00, "Deep-advanced-pawn bonus is currently disabled by tuning (black sixth rank, 0)")
+      assert(peekbyte([EvalScore] + $01) == $00, "Disabled advanced bonus keeps score neutral")
     }
 
     test("eval-rewards-connected-passers", "Connected passed pawns get an extra structure bonus") {
@@ -1601,8 +1601,8 @@ suites {
 
       jsr([EvaluatePawnStructure], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $80, "Two connected white passers should get passed and connected bonuses")
-      assert(peekbyte([EvalScore] + $01) == $02, "Connected white passers should keep score positive")
+      assert(peekbyte([EvalScore]) == $90, "Two white passers score the passed bonus (connected bonus disabled by tuning)")
+      assert(peekbyte([EvalScore] + $01) == $01, "Connected white passers should keep score positive")
 
       memfill([Board88], 128, $30)
       [Board88] + $44 = $31
@@ -1613,8 +1613,8 @@ suites {
 
       jsr([EvaluatePawnStructure], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $80, "Two connected black passers should subtract passed and connected bonuses")
-      assert(peekbyte([EvalScore] + $01) == $fd, "Connected black passers should keep score negative")
+      assert(peekbyte([EvalScore]) == $70, "Two black passers subtract the passed bonus (connected bonus disabled by tuning)")
+      assert(peekbyte([EvalScore] + $01) == $fe, "Connected black passers should keep score negative")
     }
 
     test("eval-scores-protected-and-blockaded-passers", "Protected passers gain value while blockaded passers lose urgency") {
@@ -1627,7 +1627,7 @@ suites {
 
       jsr([EvaluatePawnStructure], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $ae, "A protected white passer should add the protected-passer bonus")
+      assert(peekbyte([EvalScore]) == $5e, "Protected white passer scores the passed bonus (protected bonus disabled by tuning)")
       assert(peekbyte([EvalScore] + $01) == $01, "Protected white passer score should stay positive")
 
       memfill([Board88], 128, $30)
@@ -1639,7 +1639,7 @@ suites {
 
       jsr([EvaluatePawnStructure], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $52, "A protected black passer should subtract the protected-passer bonus")
+      assert(peekbyte([EvalScore]) == $a2, "Protected black passer subtracts the passed bonus (protected bonus disabled by tuning)")
       assert(peekbyte([EvalScore] + $01) == $fe, "Protected black passer score should stay negative")
 
       memfill([Board88], 128, $30)
@@ -1671,8 +1671,8 @@ suites {
 
       jsr([EvaluateRookFileActivity], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $fa, "White rook on an open file should get the full rook-file bonus")
-      assert(peekbyte([EvalScore] + $01) == $00, "White open-file bonus should keep score positive")
+      assert(peekbyte([EvalScore]) == $00, "Full open-file rook bonus is currently disabled by tuning (0)")
+      assert(peekbyte([EvalScore] + $01) == $00, "Disabled open-file bonus keeps score neutral")
 
       [EvalScore] = $00
       [EvalScore] + $01 = $00
@@ -1680,7 +1680,7 @@ suites {
 
       jsr([EvaluateRookFileActivity], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $78, "White rook on a semi-open file should get the smaller bonus")
+      assert(peekbyte([EvalScore]) == $1e, "White rook on a semi-open file should get the smaller bonus")
 
       [EvalScore] = $00
       [EvalScore] + $01 = $00
@@ -1699,8 +1699,8 @@ suites {
 
       jsr([EvaluateRookFileActivity], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $06, "Black rook on an open file should subtract the full rook-file bonus")
-      assert(peekbyte([EvalScore] + $01) == $ff, "Black open-file bonus should keep score negative")
+      assert(peekbyte([EvalScore]) == $00, "Full open-file rook bonus is currently disabled by tuning (black, 0)")
+      assert(peekbyte([EvalScore] + $01) == $00, "Disabled open-file bonus keeps score neutral")
 
       [EvalScore] = $00
       [EvalScore] + $01 = $00
@@ -1708,7 +1708,7 @@ suites {
 
       jsr([EvaluateRookFileActivity], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $88, "Black rook on a semi-open file should subtract the smaller bonus")
+      assert(peekbyte([EvalScore]) == $e2, "Black rook on a semi-open file should subtract the smaller bonus")
     }
 
     test("eval-rewards-heavy-pieces-on-seventh-rank", "Rooks and queens get pressure bonuses on the enemy second rank") {
@@ -1720,8 +1720,8 @@ suites {
 
       jsr([EvaluateSeventhRankPressure], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $b4, "White rook on the seventh rank should get the invasion bonus")
-      assert(peekbyte([EvalScore] + $01) == $00, "White invasion bonus should keep score positive")
+      assert(peekbyte([EvalScore]) == $00, "Seventh-rank invasion bonus is currently disabled by tuning (0)")
+      assert(peekbyte([EvalScore] + $01) == $00, "Disabled invasion bonus keeps score neutral")
 
       [EvalScore] = $00
       [EvalScore] + $01 = $00
@@ -1731,8 +1731,8 @@ suites {
 
       jsr([EvaluateSeventhRankPressure], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $4c, "Black queen on the second rank should subtract the invasion bonus")
-      assert(peekbyte([EvalScore] + $01) == $ff, "Black invasion bonus should keep score negative")
+      assert(peekbyte([EvalScore]) == $00, "Seventh-rank invasion bonus is currently disabled by tuning (black, 0)")
+      assert(peekbyte([EvalScore] + $01) == $00, "Disabled invasion bonus keeps score neutral")
 
       [EvalScore] = $00
       [EvalScore] + $01 = $00
@@ -1756,8 +1756,8 @@ suites {
 
       jsr([EvaluateKnightOutpost], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $fa, "Protected white knight outpost should get the outpost bonus")
-      assert(peekbyte([EvalScore] + $01) == $00, "White outpost bonus should keep score positive")
+      assert(peekbyte([EvalScore]) == $00, "Knight-outpost bonus is currently disabled by tuning (0)")
+      assert(peekbyte([EvalScore] + $01) == $00, "Disabled outpost bonus keeps score neutral")
 
       [Board88] + $24 = $31
       [EvalScore] = $00
@@ -1777,8 +1777,8 @@ suites {
 
       jsr([EvaluateKnightOutpost], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $06, "Protected black knight outpost should subtract the outpost bonus")
-      assert(peekbyte([EvalScore] + $01) == $ff, "Black outpost bonus should keep score negative")
+      assert(peekbyte([EvalScore]) == $00, "Knight-outpost bonus is currently disabled by tuning (black, 0)")
+      assert(peekbyte([EvalScore] + $01) == $00, "Disabled outpost bonus keeps score neutral")
 
       [EvalScore] = $00
       [EvalScore] + $01 = $00
@@ -1803,8 +1803,8 @@ suites {
 
       jsr([EvaluateMinorPressure], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $e8, "White rook attacked by a bishop should lose minor-pressure value")
-      assert(peekbyte([EvalScore] + $01) == $fe, "White rook pressure should keep score negative")
+      assert(peekbyte([EvalScore]) == $ba, "White rook attacked by a bishop should lose minor-pressure value")
+      assert(peekbyte([EvalScore] + $01) == $ff, "White rook pressure should keep score negative")
       a = $80
 
       jsr([SideHasMinorAttackedMajor], stop_on_rts = true, fail_on_brk = true)
@@ -1822,8 +1822,8 @@ suites {
 
       jsr([EvaluateMinorPressure], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $5e, "Black queen attacked by a knight should add minor-pressure value")
-      assert(peekbyte([EvalScore] + $01) == $01, "Black queen pressure should keep score positive")
+      assert(peekbyte([EvalScore]) == $00, "Minor-attacks-queen penalty is currently disabled by tuning (0)")
+      assert(peekbyte([EvalScore] + $01) == $00, "Disabled queen-pressure penalty keeps score neutral")
       a = $00
 
       jsr([SideHasMinorAttackedMajor], stop_on_rts = true, fail_on_brk = true)
@@ -1842,7 +1842,7 @@ suites {
 
       jsr([ApplyWhiteKingFileExposure], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte($f1) == $e7, "Open file beside a white king should subtract the full exposure penalty")
+      assert(peekbyte($f1) == $00, "Open-file king exposure penalty is currently disabled by tuning (white, 0)")
 
       memfill([WhitePawnsPerFile], 8, $00)
       memfill([BlackPawnsPerFile], 8, $00)
@@ -1855,7 +1855,7 @@ suites {
 
       jsr([ApplyWhiteKingFileExposure], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte($f1) == $f4, "Semi-open file beside a white king should subtract the smaller penalty")
+      assert(peekbyte($f1) == $00, "Semi-open-file king exposure penalty is currently disabled by tuning (0)")
 
       memfill([WhitePawnsPerFile], 8, $00)
       memfill([BlackPawnsPerFile], 8, $00)
@@ -1880,7 +1880,7 @@ suites {
 
       jsr([ApplyBlackKingFileExposure], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte($f1) == $e7, "Open file beside a black king should subtract the full exposure penalty")
+      assert(peekbyte($f1) == $00, "Open-file king exposure penalty is currently disabled by tuning (black, 0)")
 
       [EvalPawnCount] = $00
       $f1 = $00
@@ -1928,7 +1928,7 @@ suites {
 
       jsr([EvaluateKingPins], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $06, "White knight pinned to its king by a rook should be penalized")
+      assert(peekbyte([EvalScore]) == $c2, "White knight pinned to its king by a rook should be penalized")
       assert(peekbyte([EvalScore] + $01) == $ff, "White pin penalty should keep score negative")
 
       [Board88] + $53 = $31
@@ -1937,8 +1937,8 @@ suites {
 
       jsr([EvaluateKingPins], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $3e, "A white pinned knight attacked by a pawn should be punished harder")
-      assert(peekbyte([EvalScore] + $01) == $fe, "Extra white pin pressure should keep score negative")
+      assert(peekbyte([EvalScore]) == $5e, "A white pinned knight attacked by a pawn should be punished harder")
+      assert(peekbyte([EvalScore] + $01) == $ff, "Extra white pin pressure should keep score negative")
 
       memfill([Board88], 128, $30)
       [Board88] + $70 = $b6
@@ -1952,7 +1952,7 @@ suites {
 
       jsr([EvaluateKingPins], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $fa, "Black bishop pinned to its king by a rook should help white")
+      assert(peekbyte([EvalScore]) == $3e, "Black bishop pinned to its king by a rook should help white")
       assert(peekbyte([EvalScore] + $01) == $00, "Black pin penalty should keep score positive")
 
       [Board88] + $23 = $b1
@@ -1961,8 +1961,8 @@ suites {
 
       jsr([EvaluateKingPins], stop_on_rts = true, fail_on_brk = true)
 
-      assert(peekbyte([EvalScore]) == $c2, "A black pinned bishop attacked by a pawn should be punished harder")
-      assert(peekbyte([EvalScore] + $01) == $01, "Extra black pin pressure should keep score positive")
+      assert(peekbyte([EvalScore]) == $a2, "A black pinned bishop attacked by a pawn should be punished harder")
+      assert(peekbyte([EvalScore] + $01) == $00, "Extra black pin pressure should keep score positive")
 
       memfill([Board88], 128, $30)
       [Board88] + $74 = $b6
@@ -2001,10 +2001,10 @@ suites {
 
       jsr([EvaluateKingPins], stop_on_rts = true, fail_on_brk = true)
 
-      ; Two pinned white knights = 2 x -PINNED_MINOR_PENALTY (250 after Part B)
-      ; = -500 = $fe0c. The bug yields only -250 = $ff06.
-      assert(peekbyte([EvalScore]) == $0c, "Both pinned knights must be penalized (low byte of -500)")
-      assert(peekbyte([EvalScore] + $01) == $fe, "Both pinned knights must be penalized (high byte of -500)")
+      ; Two pinned white knights = 2 x -PINNED_MINOR_PENALTY (62 after Texel calibration)
+      ; = -124 = $ff84. The bug yields only -62 = $ffc2.
+      assert(peekbyte([EvalScore]) == $84, "Both pinned knights must be penalized (low byte of -124)")
+      assert(peekbyte([EvalScore] + $01) == $ff, "Both pinned knights must be penalized (high byte of -124)")
     }
 
     test("root-early-major-penalties-track-development", "Early queen and rook penalties require undeveloped home minors") {
