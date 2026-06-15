@@ -81,6 +81,8 @@ void board_to_fen(const Board *b, char *out);
 
 void make_move(Board *b, Move m, Undo *u);
 void unmake_move(Board *b, Move m, const Undo *u);
+void make_null(Board *b, Undo *u);            /* pass the turn (null-move pruning) */
+void unmake_null(Board *b, const Undo *u);
 
 hash_t board_zobrist(const Board *b);   /* full recompute (for verify) */
 

@@ -78,6 +78,38 @@ static int build_weights(EvalWeights *out, const char *spec) {
     return 0;
 }
 
+/* ---- search-feature overrides ("killers=1,nullmove=1,null_r=3") -------- */
+static int set_search(SearchConfig *s, const char *key, int val) {
+    struct { const char *k; int *p; } map[] = {
+        {"killers", &s->killers}, {"history", &s->history}, {"nullmove", &s->nullmove},
+        {"null_r", &s->null_r}, {"pvs", &s->pvs}, {"aspiration", &s->aspiration},
+        {"asp_delta", &s->asp_delta}, {"check_ext", &s->check_ext}, {"lmr", &s->lmr},
+        {NULL, NULL}
+    };
+    for (int i = 0; map[i].k; i++)
+        if (!strcmp(map[i].k, key)) { *map[i].p = val; return 0; }
+    return -1;
+}
+
+static int build_search(SearchConfig *out, const char *spec) {
+    search_reset_config();
+    *out = g_sc;
+    if (!spec || !*spec) return 0;
+    char buf[512];
+    strncpy(buf, spec, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = 0;
+    for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
+        char *eq = strchr(tok, '=');
+        if (!eq) return -1;
+        *eq = 0;
+        if (set_search(out, tok, atoi(eq + 1))) {
+            fprintf(stderr, "unknown search key: %s\n", tok);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /* ---- material adjudication (white-POV cp) ------------------------------ */
 static int material_cp(const Board *b) {
     static const int val[7] = {0, 100, 320, 330, 500, 900, 0};
@@ -99,6 +131,7 @@ typedef struct { int a_score; int plies; int result; char term[24]; } GResult;
 static void play_game(const char *start_fen, int a_white,
                       int depth_a, int depth_b,
                       const EvalWeights *wa, const EvalWeights *wb,
+                      const SearchConfig *sca, const SearchConfig *scb, long node_budget,
                       int max_plies, int adj_cp, int adj_streak, GResult *r) {
     Board b;
     board_from_fen(&b, start_fen);
@@ -128,6 +161,8 @@ static void play_game(const char *start_fen, int a_white,
 
         int use_a = (b.wtm == a_white);
         g_w = use_a ? *wa : *wb;
+        g_sc = use_a ? *sca : *scb;
+        search_set_budget(node_budget);
         SearchInfo info;
         Move mv = search_bestmove(&b, use_a ? depth_a : depth_b, hist, hlen, &info);
 
@@ -206,7 +241,8 @@ static int cmd_selfplay(int argc, char **argv) {
     int max_plies = 160, adj_cp = 300, adj_streak = 6, jobs = 8;
     int use_sprt = 0; double sprt_elo1 = 30.0, sprt_alpha = 0.05;
     const char *wa_spec = "", *wb_spec = "", *label = "A=candidate vs B=baseline";
-    const char *openings = "tools/openings_big.txt";
+    const char *sa_spec = "", *sb_spec = "", *openings = "tools/openings_big.txt";
+    long node_budget = 0;
 
     for (int i = 0; i < argc; i++) {
         const char *a = argv[i];
@@ -215,12 +251,15 @@ static int cmd_selfplay(int argc, char **argv) {
         else if (!strcmp(a, "--depth")) depth = atoi(NEXT);
         else if (!strcmp(a, "--depth-a")) depth_a = atoi(NEXT);
         else if (!strcmp(a, "--depth-b")) depth_b = atoi(NEXT);
+        else if (!strcmp(a, "--nodes")) node_budget = atol(NEXT);
         else if (!strcmp(a, "--max-plies")) max_plies = atoi(NEXT);
         else if (!strcmp(a, "--adjudicate-win-cp")) adj_cp = atoi(NEXT);
         else if (!strcmp(a, "--adjudicate-streak")) adj_streak = atoi(NEXT);
         else if (!strcmp(a, "--jobs")) jobs = atoi(NEXT);
         else if (!strcmp(a, "--weights-a")) wa_spec = NEXT;
         else if (!strcmp(a, "--weights-b")) wb_spec = NEXT;
+        else if (!strcmp(a, "--search-a")) sa_spec = NEXT;
+        else if (!strcmp(a, "--search-b")) sb_spec = NEXT;
         else if (!strcmp(a, "--openings")) openings = NEXT;
         else if (!strcmp(a, "--label")) label = NEXT;
         else if (!strcmp(a, "--sprt")) use_sprt = 1;
@@ -229,9 +268,12 @@ static int cmd_selfplay(int argc, char **argv) {
     }
     if (depth_a < 0) depth_a = depth;
     if (depth_b < 0) depth_b = depth;
+    if (node_budget) { depth_a = depth_b = 64; }   /* budget-bound: let ID run deep */
 
     EvalWeights wa, wb;
     if (build_weights(&wa, wa_spec) || build_weights(&wb, wb_spec)) return 2;
+    SearchConfig sca, scb;
+    if (build_search(&sca, sa_spec) || build_search(&scb, sb_spec)) return 2;
 
     static char fens[8192][128];
     int nf = load_fens(openings, fens, 8192);
@@ -260,7 +302,7 @@ static int cmd_selfplay(int argc, char **argv) {
             for (int t = w; t < ntasks; t += jobs) {
                 int pi = t / 2, a_white = (t & 1) == 0;
                 play_game(fens[pi % nf], a_white, depth_a, depth_b, &wa, &wb,
-                          max_plies, adj_cp, adj_streak, &res[t]);
+                          &sca, &scb, node_budget, max_plies, adj_cp, adj_streak, &res[t]);
             }
             _exit(0);
         }
@@ -308,6 +350,7 @@ static int cmd_bestmove(const char *fen, int depth) {
     Board b;
     if (board_from_fen(&b, fen)) { fprintf(stderr, "bad fen\n"); return 2; }
     eval_reset_weights();
+    search_reset_config();
     SearchInfo info;
     hash_t hist[1] = { b.hash };
     Move m = search_bestmove(&b, depth, hist, 1, &info);

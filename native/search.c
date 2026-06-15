@@ -18,7 +18,13 @@
 
 #define LAZY_EVAL_MARGIN 240   /* matches src/ai/search.s LAZY_EVAL_MARGIN */
 #define MAX_QUIESCE_DEPTH 6    /* matches src/ai/search.s MAX_QUIESCE_DEPTH */
+/* TT size differs by target: a big table on the host (strong measurement), a
+ * small one on the 6502 (RAM-fit; cc65 int is 16-bit so 1<<16 would overflow). */
+#ifdef __CC65__
+#define TT_BITS 8
+#else
 #define TT_BITS 16
+#endif
 #define TT_SIZE (1 << TT_BITS)
 #define TT_MASK (TT_SIZE - 1)
 
@@ -53,12 +59,53 @@ static Move g_ml[MAX_PLY][MAX_MOVES];     /* node move list (negamax or quiesce)
 static Move g_filt[MAX_PLY][MAX_MOVES];   /* quiesce filtered list */
 static int  g_score[MAX_MOVES];           /* order_moves scratch */
 
+/* Search-feature config + node budget (the A/B knobs). */
+SearchConfig g_sc;
+static long g_node_budget;    /* 0 = unlimited */
+static int  g_stop;           /* set when the budget is exhausted mid-iteration */
+
+/* killer + history tables (used only when the toggles are on). */
+static Move  g_killer[MAX_PLY][2];
+static short g_history[2][64][64];     /* [stm][from64][to64], idx64 0..63 */
+
+void search_reset_config(void) {
+    /* Proven winners ON by default (each +Elo at fixed nodes, SPRT-confirmed as a
+     * stack). Candidate features below stay off until measured. */
+    g_sc.killers = 1;
+    g_sc.history = 1;
+    g_sc.nullmove = 1;
+    g_sc.null_r = 2;
+    g_sc.pvs = 0;
+    g_sc.aspiration = 0;
+    g_sc.asp_delta = 50;
+    g_sc.check_ext = 0;
+    g_sc.lmr = 0;
+}
+
+void search_set_budget(long nodes) { g_node_budget = nodes; }
+
 /* MVV-LVA piece values (king as attacker = cheapest pinner avoidance). */
 static const int MVV[7] = {0, 100, 320, 330, 500, 900, 20000};
 
 static int eval_stm(const Board *b) {
     int e = eval_full(b);
     return b->wtm ? e : -e;
+}
+
+/* side `white` has a knight/bishop/rook/queen (null-move zugzwang guard). */
+static int has_nonpawn(const Board *b, int white) {
+    uint8_t cf = white ? WHITE_FLAG : 0;
+    int i;
+    for (i = 0; i < 128; i++) {
+        uint8_t p;
+        int t;
+        if (i & 0x88) continue;
+        p = b->sq[i];
+        if (!p || (p & WHITE_FLAG) != cf) continue;
+        t = PT(p);
+        if (t >= PT_KNIGHT && t <= PT_QUEEN) return 1;
+    }
+    return 0;
 }
 
 static int is_repetition(hash_t h) {
@@ -78,21 +125,37 @@ static int mvv_lva(const Board *b, Move m) {
     return s;
 }
 
-/* score moves for ordering, then selection-sort descending (n is small). */
-static void order_moves(const Board *b, Move *list, int n, Move tt_move) {
+static int is_killer(int ply, Move m) {
+    return (g_killer[ply][0].from == m.from && g_killer[ply][0].to == m.to) ? 1 :
+           (g_killer[ply][1].from == m.from && g_killer[ply][1].to == m.to) ? 2 : 0;
+}
+
+/* score moves for ordering, then selection-sort descending (n is small).
+ * 16-bit-safe scores (cc65 int): TT 30000 > captures 10000+MVV-LVA > killers
+ * 9000/8900 > history quiets 0..8000. */
+static void order_moves(const Board *b, Move *list, int n, Move tt_move, int ply) {
     int *score = g_score;
     int have_tt = (tt_move.from != tt_move.to);
+    int stm = b->wtm ? 1 : 0;
     int i, j;
     for (i = 0; i < n; i++) {
         Move m;
-        m = list[i];
+        m = list[i];               /* cc65 rejects struct copy-init */
         if (have_tt && m.from == tt_move.from && m.to == tt_move.to &&
-            m.promo == tt_move.promo)
-            score[i] = 1 << 24;
-        else if (m.flags & (MF_CAPTURE | MF_EP | MF_PROMO))
-            score[i] = 1000 + mvv_lva(b, m);
-        else
-            score[i] = 0;
+            m.promo == tt_move.promo) {
+            score[i] = 30000;
+        } else if (m.flags & (MF_CAPTURE | MF_EP | MF_PROMO)) {
+            score[i] = 10000 + mvv_lva(b, m);
+        } else {
+            int s = 0, k;
+            if (g_sc.killers && (k = is_killer(ply, m))) {
+                s = (k == 1) ? 9000 : 8900;
+            } else if (g_sc.history) {
+                s = g_history[stm][idx64_from_0x88(m.from)][idx64_from_0x88(m.to)];
+                if (s > 8000) s = 8000;
+            }
+            score[i] = s;
+        }
     }
     for (i = 0; i < n; i++) {
         int best = i;
@@ -149,7 +212,7 @@ static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
     if (qd >= MAX_QUIESCE_DEPTH)
         return check ? eval_stm(b) : best;
 
-    order_moves(b, filt, fn, none);
+    order_moves(b, filt, fn, none, ply);
 
     for (i = 0; i < fn; i++) {
         Undo u;
@@ -175,6 +238,8 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
     int sv;
 
     g_info.nodes++;
+    if (g_node_budget && g_info.nodes >= g_node_budget) { g_stop = 1; return 0; }
+    if (g_stop) return 0;
 
     if (ply > 0 && (is_repetition(b->hash) || b->halfmove >= 100))
         return 0;
@@ -196,9 +261,23 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
 
     if (depth <= 0) return quiesce(b, alpha, beta, ply, 0);
 
+    /* null-move pruning: if passing the turn still fails high, prune. Skip at the
+     * root, in check, near mate, and in likely-zugzwang (no non-pawn material). */
+    if (g_sc.nullmove && ply > 0 && depth >= 3 && beta < MATE_THRESHOLD &&
+        !in_check(b) && has_nonpawn(b, b->wtm)) {
+        Undo nu;
+        int R = g_sc.null_r, nd, nscore;
+        make_null(b, &nu);
+        nd = depth - 1 - R; if (nd < 0) nd = 0;
+        nscore = -negamax(b, nd, -beta, -beta + 1, ply + 1);
+        unmake_null(b, &nu);
+        if (g_stop) return 0;
+        if (nscore >= beta) return beta;
+    }
+
     n = gen_legal(b, list);
     if (n == 0) return in_check(b) ? -MATE_SCORE + ply : 0;
-    order_moves(b, list, n, tt_move);
+    order_moves(b, list, n, tt_move, ply);
 
     best_val = -SEARCH_INF;
     best_move = list[0];
@@ -211,7 +290,24 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
         unmake_move(b, list[i], &u);
         if (val > best_val) { best_val = val; best_move = list[i]; }
         if (val > alpha) alpha = val;
-        if (alpha >= beta) break;
+        if (alpha >= beta) {
+            /* beta cutoff on a quiet move -> reward it for ordering future nodes */
+            if (!(list[i].flags & (MF_CAPTURE | MF_EP | MF_PROMO))) {
+                if (g_sc.killers && ply < MAX_PLY &&
+                    !(g_killer[ply][0].from == list[i].from && g_killer[ply][0].to == list[i].to)) {
+                    g_killer[ply][1] = g_killer[ply][0];
+                    g_killer[ply][0] = list[i];
+                }
+                if (g_sc.history) {
+                    int st = b->wtm ? 1 : 0;   /* b is unmade: wtm == the mover */
+                    int f64 = idx64_from_0x88(list[i].from), t64 = idx64_from_0x88(list[i].to);
+                    int hv = g_history[st][f64][t64] + depth * depth;
+                    if (hv > 16000) hv = 16000;
+                    g_history[st][f64][t64] = (short)hv;
+                }
+            }
+            break;
+        }
     }
     rep_top--;
 
@@ -246,6 +342,14 @@ Move search_bestmove(const Board *b, int depth,
     }
 
     work = *b;
+    g_stop = 0;
+    if (g_sc.killers) memset(g_killer, 0, sizeof(g_killer));
+    if (g_sc.history) memset(g_history, 0, sizeof(g_history));
+
+    {   /* fallback: first legal move, in case the node budget aborts iteration 1 */
+        int nn = gen_legal(&work, g_ml[0]);
+        if (nn > 0) best = g_ml[0][0];
+    }
 
     /* iterative deepening for better ordering via the TT */
     for (d = 1; d <= depth; d++) {
@@ -259,7 +363,7 @@ Move search_bestmove(const Board *b, int depth,
         n = gen_legal(&work, list);
         if (n == 0) break;
         prev = best;
-        order_moves(&work, list, n, prev);
+        order_moves(&work, list, n, prev, 0);
         local_best = -SEARCH_INF;
         local_move = list[0];
         /* root position is already in rep[] (passed via hist); children check
@@ -273,6 +377,7 @@ Move search_bestmove(const Board *b, int depth,
             if (val > local_best) { local_best = val; local_move = list[i]; }
             if (val > alpha) alpha = val;
         }
+        if (g_stop) break;          /* budget hit mid-iteration -> discard it */
         best = local_move;
         best_score = local_best;
         if (best_score > MATE_THRESHOLD || best_score < -MATE_THRESHOLD) break;

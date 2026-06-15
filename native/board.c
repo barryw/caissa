@@ -285,6 +285,24 @@ void unmake_move(Board *b, Move m, const Undo *u) {
     b->hash = u->hash;
 }
 
+/* ---- null move (pass the turn; for null-move pruning) ------------------- */
+void make_null(Board *b, Undo *u) {
+    u->ep = b->ep;
+    u->hash = b->hash;
+    u->halfmove = b->halfmove;
+    if (b->ep >= 0) b->hash ^= Z_EP[b->ep & 7];
+    b->ep = -1;
+    b->wtm ^= 1;
+    b->hash ^= Z_SIDE;
+    b->halfmove++;
+}
+void unmake_null(Board *b, const Undo *u) {
+    b->ep = u->ep;
+    b->hash = u->hash;
+    b->halfmove = u->halfmove;
+    b->wtm ^= 1;
+}
+
 /* ---- uci ---------------------------------------------------------------- */
 void move_to_uci(Move m, char *out) {
     int n = 4;
