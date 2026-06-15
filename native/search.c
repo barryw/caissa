@@ -75,11 +75,11 @@ void search_reset_config(void) {
     g_sc.history = 1;
     g_sc.nullmove = 1;
     g_sc.null_r = 2;
-    g_sc.pvs = 0;
+    g_sc.lmr = 1;          /* +78 Elo @ fixed nodes (SPRT H1) */
+    g_sc.pvs = 0;          /* tested -26: re-search overhead doesn't pay here */
+    g_sc.check_ext = 0;    /* tested -69: unconditional extension wastes the budget */
     g_sc.aspiration = 0;
     g_sc.asp_delta = 50;
-    g_sc.check_ext = 0;
-    g_sc.lmr = 0;
 }
 
 void search_set_budget(long nodes) { g_node_budget = nodes; }
@@ -259,6 +259,10 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
         }
     }
 
+    /* check extension: a node in check searches one ply deeper (don't let a
+     * forcing line fall into quiescence early). */
+    if (g_sc.check_ext && ply > 0 && ply < MAX_PLY - 4 && in_check(b)) depth++;
+
     if (depth <= 0) return quiesce(b, alpha, beta, ply, 0);
 
     /* null-move pruning: if passing the turn still fails high, prune. Skip at the
@@ -284,10 +288,25 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
     rep[rep_top++] = b->hash;          /* current node is an ancestor for children */
     for (i = 0; i < n; i++) {
         Undo u;
-        int val;
+        int val, nd, gives_check, is_quiet;
         make_move(b, list[i], &u);
-        val = -negamax(b, depth - 1, -beta, -alpha, ply + 1);
+        gives_check = in_check(b);
+        is_quiet = !(list[i].flags & (MF_CAPTURE | MF_EP | MF_PROMO));
+        nd = depth - 1;
+        if (g_sc.lmr && depth >= 3 && i >= 3 && is_quiet && !gives_check &&
+            best_val > -SEARCH_INF) {
+            val = -negamax(b, nd - 1, -alpha - 1, -alpha, ply + 1);   /* reduced null-window */
+            if (val > alpha)
+                val = -negamax(b, nd, -beta, -alpha, ply + 1);        /* fail-high -> full re-search */
+        } else if (g_sc.pvs && i > 0 && best_val > -SEARCH_INF) {
+            val = -negamax(b, nd, -alpha - 1, -alpha, ply + 1);       /* null window */
+            if (val > alpha && val < beta)
+                val = -negamax(b, nd, -beta, -alpha, ply + 1);        /* re-search full */
+        } else {
+            val = -negamax(b, nd, -beta, -alpha, ply + 1);
+        }
         unmake_move(b, list[i], &u);
+        if (g_stop) break;
         if (val > best_val) { best_val = val; best_move = list[i]; }
         if (val > alpha) alpha = val;
         if (alpha >= beta) {

@@ -346,11 +346,13 @@ static int cmd_eval(const char *fen) {
     return 0;
 }
 
-static int cmd_bestmove(const char *fen, int depth) {
+static int cmd_bestmove(const char *fen, int depth, long nodes) {
     Board b;
     if (board_from_fen(&b, fen)) { fprintf(stderr, "bad fen\n"); return 2; }
     eval_reset_weights();
     search_reset_config();
+    search_set_budget(nodes);
+    if (nodes) depth = 64;            /* budget-bound: let ID run deep */
     SearchInfo info;
     hash_t hist[1] = { b.hash };
     Move m = search_bestmove(&b, depth, hist, 1, &info);
@@ -369,7 +371,8 @@ int main(int argc, char **argv) {
     }
     if (!strcmp(argv[1], "eval") && argc >= 3) return cmd_eval(argv[2]);
     if (!strcmp(argv[1], "bestmove") && argc >= 3)
-        return cmd_bestmove(argv[2], argc >= 4 ? atoi(argv[3]) : 5);
+        return cmd_bestmove(argv[2], argc >= 4 ? atoi(argv[3]) : 5,
+                            argc >= 5 ? atol(argv[4]) : 0);   /* bestmove FEN depth [nodes] */
     if (!strcmp(argv[1], "selfplay")) return cmd_selfplay(argc - 2, argv + 2);
     fprintf(stderr, "unknown subcommand %s\n", argv[1]);
     return 2;
