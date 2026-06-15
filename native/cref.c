@@ -102,7 +102,7 @@ static void play_game(const char *start_fen, int a_white,
                       int max_plies, int adj_cp, int adj_streak, GResult *r) {
     Board b;
     board_from_fen(&b, start_fen);
-    uint64_t hist[1024];
+    hash_t hist[1024];
     int hlen = 0;
     hist[hlen++] = b.hash;
     const char *result = "1/2-1/2";
@@ -309,7 +309,7 @@ static int cmd_bestmove(const char *fen, int depth) {
     if (board_from_fen(&b, fen)) { fprintf(stderr, "bad fen\n"); return 2; }
     eval_reset_weights();
     SearchInfo info;
-    uint64_t hist[1] = { b.hash };
+    hash_t hist[1] = { b.hash };
     Move m = search_bestmove(&b, depth, hist, 1, &info);
     char uci[6]; move_to_uci(m, uci);
     printf("bestmove %s  score %+dcp  depth %d  nodes %llu  qnodes %llu  tt_hits %llu\n",

@@ -27,9 +27,8 @@ static const int KING_OFF[8]   = { -17, -16, -15, -1, 1, 15, 16, 17 };
 /* ---- is_square_attacked ------------------------------------------------- */
 /* Is square `sq` (0x88) attacked by side `by_white` (1=white, 0=black)? */
 int is_square_attacked(const Board *b, int sq, int by_white) {
-    uint8_t want = by_white ? WHITE_FLAG : 0;
     uint8_t color_match = by_white ? WHITE_FLAG : 0;
-    (void)want;
+    int i;
 
     /* Pawn attacks. A white pawn pushes toward lower indices, so a white pawn
      * on square s attacks s-15 and s-17; hence sq is attacked by a white pawn
@@ -57,25 +56,27 @@ int is_square_attacked(const Board *b, int sq, int by_white) {
     }
 
     /* Knight attacks. */
-    for (int i = 0; i < 8; i++) {
+    for (i = 0; i < 8; i++) {
         int t = sq + KNIGHT_OFF[i];
+        uint8_t p;
         if (OFFBOARD(t)) continue;
-        uint8_t p = b->sq[t];
+        p = b->sq[t];
         if (p && PT(p) == PT_KNIGHT && (IS_WHITE(p) ? WHITE_FLAG : 0) == color_match)
             return 1;
     }
 
     /* King attacks (adjacency). */
-    for (int i = 0; i < 8; i++) {
+    for (i = 0; i < 8; i++) {
         int t = sq + KING_OFF[i];
+        uint8_t p;
         if (OFFBOARD(t)) continue;
-        uint8_t p = b->sq[t];
+        p = b->sq[t];
         if (p && PT(p) == PT_KING && (IS_WHITE(p) ? WHITE_FLAG : 0) == color_match)
             return 1;
     }
 
     /* Sliding diagonal attacks: bishop or queen. */
-    for (int i = 0; i < 4; i++) {
+    for (i = 0; i < 4; i++) {
         int off = BISHOP_OFF[i];
         int t = sq + off;
         while (!OFFBOARD(t)) {
@@ -91,7 +92,7 @@ int is_square_attacked(const Board *b, int sq, int by_white) {
     }
 
     /* Sliding orthogonal attacks: rook or queen. */
-    for (int i = 0; i < 4; i++) {
+    for (i = 0; i < 4; i++) {
         int off = ROOK_OFF[i];
         int t = sq + off;
         while (!OFFBOARD(t)) {
@@ -117,8 +118,8 @@ int in_check(const Board *b) {
 }
 
 /* ---- pseudo-legal generation helpers ------------------------------------ */
-static inline void add_move(Move *list, int *n, int from, int to,
-                            int promo, int flags) {
+static void add_move(Move *list, int *n, int from, int to,
+                     int promo, int flags) {
     Move *m = &list[*n];
     m->from = (uint8_t)from;
     m->to = (uint8_t)to;
@@ -145,17 +146,23 @@ static int gen_pseudo(const Board *b, Move *list) {
      * Double-push start rank: white indices 96..111 (rank 2), black 16..31. */
     int promo_row_hi = white ? 0x00 : 0x70;   /* high nibble of promo target */
     int start_row_hi = white ? 0x60 : 0x10;   /* high nibble of pawn start   */
+    int sq, i;
+    int opp_white;
 
-    for (int sq = 0; sq < 128; sq++) {
+    for (sq = 0; sq < 128; sq++) {
+        uint8_t pc;
+        int type;
         if (sq & 0x88) continue;
-        uint8_t pc = b->sq[sq];
+        pc = b->sq[sq];
         if (!pc) continue;
         if ((IS_WHITE(pc) ? WHITE_FLAG : 0) != my_color) continue;
-        int type = PT(pc);
+        type = PT(pc);
 
         switch (type) {
         case PT_PAWN: {
             int one = sq + push;
+            int caps[2];
+            int ci;
             /* single push */
             if (!OFFBOARD(one) && b->sq[one] == 0) {
                 if ((one & 0xF0) == promo_row_hi) {
@@ -171,11 +178,13 @@ static int gen_pseudo(const Board *b, Move *list) {
                 }
             }
             /* captures (incl. promotion captures + en passant) */
-            int caps[2] = { sq + push - 1, sq + push + 1 };
-            for (int ci = 0; ci < 2; ci++) {
+            caps[0] = sq + push - 1;
+            caps[1] = sq + push + 1;
+            for (ci = 0; ci < 2; ci++) {
                 int t = caps[ci];
+                uint8_t target;
                 if (OFFBOARD(t)) continue;
-                uint8_t target = b->sq[t];
+                target = b->sq[t];
                 if (target && (IS_WHITE(target) ? WHITE_FLAG : 0) != my_color) {
                     if ((t & 0xF0) == promo_row_hi)
                         add_promotions(list, &n, sq, t, MF_CAPTURE);
@@ -189,10 +198,11 @@ static int gen_pseudo(const Board *b, Move *list) {
             break;
         }
         case PT_KNIGHT:
-            for (int i = 0; i < 8; i++) {
+            for (i = 0; i < 8; i++) {
                 int t = sq + KNIGHT_OFF[i];
+                uint8_t target;
                 if (OFFBOARD(t)) continue;
-                uint8_t target = b->sq[t];
+                target = b->sq[t];
                 if (target == 0)
                     add_move(list, &n, sq, t, 0, 0);
                 else if ((IS_WHITE(target) ? WHITE_FLAG : 0) != my_color)
@@ -200,10 +210,11 @@ static int gen_pseudo(const Board *b, Move *list) {
             }
             break;
         case PT_KING:
-            for (int i = 0; i < 8; i++) {
+            for (i = 0; i < 8; i++) {
                 int t = sq + KING_OFF[i];
+                uint8_t target;
                 if (OFFBOARD(t)) continue;
-                uint8_t target = b->sq[t];
+                target = b->sq[t];
                 if (target == 0)
                     add_move(list, &n, sq, t, 0, 0);
                 else if ((IS_WHITE(target) ? WHITE_FLAG : 0) != my_color)
@@ -218,7 +229,7 @@ static int gen_pseudo(const Board *b, Move *list) {
             if (type == PT_BISHOP) { off = BISHOP_OFF; noff = 4; }
             else if (type == PT_ROOK) { off = ROOK_OFF; noff = 4; }
             else { off = KING_OFF; noff = 8; }  /* queen = all 8 ray directions */
-            for (int i = 0; i < noff; i++) {
+            for (i = 0; i < noff; i++) {
                 int t = sq + off[i];
                 while (!OFFBOARD(t)) {
                     uint8_t target = b->sq[t];
@@ -244,7 +255,7 @@ static int gen_pseudo(const Board *b, Move *list) {
      *                     black e8=4   -> g8=6   (K), c8=2   (Q).
      * make_move relocates the rook with: K rook from to+1 to to-1,
      * Q rook from to-2 to to+1, which matches the standard squares below. */
-    int opp_white = white ? 0 : 1;
+    opp_white = white ? 0 : 1;
     if (white) {
         if ((b->castle & CASTLE_WK) &&
             b->sq[117] == 0 && b->sq[118] == 0 &&             /* f1,g1 empty */
@@ -277,20 +288,28 @@ static int gen_pseudo(const Board *b, Move *list) {
 }
 
 /* ---- gen_legal ---------------------------------------------------------- */
+/* pseudo[] off the C stack (cc65 frame limit). Call-scoped: gen_legal never
+ * recurses into itself, so a single file-scope buffer is safe. */
+static Move g_pseudo[MAX_MOVES];
+
 int gen_legal(const Board *b, Move *list) {
-    Move pseudo[MAX_MOVES];
+    Move *pseudo = g_pseudo;
     int np = gen_pseudo(b, pseudo);
     int n = 0;
+    Board tmp;       /* make/unmake mutates; work on a local copy */
+    int i;
+    tmp = *b;        /* struct assignment (cc65 rejects struct copy-INIT) */
 
-    Board tmp = *b;  /* make/unmake mutates; work on a local copy */
-    for (int i = 0; i < np; i++) {
-        Move m = pseudo[i];
+    for (i = 0; i < np; i++) {
+        Move m;
         int mover_white = tmp.wtm;
         Undo u;
+        int ksq;
+        m = pseudo[i];
         make_move(&tmp, m, &u);
         /* After make_move, the side to move flipped; the mover's king must not
          * be attacked by the now-side-to-move (the opponent). */
-        int ksq = mover_white ? tmp.wk : tmp.bk;
+        ksq = mover_white ? tmp.wk : tmp.bk;
         if (!is_square_attacked(&tmp, ksq, mover_white ? 0 : 1))
             list[n++] = m;
         unmake_move(&tmp, m, &u);
@@ -298,18 +317,5 @@ int gen_legal(const Board *b, Move *list) {
     return n;
 }
 
-/* ---- perft -------------------------------------------------------------- */
-uint64_t perft(Board *b, int depth) {
-    if (depth == 0) return 1;
-    Move list[MAX_MOVES];
-    int n = gen_legal(b, list);
-    if (depth == 1) return (uint64_t)n;  /* leaf shortcut (still exact) */
-    uint64_t total = 0;
-    for (int i = 0; i < n; i++) {
-        Undo u;
-        make_move(b, list[i], &u);
-        total += perft(b, depth - 1);
-        unmake_move(b, list[i], &u);
-    }
-    return total;
-}
+/* perft lives in the host-only test_perft.c (verification, not the engine): it
+ * needs a per-depth stack of move lists, which we keep off the cc65 engine. */

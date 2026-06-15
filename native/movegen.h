@@ -15,7 +15,8 @@ int in_check(const Board *b);
 /* Generate all LEGAL moves into list[] (capacity MAX_MOVES). Returns count. */
 int gen_legal(const Board *b, Move *list);
 
-/* perft node count to `depth` (used to verify movegen vs python-chess). */
-uint64_t perft(Board *b, int depth);
+/* perft node count to `depth` (used to verify movegen vs python-chess).
+ * Returns hash_t (>=32-bit) -- wide enough for the small depths we verify. */
+hash_t perft(Board *b, int depth);
 
 #endif

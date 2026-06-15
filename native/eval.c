@@ -221,27 +221,27 @@ typedef struct {
 } Eval;
 
 /* 6502 8-bit add (wraps mod 256). */
-static inline int add8(int a, int b) { return (a + b) & 0xFF; }
+static int add8(int a, int b) { return (a + b) & 0xFF; }
 
 /* Signed-byte add/sub: wrap into two's-complement byte. */
-static inline int add8s(int s, int v) {
+static int add8s(int s, int v) {
     int r = (s + v) & 0xFF;
     return r >= 128 ? r - 256 : r;
 }
-static inline int sub8s(int s, int v) {
+static int sub8s(int s, int v) {
     int r = (s - v) & 0xFF;
     return r >= 128 ? r - 256 : r;
 }
-static inline int byte_x10(int signed_byte) { return signed_byte * 10; }
+static int byte_x10(int signed_byte) { return signed_byte * 10; }
 
 /* ------------------------------------------------------------------------- */
 /* low-level pawn probes                                                     */
 /* ------------------------------------------------------------------------- */
-static inline int check_white_pawn_at(const Eval *e, int idx) {
+static int check_white_pawn_at(const Eval *e, int idx) {
     if (idx & OFFBOARD_MASK) return 0;
     return e->b[idx] == WHITE_PAWN;
 }
-static inline int check_black_pawn_at(const Eval *e, int idx) {
+static int check_black_pawn_at(const Eval *e, int idx) {
     if (idx & OFFBOARD_MASK) return 0;
     return e->b[idx] == BLACK_PAWN;
 }
@@ -262,7 +262,8 @@ static int is_pawn_attacked(const Eval *e, int sq, int color, int ptype) {
 
 static int is_knight_attacked(const Eval *e, int sq, int color) {
     int enemy = color ? BLACK_KNIGHT : WHITE_KNIGHT;
-    for (int i = 0; i < 8; i++) {
+    int i;
+    for (i = 0; i < 8; i++) {
         int dest = add8(sq, KNIGHT_OFFSETS[i]);
         if (dest & OFFBOARD_MASK) continue;
         if (e->b[dest] == enemy) return 1;
@@ -272,13 +273,15 @@ static int is_knight_attacked(const Eval *e, int sq, int color) {
 
 static int is_bishop_attacked(const Eval *e, int sq, int color) {
     int enemy = color ? BLACK_BISHOP : WHITE_BISHOP;
-    for (int i = 0; i < 4; i++) {
+    int i;
+    for (i = 0; i < 4; i++) {
         int off = DIAGONAL_OFFSETS[i];
         int ray = sq;
         for (;;) {
+            int piece;
             ray = add8(ray, off);
             if (ray & OFFBOARD_MASK) break;
-            int piece = e->b[ray];
+            piece = e->b[ray];
             if (piece == EMPTY) continue;
             if (piece == enemy) return 1;
             break;
@@ -290,6 +293,7 @@ static int is_bishop_attacked(const Eval *e, int sq, int color) {
 /* IsPieceQueenAttacked: only minors; enemy queen must sit on its home square. */
 static int is_queen_attacked(const Eval *e, int sq, int color, int ptype) {
     int enemy;
+    int i;
     if (ptype < KNIGHT_T || ptype >= ROOK_T) return 0;
     if (color) { /* white piece: enemy black queen must be on d8 ($03) */
         if (e->b[0x03] != BLACK_QUEEN) return 0;
@@ -298,13 +302,14 @@ static int is_queen_attacked(const Eval *e, int sq, int color, int ptype) {
         if (e->b[0x73] != WHITE_QUEEN) return 0;
         enemy = WHITE_QUEEN;
     }
-    for (int i = 0; i < 8; i++) {
+    for (i = 0; i < 8; i++) {
         int off = ALL_DIRECTION_OFFSETS[i];
         int ray = sq;
         for (;;) {
+            int piece;
             ray = add8(ray, off);
             if (ray & OFFBOARD_MASK) break;
-            int piece = e->b[ray];
+            piece = e->b[ray];
             if (piece == EMPTY) continue;
             if (piece == enemy) return 1;
             break;
@@ -317,33 +322,37 @@ static int is_queen_attacked(const Eval *e, int sq, int color, int ptype) {
 /* Per-piece full-eval terms (main board pass)                               */
 /* ------------------------------------------------------------------------- */
 static void pawn_pressure(Eval *e, int sq, int color, int ptype) {
+    int pen;
     if (!is_pawn_attacked(e, sq, color, ptype)) return;
-    int pen = e->PAWN_ATTACK_PENALTY[ptype];
+    pen = e->PAWN_ATTACK_PENALTY[ptype];
     if (color) e->score -= pen; else e->score += pen;
 }
 
 static void queen_pressure(Eval *e, int sq, int color, int ptype) {
+    int pen;
     if (!is_queen_attacked(e, sq, color, ptype)) return;
-    int pen = e->QUEEN_ATTACK_PENALTY[ptype];
+    pen = e->QUEEN_ATTACK_PENALTY[ptype];
     if (color) e->score -= pen; else e->score += pen;
 }
 
 static void minor_pressure(Eval *e, int sq, int color, int ptype) {
+    int attacked, pen;
     if (ptype < ROOK_T || ptype >= KING_T) return; /* only rook(4), queen(5) */
-    int attacked = is_knight_attacked(e, sq, color);
+    attacked = is_knight_attacked(e, sq, color);
     if (!attacked) attacked = is_bishop_attacked(e, sq, color);
     if (!attacked) return;
-    int pen = e->MINOR_ATTACK_PENALTY[ptype];
+    pen = e->MINOR_ATTACK_PENALTY[ptype];
     if (pen == 0) return;
     if (color) e->score -= pen; else e->score += pen;
 }
 
 static void knight_outpost(Eval *e, int sq, int color, int ptype) {
+    int file, row16;
     if (ptype != KNIGHT_T) return;
-    int file = sq & 0x07;
+    file = sq & 0x07;
     if (file < 2 || file >= 6) return;
     if (is_pawn_attacked(e, sq, color, ptype)) return;
-    int row16 = sq & 0x70;
+    row16 = sq & 0x70;
     if (color) { /* white outposts on rows 2..4 ($20.. <$50) */
         if (row16 < 0x20 || row16 >= 0x50) return;
         if (check_white_pawn_at(e, add8(sq, 0x0F)) || check_white_pawn_at(e, add8(sq, 0x11)))
@@ -357,10 +366,12 @@ static void knight_outpost(Eval *e, int sq, int color, int ptype) {
 
 static int count_knight_mobility(const Eval *e, int sq, int color) {
     int count = 0;
-    for (int i = 0; i < 8; i++) {
+    int i;
+    for (i = 0; i < 8; i++) {
         int dest = add8(sq, KNIGHT_OFFSETS[i]);
+        int piece;
         if (dest & OFFBOARD_MASK) continue;
-        int piece = e->b[dest];
+        piece = e->b[dest];
         if (piece == EMPTY) count++;
         else if ((piece & WHITE_COLOR) != color) count++;
     }
@@ -370,13 +381,15 @@ static int count_knight_mobility(const Eval *e, int sq, int color) {
 static int count_sliding_mobility(const Eval *e, int sq, int color,
                                   const int *offsets, int n) {
     int count = 0;
-    for (int i = 0; i < n; i++) {
+    int i;
+    for (i = 0; i < n; i++) {
         int off = offsets[i];
         int ray = sq;
         for (;;) {
+            int piece;
             ray = add8(ray, off);
             if (ray & OFFBOARD_MASK) break;
-            int piece = e->b[ray];
+            piece = e->b[ray];
             if (piece == EMPTY) { count++; continue; }
             if ((piece & WHITE_COLOR) != color) count++;
             break;
@@ -387,6 +400,7 @@ static int count_sliding_mobility(const Eval *e, int sq, int color,
 
 static void mobility(Eval *e, int sq, int color, int ptype) {
     int raw;
+    int half, contrib;
     if (ptype == KNIGHT_T)      raw = count_knight_mobility(e, sq, color);
     else if (ptype == BISHOP_T) raw = count_sliding_mobility(e, sq, color, DIAGONAL_OFFSETS, 4);
     else if (ptype == ROOK_T)   raw = count_sliding_mobility(e, sq, color, ORTHOGONAL_OFFSETS, 4);
@@ -398,15 +412,16 @@ static void mobility(Eval *e, int sq, int color, int ptype) {
         if (color) e->score -= g_w.trapped_penalty; else e->score += g_w.trapped_penalty;
     }
     /* ApplyMobilityScore: lsr (halve), then *10 (only if nonzero). */
-    int half = raw >> 1;
+    half = raw >> 1;
     if (half == 0) return;
-    int contrib = half * 10;
+    contrib = half * 10;
     if (color) e->score += contrib; else e->score -= contrib;
 }
 
 static void seventh_rank(Eval *e, int sq, int color, int ptype) {
+    int row16;
     if (ptype != ROOK_T && ptype != QUEEN_T) return;
-    int row16 = sq & 0x70;
+    row16 = sq & 0x70;
     if (color) {
         if (row16 == 0x10) e->score += g_w.heavy_seventh_rank; /* white on rank 7 */
     } else {
@@ -415,8 +430,9 @@ static void seventh_rank(Eval *e, int sq, int color, int ptype) {
 }
 
 static void advanced_pawn(Eval *e, int sq, int color, int ptype) {
+    int row16;
     if (ptype != PAWN_T) return;
-    int row16 = sq & 0x70;
+    row16 = sq & 0x70;
     if (color) { /* white */
         if (row16 == 0x30) e->score += g_w.advanced_pawn;
         else if (row16 > 0x30) return;
@@ -441,10 +457,11 @@ static void bishop_pair(Eval *e) {
 static int white_passed(const Eval *e, int file, int row) {
     const uint8_t *b = e->b;
     int r = row;
+    int y;
     for (;;) {
         r--;
         if (r < 0) return 1;
-        int y = (r << 4) | file;
+        y = (r << 4) | file;
         if ((b[y] & 0x07) == PAWN_T && !(b[y] & WHITE_COLOR)) return 0;
         if (file != 0) {
             int yl = y - 1;
@@ -460,10 +477,11 @@ static int white_passed(const Eval *e, int file, int row) {
 static int black_passed(const Eval *e, int file, int row) {
     const uint8_t *b = e->b;
     int r = row;
+    int y;
     for (;;) {
         r++;
         if (r == 8) return 1;
-        int y = (r << 4) | file;
+        y = (r << 4) | file;
         if ((b[y] & 0x07) == PAWN_T && (b[y] & WHITE_COLOR)) return 0;
         if (file != 0) {
             int yl = y - 1;
@@ -520,35 +538,39 @@ static int black_blockaded(const Eval *e, int sq) {
 static int white_rook_behind(const Eval *e, int file, int row) {
     const uint8_t *b = e->b;
     int r = row;
+    int y;
     for (;;) {
         r++;
         if (r == 8) return 0;
-        int y = (r << 4) | file;
+        y = (r << 4) | file;
         if (b[y] == WHITE_ROOK) return 1;
     }
 }
 static int black_rook_behind(const Eval *e, int file, int row) {
     const uint8_t *b = e->b;
     int r = row;
+    int y;
     for (;;) {
         r--;
         if (r < 0) return 0;
-        int y = (r << 4) | file;
+        y = (r << 4) | file;
         if (b[y] == BLACK_ROOK) return 1;
     }
 }
 
 static void rook_file_activity(Eval *e) {
     const uint8_t *b = e->b;
-    for (int x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
+    int x;
+    for (x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
         int p = b[x];
+        int f;
         if (p == WHITE_ROOK) {
-            int f = x & 0x07;
+            f = x & 0x07;
             if (e->wpf[f] != 0) continue;
             if (e->bpf[f] != 0) e->score += g_w.rook_semi_open_file;
             else                e->score += g_w.rook_open_file;
         } else if (p == BLACK_ROOK) {
-            int f = x & 0x07;
+            f = x & 0x07;
             if (e->bpf[f] != 0) continue;
             if (e->wpf[f] != 0) e->score -= g_w.rook_semi_open_file;
             else                e->score -= g_w.rook_open_file;
@@ -558,22 +580,24 @@ static void rook_file_activity(Eval *e) {
 
 static void pawn_structure(Eval *e) {
     const uint8_t *b = e->b;
-    for (int i = 0; i < 8; i++) { e->wpf[i] = 0; e->bpf[i] = 0; }
-    for (int x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
+    int i, x, f;
+    for (i = 0; i < 8; i++) { e->wpf[i] = 0; e->bpf[i] = 0; }
+    for (x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
+        int file;
         if ((b[x] & 0x07) != PAWN_T) continue;
-        int file = x & 0x07;
+        file = x & 0x07;
         if (b[x] & WHITE_COLOR) e->wpf[file]++;
         else                    e->bpf[file]++;
     }
 
     /* doubled */
-    for (int f = 0; f < 8; f++) {
+    for (f = 0; f < 8; f++) {
         if (e->wpf[f] >= 2) e->score -= g_w.doubled_pawn;
         if (e->bpf[f] >= 2) e->score += g_w.doubled_pawn;
     }
 
     /* isolated */
-    for (int f = 0; f < 8; f++) {
+    for (f = 0; f < 8; f++) {
         if (e->wpf[f] != 0) {
             int left = (f > 0) ? e->wpf[f - 1] : 0;
             int right = (f < 7) ? e->wpf[f + 1] : 0;
@@ -587,10 +611,11 @@ static void pawn_structure(Eval *e) {
     }
 
     /* passed pawns + connected/protected/blockaded/rook-behind */
-    for (int x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
+    for (x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
+        int file, row;
         if ((b[x] & 0x07) != PAWN_T) continue;
-        int file = x & 0x07;
-        int row = x >> 4;
+        file = x & 0x07;
+        row = x >> 4;
         if (b[x] & WHITE_COLOR) {
             if (!white_passed(e, file, row)) continue;
             e->score += g_w.passed_pawn_bonus[row];
@@ -625,32 +650,36 @@ static void pinned_attack_pressure(Eval *e, int pinned_color, int ptype, int sq)
 
 static void pins_from_king(Eval *e, int king_sq, int king_color) {
     const uint8_t *b = e->b;
-    for (int d = 0; d < 8; d++) {
+    int d;
+    for (d = 0; d < 8; d++) {
         int delta = ALL_DIRECTION_OFFSETS[d];
         int ray = king_sq;
         int candidate_type = 0;
         int candidate_sq = 0;
         for (;;) {
+            int piece;
             ray = add8(ray, delta);
             if (ray & OFFBOARD_MASK) break;
-            int piece = b[ray];
+            piece = b[ray];
             if (piece == EMPTY) continue;
             if (candidate_type == 0) {
                 /* first occupied must be friendly non-king */
+                int t;
                 if ((piece & WHITE_COLOR) != king_color) break;
                 candidate_sq = ray;
-                int t = piece & 0x07;
+                t = piece & 0x07;
                 if (t == KING_T) break;
                 candidate_type = t;
                 continue;
             } else {
                 /* next occupied must be enemy aligned slider */
+                int t, pen;
                 if ((piece & WHITE_COLOR) == king_color) break;
-                int t = piece & 0x07;
+                t = piece & 0x07;
                 if (t != QUEEN_T) {
                     if (PIN_SLIDER_TYPES[d] != t) break;
                 }
-                int pen = e->PINNED_PIECE_PENALTY[candidate_type];
+                pen = e->PINNED_PIECE_PENALTY[candidate_type];
                 if (pen == 0) break;
                 if (king_color) e->score -= pen; /* pinned side white */
                 else            e->score += pen;
@@ -672,28 +701,30 @@ static void king_pins(Eval *e) {
 static int endgame_king_activity(int king_sq) {
     int acc = 0;
     int file = king_sq & 0x07;
-    if (file >= 2 && file < 6) acc += g_w.endgame_king_activity;
     int row = king_sq >> 4;
+    if (file >= 2 && file < 6) acc += g_w.endgame_king_activity;
     if (row >= 2 && row < 6) acc += g_w.endgame_king_activity;
     return acc;
 }
 
 static void endgame_rook_activity(Eval *e) {
     const uint8_t *b = e->b;
-    for (int x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
+    int x;
+    for (x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
         int p = b[x];
+        int f, dist;
         if (p == WHITE_ROOK) {
-            int f = x & 0x07;
+            f = x & 0x07;
             if (e->wpf[f] != 0) continue;
             e->score += g_w.endgame_rook_open_file;
-            int dist = (e->bk & 0x07) - f;
+            dist = (e->bk & 0x07) - f;
             if (dist < 0) dist = -dist;
             if (dist < 2) e->score += g_w.endgame_rook_king_cutoff;
         } else if (p == BLACK_ROOK) {
-            int f = x & 0x07;
+            f = x & 0x07;
             if (e->bpf[f] != 0) continue;
             e->score -= g_w.endgame_rook_open_file;
-            int dist = (e->wk & 0x07) - f;
+            dist = (e->wk & 0x07) - f;
             if (dist < 0) dist = -dist;
             if (dist < 2) e->score -= g_w.endgame_rook_king_cutoff;
         }
@@ -737,17 +768,19 @@ static int black_file_exposure(const Eval *e, int s, int file) {
 
 static int king_zone_pressure(const Eval *e, int s, int king_sq, int attacker_color) {
     const uint8_t *b = e->b;
+    int d, i;
     /* slider rays (8 dirs); index gates rook-only / bishop-only dirs */
-    for (int d = 0; d < 8; d++) {
+    for (d = 0; d < 8; d++) {
         int delta = ALL_DIRECTION_OFFSETS[d];
         int ray = king_sq;
         for (;;) {
+            int piece, t;
             ray = add8(ray, delta);
             if (ray & OFFBOARD_MASK) break;
-            int piece = b[ray];
+            piece = b[ray];
             if (piece == EMPTY) continue;
             if ((piece & WHITE_COLOR) != attacker_color) break;
-            int t = piece & 0x07;
+            t = piece & 0x07;
             if (t == QUEEN_T) {
                 s = sub8s(s, g_w.king_zone_attack);
                 break;
@@ -763,10 +796,11 @@ static int king_zone_pressure(const Eval *e, int s, int king_sq, int attacker_co
         }
     }
     /* knight attackers */
-    for (int i = 0; i < 8; i++) {
+    for (i = 0; i < 8; i++) {
         int dest = add8(king_sq, KNIGHT_OFFSETS[i]);
+        int piece;
         if (dest & OFFBOARD_MASK) continue;
-        int piece = b[dest];
+        piece = b[dest];
         if (piece == EMPTY) continue;
         if ((piece & WHITE_COLOR) != attacker_color) continue;
         if ((piece & 0x07) == KNIGHT_T) s = sub8s(s, g_w.king_zone_attack);
@@ -780,6 +814,7 @@ static int single_king_safety(const Eval *e, int king_sq) {
     int row = king_sq >> 4;
     int s = 0;                          /* signed-byte accumulator */
     int is_white = (king_sq == e->wk);
+    int k;
 
     if (is_white) {
         int castled = (row == 7 && (file == 6 || file == 2));
@@ -787,14 +822,14 @@ static int single_king_safety(const Eval *e, int king_sq) {
             s = add8s(s, g_w.castled);
             if (file == 6) { /* kingside shield f2,g2,h2 = $65,$66,$67 */
                 int idxs[3] = { 0x65, 0x66, 0x67 };
-                for (int k = 0; k < 3; k++) {
+                for (k = 0; k < 3; k++) {
                     int idx = idxs[k];
                     if ((b[idx] & 0x07) == PAWN_T && (b[idx] & WHITE_COLOR))
                         s = add8s(s, g_w.pawn_shield);
                 }
             } else {        /* queenside shield a2,b2,c2 = $60,$61,$62 */
                 int idxs[3] = { 0x60, 0x61, 0x62 };
-                for (int k = 0; k < 3; k++) {
+                for (k = 0; k < 3; k++) {
                     int idx = idxs[k];
                     if ((b[idx] & 0x07) == PAWN_T && (b[idx] & WHITE_COLOR))
                         s = add8s(s, g_w.pawn_shield);
@@ -817,14 +852,14 @@ static int single_king_safety(const Eval *e, int king_sq) {
             s = add8s(s, g_w.castled);
             if (file == 6) { /* kingside f7,g7,h7 = $15,$16,$17 */
                 int idxs[3] = { 0x15, 0x16, 0x17 };
-                for (int k = 0; k < 3; k++) {
+                for (k = 0; k < 3; k++) {
                     int idx = idxs[k];
                     if ((b[idx] & 0x07) == PAWN_T && !(b[idx] & WHITE_COLOR))
                         s = add8s(s, g_w.pawn_shield);
                 }
             } else {        /* queenside a7,b7,c7 = $10,$11,$12 */
                 int idxs[3] = { 0x10, 0x11, 0x12 };
-                for (int k = 0; k < 3; k++) {
+                for (k = 0; k < 3; k++) {
                     int idx = idxs[k];
                     if ((b[idx] & 0x07) == PAWN_T && !(b[idx] & WHITE_COLOR))
                         s = add8s(s, g_w.pawn_shield);
@@ -847,8 +882,9 @@ static int single_king_safety(const Eval *e, int king_sq) {
 
 static void king_safety(Eval *e) {
     int wb = single_king_safety(e, e->wk);
+    int bb;
     e->score += byte_x10(wb);
-    int bb = single_king_safety(e, e->bk);
+    bb = single_king_safety(e, e->bk);
     e->score -= byte_x10(bb);
 }
 
@@ -864,16 +900,18 @@ static void king_safety(Eval *e) {
 static int count_king_zone_attackers(const Eval *e, int king_sq, int attacker_color) {
     const uint8_t *b = e->b;
     int c = 0;
-    for (int d = 0; d < 8; d++) {
+    int d, i;
+    for (d = 0; d < 8; d++) {
         int delta = ALL_DIRECTION_OFFSETS[d];
         int ray = king_sq;
         for (;;) {
+            int piece, t;
             ray = add8(ray, delta);
             if (ray & OFFBOARD_MASK) break;
-            int piece = b[ray];
+            piece = b[ray];
             if (piece == EMPTY) continue;
             if ((piece & WHITE_COLOR) != attacker_color) break;
-            int t = piece & 0x07;
+            t = piece & 0x07;
             if (t == QUEEN_T) { c++; break; }
             /* orthogonal directions: indices 1,3,4,6 */
             if (d == 1 || d == 3 || d == 4 || d == 6) {
@@ -885,10 +923,11 @@ static int count_king_zone_attackers(const Eval *e, int king_sq, int attacker_co
             }
         }
     }
-    for (int i = 0; i < 8; i++) {
+    for (i = 0; i < 8; i++) {
         int dest = add8(king_sq, KNIGHT_OFFSETS[i]);
+        int piece;
         if (dest & OFFBOARD_MASK) continue;
-        int piece = b[dest];
+        piece = b[dest];
         if (piece == EMPTY) continue;
         if ((piece & WHITE_COLOR) != attacker_color) continue;
         if ((piece & 0x07) == KNIGHT_T) c++;
@@ -897,12 +936,13 @@ static int count_king_zone_attackers(const Eval *e, int king_sq, int attacker_co
 }
 
 static void king_attack_escalation(Eval *e) {
+    int cw, cb;
     if (g_w.king_attack_escalation == 0) return;
     /* white king attacked by black pieces: more attackers -> worse for white. */
-    int cw = count_king_zone_attackers(e, e->wk, 0);
+    cw = count_king_zone_attackers(e, e->wk, 0);
     if (cw >= 2) e->score -= g_w.king_attack_escalation * (cw - 1) * (cw - 1);
     /* black king attacked by white pieces: better for white. */
-    int cb = count_king_zone_attackers(e, e->bk, WHITE_COLOR);
+    cb = count_king_zone_attackers(e, e->bk, WHITE_COLOR);
     if (cb >= 2) e->score += g_w.king_attack_escalation * (cb - 1) * (cb - 1);
 }
 
@@ -913,24 +953,31 @@ static void king_attack_escalation(Eval *e) {
  *   black pawn near white king: file diff <=1, row 3..6 (chess rank 5..2),
  *     bonus = pawn_storm * (6 - rank) = pawn_storm * (row - 2) */
 static void pawn_storm(Eval *e) {
+    const uint8_t *b;
+    int bk_file, wk_file, x;
     if (g_w.pawn_storm == 0) return;
-    const uint8_t *b = e->b;
-    int bk_file = e->bk & 0x07;
-    int wk_file = e->wk & 0x07;
-    for (int x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
+    b = e->b;
+    bk_file = e->bk & 0x07;
+    wk_file = e->wk & 0x07;
+    for (x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
         int piece = b[x];
+        int file, row;
         if ((piece & 0x07) != PAWN_T) continue;
-        int file = x & 0x07;
-        int row = x >> 4;
+        file = x & 0x07;
+        row = x >> 4;
         if (piece & WHITE_COLOR) {
-            int df = file - bk_file; if (df < 0) df = -df;
+            int df = file - bk_file;
+            int rank;
+            if (df < 0) df = -df;
             if (df > 1) continue;
-            int rank = 8 - row;          /* chess rank */
+            rank = 8 - row;          /* chess rank */
             if (rank >= 4 && rank <= 7) e->score += g_w.pawn_storm * (rank - 3);
         } else {
-            int df = file - wk_file; if (df < 0) df = -df;
+            int df = file - wk_file;
+            int rank;
+            if (df < 0) df = -df;
             if (df > 1) continue;
-            int rank = 8 - row;          /* chess rank */
+            rank = 8 - row;          /* chess rank */
             if (rank >= 2 && rank <= 5) e->score -= g_w.pawn_storm * (6 - rank);
         }
     }
@@ -939,19 +986,23 @@ static void pawn_storm(Eval *e) {
 /* queen_attacks_minor: for each queen, slide all 8 directions; if the first
  * piece hit is an ENEMY knight or bishop, penalize that minor's owner. */
 static void queen_attacks_minor(Eval *e) {
+    const uint8_t *b;
+    int x;
     if (g_w.queen_attacks_minor == 0) return;
-    const uint8_t *b = e->b;
-    for (int x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
+    b = e->b;
+    for (x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
         int piece = b[x];
+        int qcolor, d;
         if ((piece & 0x07) != QUEEN_T) continue;
-        int qcolor = piece & WHITE_COLOR;
-        for (int d = 0; d < 8; d++) {
+        qcolor = piece & WHITE_COLOR;
+        for (d = 0; d < 8; d++) {
             int off = ALL_DIRECTION_OFFSETS[d];
             int ray = x;
             for (;;) {
+                int hit;
                 ray = add8(ray, off);
                 if (ray & OFFBOARD_MASK) break;
-                int hit = b[ray];
+                hit = b[ray];
                 if (hit == EMPTY) continue;
                 /* first piece hit */
                 if ((hit & WHITE_COLOR) != qcolor) {
@@ -974,19 +1025,30 @@ static void queen_attacks_minor(Eval *e) {
  * of the window -- so the native search must mirror it or it over-credits the
  * full-eval-only terms relative to the real engine. */
 int eval_material_pst(const Board *b) {
-    const int matv[7] = {0, g_w.pawn, g_w.knight, g_w.bishop, g_w.rook, g_w.queen, g_w.king};
+    int matv[7];
     int score = 0;
-    for (int x = 0; x < 128; x++) {
+    int x;
+    matv[0] = 0;
+    matv[PAWN_T]   = g_w.pawn;
+    matv[KNIGHT_T] = g_w.knight;
+    matv[BISHOP_T] = g_w.bishop;
+    matv[ROOK_T]   = g_w.rook;
+    matv[QUEEN_T]  = g_w.queen;
+    matv[KING_T]   = g_w.king;
+    for (x = 0; x < 128; x++) {
+        uint8_t p;
+        int ptype, idx;
+        const int *pst;
         if (x & 0x88) continue;
-        uint8_t p = b->sq[x];
+        p = b->sq[x];
         if (!p) continue;
-        int ptype = PT(p);
-        const int *pst = PST_BY_TYPE[ptype];
+        ptype = PT(p);
+        pst = PST_BY_TYPE[ptype];
         if (IS_WHITE(p)) {
-            int idx = ((x & 0x70) >> 1) | (x & 0x07);
+            idx = ((x & 0x70) >> 1) | (x & 0x07);
             score += matv[ptype] + pst[idx];
         } else {
-            int idx = (((x & 0x70) >> 1) | (x & 0x07)) ^ 0x38;
+            idx = (((x & 0x70) >> 1) | (x & 0x07)) ^ 0x38;
             score -= matv[ptype] + pst[idx];
         }
     }
@@ -998,6 +1060,8 @@ int eval_material_pst(const Board *b) {
 /* ------------------------------------------------------------------------- */
 int eval_full(const Board *board) {
     Eval e;
+    const uint8_t *b;
+    int i, x, s;
     e.b = board->sq;
     e.wk = board->wk;
     e.bk = board->bk;
@@ -1008,7 +1072,7 @@ int eval_full(const Board *board) {
     e.wbishops = 0;
     e.bbishops = 0;
     e.endgame = 0;
-    for (int i = 0; i < 8; i++) { e.wpf[i] = 0; e.bpf[i] = 0; }
+    for (i = 0; i < 8; i++) { e.wpf[i] = 0; e.bpf[i] = 0; }
 
     /* Rebuild g_w-derived per-type lookup tables (mirror apply_eval_overrides). */
     e.PIECE_VALUE_TBL[0] = 0;
@@ -1019,7 +1083,7 @@ int eval_full(const Board *board) {
     e.PIECE_VALUE_TBL[QUEEN_T]  = g_w.queen;
     e.PIECE_VALUE_TBL[KING_T]   = g_w.king;
 
-    for (int i = 0; i < 7; i++) {
+    for (i = 0; i < 7; i++) {
         e.PAWN_ATTACK_PENALTY[i] = 0;
         e.QUEEN_ATTACK_PENALTY[i] = 0;
         e.MINOR_ATTACK_PENALTY[i] = 0;
@@ -1043,14 +1107,16 @@ int eval_full(const Board *board) {
     e.PINNED_PIECE_PENALTY[ROOK_T]   = g_w.pinned_rook;
     e.PINNED_PIECE_PENALTY[QUEEN_T]  = g_w.pinned_queen;
 
-    const uint8_t *b = e.b;
+    b = e.b;
 
     /* ---- main board pass (0x88 walk skipping offboard) ---- */
-    for (int x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
+    for (x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
         int piece = b[x];
+        int color, ptype, val, idx;
+        const int *pst;
         if (piece == EMPTY) continue;
-        int color = piece & WHITE_COLOR;
-        int ptype = piece & 0x07;
+        color = piece & WHITE_COLOR;
+        ptype = piece & 0x07;
 
         /* phase counters + per-pawn advanced bonus */
         if (ptype == PAWN_T) {
@@ -1073,15 +1139,15 @@ int eval_full(const Board *board) {
         seventh_rank(&e, x, color, ptype);
 
         /* material + PST */
-        int val = e.PIECE_VALUE_TBL[ptype];
-        const int *pst = PST_BY_TYPE[ptype];
+        val = e.PIECE_VALUE_TBL[ptype];
+        pst = PST_BY_TYPE[ptype];
         if (color) {
             e.score += val;
-            int idx = ((x & 0x70) >> 1) | (x & 0x07);          /* Sq88To64 */
+            idx = ((x & 0x70) >> 1) | (x & 0x07);          /* Sq88To64 */
             e.score += pst[idx];
         } else {
             e.score -= val;
-            int idx = (((x & 0x70) >> 1) | (x & 0x07)) ^ 0x38; /* Sq88To64Mirror */
+            idx = (((x & 0x70) >> 1) | (x & 0x07)) ^ 0x38; /* Sq88To64Mirror */
             e.score -= pst[idx];
         }
     }
@@ -1111,7 +1177,7 @@ int eval_full(const Board *board) {
     if (board->wtm) e.score += g_w.tempo; else e.score -= g_w.tempo;
 
     /* EvalScore is a 16-bit signed value; reproduce two's-complement. */
-    int s = (int)(e.score & 0xFFFF);
+    s = (int)(e.score & 0xFFFF);
     if (s >= 0x8000) s -= 0x10000;
     return s;
 }

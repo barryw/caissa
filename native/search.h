@@ -10,7 +10,7 @@
 #define SEARCH_INF     32000
 
 typedef struct {
-    uint64_t nodes, qnodes, tt_hits;
+    hash_t nodes, qnodes, tt_hits;
     int depth, score;
     Move best;
 } SearchInfo;
@@ -20,6 +20,6 @@ typedef struct {
  * its own path on top so a position repeated within the search or vs the game
  * counts as a draw. Pass hist=NULL,hist_len=0 for a context-free search. */
 Move search_bestmove(const Board *b, int depth,
-                     const uint64_t *hist, int hist_len, SearchInfo *out);
+                     const hash_t *hist, int hist_len, SearchInfo *out);
 
 #endif

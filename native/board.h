@@ -14,6 +14,12 @@
 
 #include <stdint.h>
 
+/* Zobrist/repetition key type. cc65 (6502) has no 64-bit integers, so we use
+ * `unsigned long`, which is >=32 bits on every target: 32-bit on cc65 (the hash
+ * narrows to 32 bits there -- fine, it only keys the TT/repetition table) and
+ * 64-bit on the LP64 host. Use hash_t everywhere a zobrist key is stored. */
+typedef unsigned long hash_t;
+
 #define WHITE_FLAG 0x80
 #define PT(p)       ((p) & 7)          /* piece type 1..6, 0 if empty */
 #define IS_WHITE(p) ((p) & WHITE_FLAG) /* nonzero if white piece */
@@ -49,7 +55,7 @@ typedef struct {
     int ep;            /* ep target 0x88 square, or -1 */
     int halfmove;      /* halfmove clock (50-move rule) */
     int fullmove;
-    uint64_t hash;     /* incremental zobrist */
+    hash_t hash;       /* incremental zobrist */
 } Board;
 
 typedef struct {
@@ -59,18 +65,14 @@ typedef struct {
     int ep;            /* prior ep square */
     int halfmove;      /* prior halfmove clock */
     int wk, bk;        /* prior king squares */
-    uint64_t hash;     /* prior hash */
+    hash_t hash;       /* prior hash */
 } Undo;
 
-/* 0x88 <-> 0..63 helpers (0..63 is python-chess square: a1=0, h8=63). */
-static inline int sq0x88_from_idx64(int s64) {
-    int rank = s64 >> 3, file = s64 & 7;
-    return (7 - rank) * 16 + file;
-}
-static inline int idx64_from_0x88(int i) {
-    int rank = 7 - (i >> 4), file = i & 7;
-    return rank * 8 + file;
-}
+/* 0x88 <-> 0..63 helpers (0..63 is python-chess square: a1=0, h8=63).
+ * Macros (cc65 has no `inline`). Arguments are used more than once, so callers
+ * must pass side-effect-free expressions (all current call sites do). */
+#define sq0x88_from_idx64(s64) ((7 - ((s64) >> 3)) * 16 + ((s64) & 7))
+#define idx64_from_0x88(i)     ((7 - ((i) >> 4)) * 8 + ((i) & 7))
 
 /* Returns 0 on success, -1 on parse error. Initializes hash. */
 int board_from_fen(Board *b, const char *fen);
@@ -80,7 +82,7 @@ void board_to_fen(const Board *b, char *out);
 void make_move(Board *b, Move m, Undo *u);
 void unmake_move(Board *b, Move m, const Undo *u);
 
-uint64_t board_zobrist(const Board *b);   /* full recompute (for verify) */
+hash_t board_zobrist(const Board *b);   /* full recompute (for verify) */
 
 /* "e2e4", "e7e8q" -> Move resolved against the current board. Returns 0 on
  * success (writes *out), -1 if not a legal-shaped move on this board. */
