@@ -3362,5 +3362,245 @@ suites {
       assert(peekbyte([BestMoveFrom]) != $ff, "Using ponder should publish a valid source")
       assert(peekbyte([BestMoveTo]) != $ff, "Using ponder should publish a valid destination")
     }
+
+    ; --- FIX 1: mate-distance scoring -------------------------------------
+    ; LoadMatedScore must encode distance: a checkmate at ply P returns
+    ; -(MATE_SCORE - P) == P - 30000. MATE_SCORE = 30000 = $7530, so
+    ; -30000 = $8AD0. ply 0 -> $8AD0, ply 1 -> $8AD1, ply 3 -> $8AD3. The
+    ; nearer mate (smaller P) is MORE negative, so the side being mated prefers
+    ; the slower mate (longest defense) and the mating side (negated score)
+    ; prefers the faster mate.
+    test("mate-distance-loadmatedscore-encodes-ply", "LoadMatedScore encodes distance to mate so faster mates score better") {
+      ; ply 0 -> exactly -MATE_SCORE = -30000 = $8AD0
+      a = $00
+      jsr([LoadMatedScore], stop_on_rts = true, fail_on_brk = true)
+      assert(a == $d0, "Mate at ply 0 returns -30000 low byte $d0")
+      assert(peekbyte($ec) == $8a, "Mate at ply 0 returns -30000 high byte $8a")
+
+      ; ply 1 (mate in one for the side to move's opponent) -> -29999 = $8AD1
+      a = $01
+      jsr([LoadMatedScore], stop_on_rts = true, fail_on_brk = true)
+      assert(a == $d1, "Mate at ply 1 returns -29999 low byte $d1")
+      assert(peekbyte($ec) == $8a, "Mate at ply 1 keeps high byte $8a")
+
+      ; ply 3 (a deeper mate) -> -29997 = $8AD3, i.e. LESS negative than ply 1.
+      a = $03
+      jsr([LoadMatedScore], stop_on_rts = true, fail_on_brk = true)
+      assert(a == $d3, "Mate at ply 3 returns -29997 low byte $d3")
+      assert(peekbyte($ec) == $8a, "Mate at ply 3 keeps high byte $8a")
+
+      ; Distance ordering: -29999 (ply1) < -29997 (ply3). For the side getting
+      ; mated, ply3 is the better (less negative) score -> longest defense.
+      ; Negated, the mating side sees +29999 > +29997 -> fastest mate. Proven by
+      ; the strictly increasing low byte ($d1 < $d3) at equal high byte.
+      assert($d1 < $d3, "Faster mate is more negative for the mated side")
+    }
+
+    ; A position that is already checkmate (side to move has no legal move and
+    ; is in check) must return the distance-encoded terminal score from Negamax,
+    ; using ply = SearchDepth. The same mate seen at a deeper ply must score
+    ; LESS badly, so a defender prefers to delay mate (longest defense).
+    ; Position: Black king a8 ($00), White queen b7 ($11) giving check and
+    ; defended by White king b6 ($21). a7/b8 are covered, b7 is defended -> mate.
+    test("negamax-terminal-mate-prefers-longest-defense", "Negamax terminal checkmate score encodes distance so deeper mate scores less badly") {
+      jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
+      jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
+
+      memfill([Board88], 128, $30)
+      [Board88] + $00 = $36          ; BLACK_KING a8
+      [Board88] + $11 = $b5          ; WHITE_QUEEN b7
+      [Board88] + $21 = $b6          ; WHITE_KING  b6
+      [blackkingsq] = $00
+      [whitekingsq] = $21
+      [currentplayer] = $00          ; BLACKS_TURN: black is to move and mated
+      [SearchSide] = $00             ; BLACK_COLOR: search side to move = black
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      ; Terminal at the root (ply 0) -> -(MATE_SCORE - 0) = -30000 = $8AD0.
+      [SearchDepth] = $00
+      $e8 = $80
+      $ed = $80
+      $e9 = $7f
+      $ee = $7f
+      a = $01                        ; depth remaining >= 1 stays in main search
+      jsr([Negamax], stop_on_rts = true, fail_on_brk = true)
+      assert(a == $d0, "Checkmate at ply 0 returns -30000 low byte $d0")
+      assert(peekbyte($ec) == $8a, "Checkmate at ply 0 returns -30000 high byte $8a")
+      assert(peekbyte([SearchDepth]) == $00, "Negamax must restore SearchDepth")
+
+      ; Same mate one move later in the tree (ply 3) -> -29997 = $8AD3, which is
+      ; LESS negative: the defender that reached this position later is better
+      ; off, i.e. delaying mate is rewarded (longest defense).
+      [SearchDepth] = $03
+      $e8 = $80
+      $ed = $80
+      $e9 = $7f
+      $ee = $7f
+      a = $01
+      jsr([Negamax], stop_on_rts = true, fail_on_brk = true)
+      assert(a == $d3, "Checkmate at ply 3 returns -29997 low byte $d3 (less bad than ply 0)")
+      assert(peekbyte($ec) == $8a, "Checkmate at ply 3 keeps high byte $8a")
+      assert(peekbyte([SearchDepth]) == $03, "Negamax must restore SearchDepth at ply 3")
+    }
+
+    ; The TT must carry mate distance portably: a winning mate score stored at a
+    ; ply must read back as the same node-relative score when probed at that ply
+    ; (store +ply then probe -ply == identity). A non-mate score is untouched.
+    test("mate-distance-tt-store-probe-roundtrip", "TT mate (de)normalization is the inverse of itself at a fixed ply") {
+      [SearchDepth] = $05
+
+      ; Winning mate score +29999 = $752F. Store adds ply (->$7534), probe
+      ; subtracts ply (->$752F): round-trips to the original at the same ply.
+      [TTScoreLo] = $2f
+      [TTScoreHi] = $75
+      jsr([MateStoreAdjust], stop_on_rts = true, fail_on_brk = true)
+      assert(peekbyte([TTScoreLo]) == $34, "Store adds ply 5 to a winning mate low byte")
+      assert(peekbyte([TTScoreHi]) == $75, "Store keeps the winning mate high byte")
+      jsr([MateProbeAdjust], stop_on_rts = true, fail_on_brk = true)
+      assert(peekbyte([TTScoreLo]) == $2f, "Probe subtracts ply 5 -> original low byte")
+      assert(peekbyte([TTScoreHi]) == $75, "Probe restores the original high byte")
+
+      ; Losing mate score -29999 = $8AD1. Store subtracts ply (->$8ACC), probe
+      ; adds ply (->$8AD1): round-trips back to the original.
+      [TTScoreLo] = $d1
+      [TTScoreHi] = $8a
+      jsr([MateStoreAdjust], stop_on_rts = true, fail_on_brk = true)
+      assert(peekbyte([TTScoreLo]) == $cc, "Store subtracts ply 5 from a losing mate low byte")
+      jsr([MateProbeAdjust], stop_on_rts = true, fail_on_brk = true)
+      assert(peekbyte([TTScoreLo]) == $d1, "Probe adds ply 5 -> original losing-mate low byte")
+      assert(peekbyte([TTScoreHi]) == $8a, "Probe restores the losing-mate high byte")
+
+      ; An ordinary (non-mate) score must pass through both adjusters unchanged.
+      [TTScoreLo] = $64                ; +100 = $0064 (one pawn)
+      [TTScoreHi] = $00
+      jsr([MateStoreAdjust], stop_on_rts = true, fail_on_brk = true)
+      assert(peekbyte([TTScoreLo]) == $64, "Non-mate score low byte is untouched on store")
+      assert(peekbyte([TTScoreHi]) == $00, "Non-mate score high byte is untouched on store")
+      jsr([MateProbeAdjust], stop_on_rts = true, fail_on_brk = true)
+      assert(peekbyte([TTScoreLo]) == $64, "Non-mate score low byte is untouched on probe")
+      assert(peekbyte([TTScoreHi]) == $00, "Non-mate score high byte is untouched on probe")
+    }
+
+    ; --- FIX 2: in-tree draw detection -----------------------------------
+    ; CheckInTreeDraw reports a draw (carry set) when the current node's hash
+    ; matches an ancestor on the search path (SearchPathHash[0 .. SearchDepth-1]).
+    ; Host history is emptied so only the path-scan source can fire here.
+    test("intree-draw-detects-path-repetition", "CheckInTreeDraw flags a repetition with an ancestor on the search path") {
+      [HistoryCount] = $00             ; isolate the path-scan source
+
+      ; Ancestors at plies 0..2 on the current path.
+      [SearchPathHashLo] + $00 = $11
+      [SearchPathHashHi] + $00 = $aa
+      [SearchPathHashLo] + $01 = $22
+      [SearchPathHashHi] + $01 = $bb
+      [SearchPathHashLo] + $02 = $33
+      [SearchPathHashHi] + $02 = $cc
+      [SearchDepth] = $03              ; current node is ply 3, scans [0..2]
+
+      ; Current position equals the ply-1 ancestor -> repetition draw.
+      [ZobristHash] = $22
+      [ZobristHash] + $01 = $bb
+      jsr([CheckInTreeDraw], stop_on_rts = true, fail_on_brk = true)
+      assert(c == true, "Matching an ancestor hash on the path is an in-tree draw")
+
+      ; A hash that matches no ancestor is not a draw.
+      [ZobristHash] = $44
+      [ZobristHash] + $01 = $dd
+      jsr([CheckInTreeDraw], stop_on_rts = true, fail_on_brk = true)
+      assert(c == false, "A novel position on the path is not a draw")
+    }
+
+    ; The scan must cover only [0 .. SearchDepth-1]. A hash sitting in the
+    ; CURRENT node's own slot (index == SearchDepth) or beyond must NOT be read
+    ; as a repetition, otherwise every node would falsely draw against itself.
+    test("intree-draw-path-scan-respects-depth-bound", "CheckInTreeDraw scans strictly the ancestor slots below SearchDepth") {
+      [HistoryCount] = $00
+
+      memfill([SearchPathHashLo], 8, $00)
+      memfill([SearchPathHashHi], 8, $00)
+
+      ; Plant the matching hash in the current node's own slot and one beyond.
+      [SearchDepth] = $02
+      [SearchPathHashLo] + $02 = $77   ; index == SearchDepth (self, excluded)
+      [SearchPathHashHi] + $02 = $ee
+      [SearchPathHashLo] + $03 = $77   ; index > SearchDepth (excluded)
+      [SearchPathHashHi] + $03 = $ee
+
+      [ZobristHash] = $77
+      [ZobristHash] + $01 = $ee
+      jsr([CheckInTreeDraw], stop_on_rts = true, fail_on_brk = true)
+      assert(c == false, "Matching the self slot or beyond must not be a draw")
+
+      ; Move the match to a genuine ancestor (index < SearchDepth) -> draw.
+      [SearchPathHashLo] + $01 = $77
+      [SearchPathHashHi] + $01 = $ee
+      jsr([CheckInTreeDraw], stop_on_rts = true, fail_on_brk = true)
+      assert(c == true, "Matching a true ancestor below SearchDepth is a draw")
+    }
+
+    ; The game-history source: with no ancestor match, a position already present
+    ; in the host position history (RepeatCount >= 1) is treated as a draw risk.
+    test("intree-draw-detects-game-history-repetition", "CheckInTreeDraw flags positions already seen in the real game history") {
+      ; No ancestors match: clear the whole path stack.
+      memfill([SearchPathHashLo], 8, $00)
+      memfill([SearchPathHashHi], 8, $00)
+      [SearchDepth] = $04
+
+      ; Seed one real-game history entry, then make the current node match it.
+      [HistoryCount] = $01
+      [PositionHistoryLo] + $00 = $5a
+      [PositionHistoryHi] + $00 = $a5
+      [ZobristHash] = $5a
+      [ZobristHash] + $01 = $a5
+      jsr([CheckInTreeDraw], stop_on_rts = true, fail_on_brk = true)
+      assert(c == true, "A position present in the game history is an in-tree draw risk")
+      assert(peekbyte([RepeatCount]) == $01, "CheckRepetition should have counted one prior occurrence")
+
+      ; A position absent from history (and not an ancestor) is not a draw.
+      [ZobristHash] = $0b
+      [ZobristHash] + $01 = $b0
+      jsr([CheckInTreeDraw], stop_on_rts = true, fail_on_brk = true)
+      assert(c == false, "A position absent from history and the path is not a draw")
+    }
+
+    ; Negamax must NOT treat the root (SearchDepth == 0) as a draw even if its
+    ; position appears in history -- the engine is asked to move FROM the root,
+    ; not to claim a draw on it. A bare-king-ish position drives no work; we only
+    ; assert the search runs and restores depth (the root draw guard is skipped).
+    test("intree-draw-root-is-exempt", "Negamax never short-circuits the root node as a draw") {
+      jsr([InitZobristTables], stop_on_rts = true, fail_on_brk = true)
+      jsr([TTClear], stop_on_rts = true, fail_on_brk = true)
+      jsr([ChessClearPositionHistory], stop_on_rts = true, fail_on_brk = true)
+
+      memfill([Board88], 128, $30)
+      [Board88] + $44 = $b6            ; WHITE_KING e4
+      [Board88] + $00 = $36            ; BLACK_KING a8
+      [whitekingsq] = $44
+      [blackkingsq] = $00
+      [currentplayer] = $01
+      [SearchSide] = $80
+      [SearchDepth] = $00
+      [castlerights] = $00
+      [enpassantsq] = $ff
+      jsr([InitPieceLists], stop_on_rts = true, fail_on_brk = true)
+
+      ; Record the root position in history so a non-exempt root would draw.
+      jsr([ComputeZobristHash], stop_on_rts = true, fail_on_brk = true)
+      jsr([ChessRecordPosition], stop_on_rts = true, fail_on_brk = true)
+
+      $e8 = $80
+      $ed = $80
+      $e9 = $7f
+      $ee = $7f
+      a = $01
+      jsr([Negamax], stop_on_rts = true, fail_on_brk = true)
+
+      ; The root must have searched (a real king move exists), not returned the
+      ; DRAW_SCORE short-circuit, and must restore SearchDepth.
+      assert(peekbyte([SearchDepth]) == $00, "Negamax must restore SearchDepth from the root")
+      assert(peekbyte([BestMoveFrom]) != $ff, "Root search must pick a real move, not draw out")
+    }
   }
 }

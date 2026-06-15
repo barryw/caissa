@@ -4015,9 +4015,12 @@ __ai_search_quiesce_continue_0:
 
 __ai_search_q_no_checked_evasions_0:
   dec QuiesceDepth
-  lda #>-MATE_SCORE
-  sta $ec
-  lda #<-MATE_SCORE
+; FIX 1 (mate distance): quiescence checkmate uses ply = SearchDepth +
+; QuiesceDepth so mates found inside quiescence stay ordered by distance.
+  lda QuiesceDepth
+  clc
+  adc SearchDepth
+  jsr LoadMatedScore
   rts
 
 __ai_search_q_not_in_check_0:
@@ -4111,9 +4114,12 @@ __ai_search_q_no_pseudo_caps_0:
 __ai_search_q_no_evasions_0:
 
   dec QuiesceDepth
-  lda #>-MATE_SCORE
-  sta $ec
-  lda #<-MATE_SCORE
+; FIX 1 (mate distance): quiescence checkmate uses ply = SearchDepth +
+; QuiesceDepth so mates found inside quiescence stay ordered by distance.
+  lda QuiesceDepth
+  clc
+  adc SearchDepth
+  jsr LoadMatedScore
   rts
 
 __ai_search_q_return_quiet_alpha_0:
@@ -4490,6 +4496,10 @@ StoreTTCurrentNode:
   lda NegamaxBestHi, y
   sta TTScoreHi
 
+; FIX 1 (mate distance): make a mate score ply-relative before it is stored so
+; it is portable across plies. Non-mate scores pass through unchanged.
+  jsr MateStoreAdjust
+
   ldy SearchDepth
   lda NegamaxBestFrom, y
   sta TTStoreFrom
@@ -4514,6 +4524,173 @@ StoreTTCurrentNode:
   lda NegamaxState + 5, x
   ldx TTFlag
   jmp TTStore
+
+;
+; FIX 1 (mate distance): LoadMatedScore
+; Build the "side to move is checkmated" score with distance-to-mate encoded so
+; the search prefers faster mates and the longest defense. Standard negamax
+; convention: a checkmate at ply P returns -(MATE_SCORE - P). Because the score
+; grows toward 0 as P grows, a nearer mate (small P) scores more negative and is
+; correctly avoided harder, while the mating side's negated sibling scores
+; +(MATE_SCORE - P) and prefers the smallest P (fastest mate).
+;
+; -(MATE_SCORE - P) == P - MATE_SCORE == P + (-MATE_SCORE), so add the (small,
+; unsigned 0..255) ply to the 16-bit constant -MATE_SCORE.
+; Input:  A = ply distance from the root for this terminal node.
+; Output: A = score lo, $ec = score hi (16-bit signed, ABI-correct).
+; Clobbers: A.
+;
+LoadMatedScore:
+  clc
+  adc #<-MATE_SCORE; A = ply + lo(-MATE_SCORE)
+  pha; stash score lo
+  lda #>-MATE_SCORE
+  adc #$00; propagate carry from the low add
+  sta $ec; score hi
+  pla; score lo back into A
+  rts
+
+;
+; FIX 1 (mate distance): TT mate-score (de)normalization.
+; Mate scores must be made ply-relative before storing and ply-absolute after
+; probing, otherwise a mate distance stored at one ply is misread at another.
+;
+; Convention (matches LoadMatedScore):
+;   winning mate   score in ( STATIC_EVAL_LIMIT, +MATE_SCORE]
+;   losing mate    score in [-MATE_SCORE, -STATIC_EVAL_LIMIT)
+;
+; On STORE: a winning mate becomes more "won" (closer to +MATE_SCORE) by adding
+; ply; a losing mate becomes more "lost" by subtracting ply. This bakes the
+; absolute (root-relative) distance into the stored value.
+; On PROBE: the inverse, re-centering the stored absolute mate onto the current
+; node's ply.
+;
+; MateStoreAdjust / MateProbeAdjust both operate in place on TTScoreLo/TTScoreHi
+; using ply = SearchDepth, and leave non-mate scores untouched.
+; Clobbers: A, X, Y.
+;
+MateStoreAdjust:
+  jsr __mate_classify; sets X = 1 winning, 2 losing, 0 neither
+  cpx #$01
+  beq __mate_add_ply; winning -> +ply on store
+  cpx #$02
+  beq __mate_sub_ply; losing  -> -ply on store
+  rts
+
+MateProbeAdjust:
+  jsr __mate_classify
+  cpx #$01
+  beq __mate_sub_ply; winning -> -ply on probe (inverse of store)
+  cpx #$02
+  beq __mate_add_ply; losing  -> +ply on probe
+  rts
+
+; Classify TTScoreLo/Hi vs +/-STATIC_EVAL_LIMIT. Returns X = 1 (winning mate),
+; 2 (losing mate), or 0 (ordinary score). Clobbers A, Y.
+__mate_classify:
+  ldx #$00
+; winning? score - STATIC_EVAL_LIMIT > 0 (16-bit signed).
+  lda TTScoreLo
+  sec
+  sbc #<STATIC_EVAL_LIMIT
+  sta $f0; lo diff (for the strict > test)
+  lda TTScoreHi
+  sbc #>STATIC_EVAL_LIMIT
+  sta $f1
+  ora $f0
+  beq __mate_classify_check_low; diff == 0 -> not strictly greater
+  lda $f1
+  bvc __mate_classify_win_no_ov
+  eor #$80
+__mate_classify_win_no_ov:
+  bmi __mate_classify_check_low; diff < 0 -> not winning
+  ldx #$01; winning mate
+  rts
+__mate_classify_check_low:
+; losing? score + STATIC_EVAL_LIMIT < 0 (16-bit signed):
+;   score - (-STATIC_EVAL_LIMIT) < 0.
+  lda TTScoreLo
+  sec
+  sbc #<-STATIC_EVAL_LIMIT
+  lda TTScoreHi
+  sbc #>-STATIC_EVAL_LIMIT
+  bvc __mate_classify_lose_no_ov
+  eor #$80
+__mate_classify_lose_no_ov:
+  bpl __mate_classify_done; diff >= 0 -> not losing
+  ldx #$02; losing mate
+__mate_classify_done:
+  rts
+
+; TTScore += SearchDepth (16-bit).
+__mate_add_ply:
+  lda TTScoreLo
+  clc
+  adc SearchDepth
+  sta TTScoreLo
+  lda TTScoreHi
+  adc #$00
+  sta TTScoreHi
+  rts
+
+; TTScore -= SearchDepth (16-bit).
+__mate_sub_ply:
+  lda TTScoreLo
+  sec
+  sbc SearchDepth
+  sta TTScoreLo
+  lda TTScoreHi
+  sbc #$00
+  sta TTScoreHi
+  rts
+
+;
+; FIX 2 (in-tree draw detection): CheckInTreeDraw
+; Decide whether the current node is a draw by repetition. Two sources:
+;   (a) In-tree repetition: the current position hash already appears among the
+;       ancestors on this root->leaf path (SearchPathHash[0 .. SearchDepth-1]).
+;       The FIRST repetition is scored as a draw -- the standard search
+;       convention -- which stops the engine from chasing perpetuals when it is
+;       winning and lets it claim a saving repetition when it is losing.
+;   (b) Game-history repetition: the position already occurred in the real game
+;       (CheckRepetition matches the host-maintained history). Repeating it now
+;       risks a draw claim, so treat one prior occurrence (RepeatCount >= 1) as a
+;       draw inside the tree.
+; Must be called only for non-root nodes (SearchDepth != 0) and only once the
+; current ZobristHash is valid.
+; Input:  ZobristHash valid; SearchDepth = current ply (> 0).
+; Output: Carry SET if this node is a draw, Carry CLEAR otherwise.
+; Clobbers: A, X, Y, RepeatCount.
+;
+CheckInTreeDraw:
+; (a) Scan ancestors [0 .. SearchDepth-1] for a hash match.
+  ldx #$00
+__ai_search_pathscan_loop_0:
+  cpx SearchDepth
+  bcs __ai_search_pathscan_done_0; reached current ply -> no ancestor match
+  lda ZobristHash
+  cmp SearchPathHashLo, x
+  bne __ai_search_pathscan_next_0
+  lda ZobristHash + 1
+  cmp SearchPathHashHi, x
+  bne __ai_search_pathscan_next_0
+  sec; ancestor match -> in-tree repetition draw
+  rts
+__ai_search_pathscan_next_0:
+  inx
+  bne __ai_search_pathscan_loop_0; SearchDepth < MAX_DEPTH so X never wraps
+
+__ai_search_pathscan_done_0:
+; (b) Game-history repetition. CheckRepetition compares the current ZobristHash
+; against the host history and sets RepeatCount to the number of matches.
+  jsr CheckRepetition
+  lda RepeatCount
+  beq __ai_search_intree_no_draw_0; zero prior occurrences -> not a draw
+  sec; one or more real-game occurrences -> draw risk
+  rts
+__ai_search_intree_no_draw_0:
+  clc
+  rts
 
 ;
 ; ComputeSearchZobristHash
@@ -6889,12 +7066,40 @@ __ai_search_search_0:
   lda ZobristHash + 1
   sta NegamaxHashHi, y
 
+; FIX 2 (in-tree draw detection): for any non-root node, a repetition (on the
+; current search path or in the real game history) is a draw. Return DRAW_SCORE
+; immediately, WITHOUT a TT store, so a draw verdict never poisons the TT as if
+; it were a true positional score. The root (SearchDepth == 0) is exempt: the
+; root position itself is never a draw to play into.
+  lda SearchDepth
+  beq __ai_search_no_intree_draw_0
+  jsr CheckInTreeDraw
+  bcc __ai_search_no_intree_draw_0
+  lda #>DRAW_SCORE
+  sta $ec
+  lda #<DRAW_SCORE
+  rts
+
+__ai_search_no_intree_draw_0:
+; Recalculate state offset (CheckInTreeDraw clobbers X).
+  lda SearchDepth
+  asl
+  asl
+  asl
+  tax
+
 ; Probe TT with current depth requirement
   lda NegamaxState + 5, x; depth remaining
   jsr TTProbe
 
   lda TTHit
   beq __ai_search_tt_miss_0
+
+; FIX 1 (mate distance): a stored mate score is ply-absolute. Re-center it onto
+; this node's ply BEFORE the bound-usability comparisons and before returning,
+; so alpha/beta tests and the returned score are all node-relative. Non-mate
+; scores are left untouched. (Clobbers X, recomputed just below.)
+  jsr MateProbeAdjust
 
 ; TT hit - exact entries can return immediately. Bound entries return only
 ; when they prove this node cannot affect the current alpha/beta window.
@@ -7005,9 +7210,10 @@ __ai_search_do_check_mate_0:
   jsr IsSquareAttacked
 
   bcc __ai_search_stalemate_0
-  lda #>-MATE_SCORE
-  sta $ec
-  lda #<-MATE_SCORE
+; FIX 1 (mate distance): checkmate terminal returns -(MATE_SCORE - ply) with
+; ply = SearchDepth (plies from the root) so nearer mates score harder.
+  lda SearchDepth
+  jsr LoadMatedScore
   rts
 
 __ai_search_stalemate_0:
@@ -7023,6 +7229,18 @@ __ai_search_have_moves_0:
   asl
   asl
   tax
+
+; FIX 2 (in-tree draw detection): publish THIS node's position hash onto the
+; search path before recursing into children. Children at SearchDepth+1 scan
+; SearchPathHash[0 .. SearchDepth] and so will see this node as an ancestor.
+; Indexing by SearchDepth means each ply overwrites its own slot on entry, so no
+; explicit pop is needed -- a sibling subtree simply rewrites the slot. The hash
+; was already cached in NegamaxHashLo/Hi[SearchDepth] above.
+  ldy SearchDepth
+  lda NegamaxHashLo, y
+  sta SearchPathHashLo, y
+  lda NegamaxHashHi, y
+  sta SearchPathHashHi, y
 
 ; Initialize best score to -infinity (16-bit $8000)
   ldy SearchDepth
@@ -7513,12 +7731,24 @@ __ai_search_pvs_research_done_0:
   jsr ApplyRootQueenDangerPawnPenalty
   jsr ApplyRootQueenPawnRaidPenalty
 
-  lda $eb
-  cmp #<MATE_SCORE
-  bne __ai_search_root_not_mate_0
-  lda $ec
-  cmp #>MATE_SCORE
-  beq __ai_search_skip_root_pawn_safety_0
+; FIX 1 (mate distance): the mating root move no longer scores exactly
+; +MATE_SCORE (distance is encoded), so test "is a winning mate" =
+; score > STATIC_EVAL_LIMIT (16-bit signed). Skip the cosmetic pawn-safety
+; penalties for any forced mate.
+  lda $eb; score lo - STATIC_EVAL_LIMIT lo
+  sec
+  sbc #<STATIC_EVAL_LIMIT
+  sta $f0
+  lda $ec; score hi - STATIC_EVAL_LIMIT hi
+  sbc #>STATIC_EVAL_LIMIT
+  sta $f1
+  ora $f0
+  beq __ai_search_root_not_mate_0; diff == 0 -> not strictly greater
+  lda $f1
+  bvc __ai_search_root_mate_no_ov_0
+  eor #$80
+__ai_search_root_mate_no_ov_0:
+  bpl __ai_search_skip_root_pawn_safety_0; score > STATIC_EVAL_LIMIT -> mate
 __ai_search_root_not_mate_0:
 
   jsr ApplyRootPawnSafetyPenalty
@@ -7590,16 +7820,11 @@ __ai_search_score_better_0:
   sta BestMoveTo
 
 __ai_search_not_at_root_0:
-; Mate is the maximum meaningful score. Once a move proves mate, siblings
-; cannot improve it, so stop the node immediately (16-bit equality).
-  lda $eb
-  cmp #<MATE_SCORE
-  bne __ai_search_not_forced_mate_0
-  lda $ec
-  cmp #>MATE_SCORE
-  bne __ai_search_not_forced_mate_0
-  jmp __ai_search_return_best_no_tt_0
-
+; FIX 1 (mate distance): the former "first mate found -> return immediately"
+; sibling shortcut is INTENTIONALLY removed. With distance encoded, a sibling
+; can be a FASTER mate (higher score), so siblings must still be searched. A
+; mate score that raises alpha to/above beta will beta-cut through the normal
+; alpha-beta path just below, which preserves the speed benefit safely.
 __ai_search_not_forced_mate_0:
 ; Alpha-Beta: if best > alpha, update alpha
 ; Recalculate state offset (may have been clobbered)
@@ -7820,6 +8045,15 @@ NegamaxOrigAlphaHi:
 NegamaxHashLo:
   .res MAX_DEPTH
 NegamaxHashHi:
+  .res MAX_DEPTH
+; FIX 2 (in-tree draw detection): search-path hash stack. SearchPathHash[d]
+; holds the Zobrist hash of the ancestor node at ply d on the current root->leaf
+; path. A child at SearchDepth scans entries [0 .. SearchDepth-1] for a match to
+; detect an in-tree repetition (treated as a draw on the FIRST repeat, the
+; standard search convention). Two bytes per ply (lo then hi), MAX_DEPTH plies.
+SearchPathHashLo:
+  .res MAX_DEPTH
+SearchPathHashHi:
   .res MAX_DEPTH
 NegamaxBestFrom:
   .res MAX_DEPTH
@@ -10719,15 +10953,25 @@ __ai_search_iteration_score_ready_0:
 ; Update thinking display with current depth and best move
   jsr EngineOnSearchIteration
 
-; Check if found mate (can stop early). 16-bit: IterScore == +MATE_SCORE.
+; FIX 1 (mate distance): found a forced mate at the root -> stop deepening. The
+; mating score is no longer exactly +MATE_SCORE (distance is encoded), so test
+; "is a winning mate" = IterScore > STATIC_EVAL_LIMIT (16-bit signed).
   lda IterScoreHi
   bmi __ai_search_check_max_depth_0; Negative scores are not winning mates
-  lda IterScore
-  cmp #<MATE_SCORE
-  bne __ai_search_check_max_depth_0
+  lda IterScore; IterScore - STATIC_EVAL_LIMIT
+  sec
+  sbc #<STATIC_EVAL_LIMIT
+  sta $f0
   lda IterScoreHi
-  cmp #>MATE_SCORE
-  beq __ai_search_time_done_0; Found forced mate, stop searching
+  sbc #>STATIC_EVAL_LIMIT
+  sta $f1
+  ora $f0
+  beq __ai_search_check_max_depth_0; diff == 0 -> not strictly greater
+  lda $f1
+  bvc __ai_search_id_mate_no_ov_0
+  eor #$80
+__ai_search_id_mate_no_ov_0:
+  bpl __ai_search_time_done_0; IterScore > STATIC_EVAL_LIMIT -> forced mate
 
 __ai_search_check_max_depth_0:
 ; Increment depth for next iteration
