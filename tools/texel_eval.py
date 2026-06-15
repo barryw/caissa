@@ -177,6 +177,83 @@ PST = {
 PST_BY_TYPE = [None, PST_PAWN, PST_KNIGHT, PST_BISHOP, PST_ROOK, PST_QUEEN, PST_KING_MID]
 
 # ---------------------------------------------------------------------------
+# Endgame piece-square tables. Phase-tapered against the MG tables above (see
+# eval_full / eval_material_pst). Initialized as EXACT copies of the MG tables,
+# so the eval stays bit-identical to the pre-taper baseline until later tuning
+# diverges these EG values.
+# ---------------------------------------------------------------------------
+PST_EG_PAWN = [
+    0, 0, 0, 0, 0, 0, 0, 0,
+    237, 121, 122, 117, 141, 98, 143, 59,
+    28, 37, 30, 74, 31, 45, 34, 2,
+    3, 2, -13, -15, 15, -5, -7, 27,
+    -13, -4, -16, 2, -14, -6, 13, -7,
+    -24, -14, -10, -48, -26, 7, 23, -19,
+    -11, -8, -10, -73, -23, 20, 29, -25,
+    0, 0, 0, 0, 0, 0, 0, 0,
+]
+PST_EG_KNIGHT = [
+    -294, -127, -101, -112, -190, -74, 17, -205,
+    -102, -105, -117, -39, -77, -48, -86, -49,
+    -144, -76, -48, -51, -35, -70, -41, -125,
+    -83, -86, -77, -51, -56, -43, -71, -55,
+    -106, -82, -56, -59, -92, -72, -68, -95,
+    -106, -104, -83, -55, -45, -78, -73, -137,
+    -98, -44, -84, -100, -70, -85, -59, -85,
+    -152, -132, -102, -74, -107, -128, -121, 133,
+]
+PST_EG_BISHOP = [
+    -39, -61, -31, -8, -23, -46, -110, -52,
+    -53, -29, -31, 16, -36, 25, -89, -49,
+    0, -47, -29, 14, 15, -43, -56, 22,
+    -39, -5, 0, 27, -2, 3, 7, 3,
+    32, 4, 25, 4, 26, 13, 15, -2,
+    -5, 46, -3, 32, -1, 25, 10, 1,
+    -5, -15, 32, -14, 9, -8, 24, 16,
+    40, 18, -39, -11, -25, -11, 42, -33,
+]
+PST_EG_ROOK = [
+    11, 7, 14, -14, 38, 39, -4, 5,
+    16, 9, 43, 23, 41, 38, -4, 66,
+    33, 12, 20, 52, 10, 15, 26, -22,
+    9, 1, -13, 11, 5, -4, 18, 5,
+    -2, -2, -9, -4, -9, -8, 1, 12,
+    9, 5, -3, 1, -11, 4, 14, 28,
+    -28, -25, -4, 11, -18, -2, -16, -29,
+    -15, -18, -2, 10, 11, -17, -26, -41,
+]
+PST_EG_QUEEN = [
+    -132, -134, -151, -26, -18, -22, -48, 20,
+    -78, -50, 1, -23, -28, 119, -46, 65,
+    -81, -20, -39, -23, 27, 120, -53, 63,
+    -67, -73, -28, -36, 8, -13, 18, 11,
+    -72, -21, -56, -47, -24, -15, -22, 10,
+    -18, -47, -35, -41, -11, -12, -37, -37,
+    -82, -33, -26, -30, -34, -20, -27, 1,
+    -47, -51, -45, -41, -12, -101, -24, -51,
+]
+PST_EG_KING = [
+    -482, -387, -603, -625, -276, -309, -222, 281,
+    -345, -286, -261, -298, -299, -358, -301, -173,
+    -310, -253, -339, -278, -351, -230, -221, -275,
+    -281, -294, -277, -265, -314, -305, -289, -334,
+    -380, -294, -299, -316, -325, -349, -330, -338,
+    -367, -337, -342, -318, -317, -340, -338, -371,
+    -346, -343, -339, -343, -345, -342, -336, -339,
+    -346, -310, -339, -387, -350, -358, -339, -330,
+]
+PST_EG = {
+    chess.PAWN: PST_EG_PAWN, chess.KNIGHT: PST_EG_KNIGHT, chess.BISHOP: PST_EG_BISHOP,
+    chess.ROOK: PST_EG_ROOK, chess.QUEEN: PST_EG_QUEEN, chess.KING: PST_EG_KING,
+}
+# Indexed by piece type 1..6 for the 0x88 engine-faithful path.
+PST_EG_BY_TYPE = [None, PST_EG_PAWN, PST_EG_KNIGHT, PST_EG_BISHOP, PST_EG_ROOK,
+                  PST_EG_QUEEN, PST_EG_KING]
+
+# Game-phase weight by piece type (1..6): N/B=1, R=2, Q=4, pawn/king=0.
+PHASE_WEIGHT = [0, 0, 1, 1, 2, 4, 0]
+
+# ---------------------------------------------------------------------------
 # 0x88 engine constants
 # ---------------------------------------------------------------------------
 WHITE_COLOR = 0x80
@@ -255,14 +332,26 @@ def _pst_index_black(sq: int) -> int:
 def eval_material_pst(board: chess.Board) -> int:
     """Material + PST only, WHITE-POV centipawns. Mirrors the lazy stage."""
     score = 0
+    egdiff = 0   # signed EG-minus-MG accumulator, tapered in below
+    phase = 0    # game phase: N/B=1, R=2, Q=4 both colors, clamp 24
     pv = {chess.PAWN: PAWN_VALUE, chess.KNIGHT: KNIGHT_VALUE, chess.BISHOP: BISHOP_VALUE,
           chess.ROOK: ROOK_VALUE, chess.QUEEN: QUEEN_VALUE, chess.KING: KING_VALUE}
     for sq, piece in board.piece_map().items():
         val = pv[piece.piece_type]
+        phase += PHASE_WEIGHT[CHESS_TYPE_TO_T[piece.piece_type]]
         if piece.color == chess.WHITE:
-            score += val + PST[piece.piece_type][_pst_index_white(sq)]
+            idx = _pst_index_white(sq)
+            score += val + PST[piece.piece_type][idx]
+            egdiff += PST_EG[piece.piece_type][idx] - PST[piece.piece_type][idx]
         else:
-            score -= val + PST[piece.piece_type][_pst_index_black(sq)]
+            idx = _pst_index_black(sq)
+            score -= val + PST[piece.piece_type][idx]
+            egdiff -= PST_EG[piece.piece_type][idx] - PST[piece.piece_type][idx]
+    if phase > 24:
+        phase = 24
+    num = egdiff * (24 - phase)
+    blend = num // 24 if num >= 0 else -((-num) // 24)   # trunc toward zero (C-style)
+    score += blend
     return score
 
 
@@ -277,7 +366,7 @@ def eval_material_pst(board: chess.Board) -> int:
 # ---------------------------------------------------------------------------
 class _Eval:
     __slots__ = ("b", "wk", "bk", "score", "nonpawn", "pawns", "queens",
-                 "wbishops", "bbishops", "endgame", "wpf", "bpf")
+                 "wbishops", "bbishops", "endgame", "phase", "egdiff", "wpf", "bpf")
 
     def __init__(self, board88, wk, bk):
         self.b = board88
@@ -290,6 +379,8 @@ class _Eval:
         self.wbishops = 0
         self.bbishops = 0
         self.endgame = 0
+        self.phase = 0      # game phase: N/B=1, R=2, Q=4, clamp 24
+        self.egdiff = 0     # signed EG-minus-MG PST accumulator (tapered in)
         self.wpf = [0] * 8  # white pawns per file
         self.bpf = [0] * 8  # black pawns per file
 
@@ -559,6 +650,13 @@ class _Eval:
                         self.bbishops += 1
                 if ptype == QUEEN_T:
                     self.queens += 1
+                # game-phase accumulation (both colors): N/B=1, R=2, Q=4
+                if ptype == ROOK_T:
+                    self.phase += 2
+                elif ptype == QUEEN_T:
+                    self.phase += 4
+                else:
+                    self.phase += 1  # knight or bishop
 
             # per-piece full-eval terms (lazy=0). Order matches eval.s.
             self._pawn_pressure(x, color, ptype)
@@ -568,17 +666,29 @@ class _Eval:
             self._mobility(x, color, ptype)
             self._seventh_rank(x, color, ptype)
 
-            # material + PST
+            # material + PST (MG added now; EG-minus-MG accumulated for the
+            # phase-tapered blend applied once after the loop).
             val = PIECE_VALUE_TBL[ptype]
             pst = PST_BY_TYPE[ptype]
+            pst_eg = PST_EG_BY_TYPE[ptype]
             if color:
                 self.add(val)
                 idx = ((x & 0x70) >> 1) | (x & 0x07)  # Sq88To64
                 self.add(pst[idx])
+                self.egdiff += pst_eg[idx] - pst[idx]
             else:
                 self.sub(val)
                 idx = (((x & 0x70) >> 1) | (x & 0x07)) ^ 0x38  # Sq88To64Mirror
                 self.sub(pst[idx])
+                self.egdiff -= pst_eg[idx] - pst[idx]
+
+        # tapered PST: blend accumulated EG-minus-MG toward the endgame by phase.
+        # Use C-style truncate-toward-zero division (Python // floors).
+        p = self.phase
+        if p > 24:
+            p = 24
+        num = self.egdiff * (24 - p)
+        self.score += num // 24 if num >= 0 else -((-num) // 24)
 
         # endgame flag
         if self.nonpawn < ENDGAME_NONPAWN_LIMIT + 1:

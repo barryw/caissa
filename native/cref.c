@@ -51,7 +51,6 @@ static int set_weight(EvalWeights *w, const char *key, int val) {
         {"tempo", &w->tempo}, {"trapped_penalty", &w->trapped_penalty},
         {"king_attack_escalation", &w->king_attack_escalation},
         {"pawn_storm", &w->pawn_storm}, {"queen_attacks_minor", &w->queen_attacks_minor},
-        {"king_taper", &w->king_taper},
         {NULL, NULL}
     };
     for (int i = 0; map[i].k; i++)

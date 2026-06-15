@@ -43,17 +43,28 @@ REPO = Path(__file__).resolve().parents[1]
 # Tunable piece types and their material params (pawn anchored, king fixed 0).
 MAT_TYPES = [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN]
 PST_TYPES = [chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN, chess.KING]
-# Param layout: [4 material] + [6*64 PST]. Index helpers:
+# Param layout: [4 material] + [6*64 MG PST] + [6*64 EG PST]. PST is now PHASE-
+# TAPERED: the native eval blends MG/EG by game phase p in [0,24]
+#   pst_contribution = MG[sq]*p/24 + EG[sq]*(24-p)/24   (per piece, summed)
+# so each cell is linear with a phase-dependent coefficient (MG ~ p/24, EG ~
+# (24-p)/24). EG init == MG, so the fit reduces to the untapered case at w0.
 N_MAT = len(MAT_TYPES)
-N_PARAMS = N_MAT + len(PST_TYPES) * 64
+N_MG = len(PST_TYPES) * 64
+N_PARAMS = N_MAT + 2 * N_MG
+# phase weight per piece type (matches the eval: N/B=1, R=2, Q=4, P/K=0)
+PHASE_WEIGHT = {chess.KNIGHT: 1, chess.BISHOP: 1, chess.ROOK: 2, chess.QUEEN: 4}
 
 
 def _mat_idx(pt: int) -> int:
     return MAT_TYPES.index(pt)
 
 
-def _pst_base(pt: int) -> int:
+def _pst_base(pt: int) -> int:          # middlegame PST block
     return N_MAT + PST_TYPES.index(pt) * 64
+
+
+def _eg_base(pt: int) -> int:           # endgame PST block
+    return N_MAT + N_MG + PST_TYPES.index(pt) * 64
 
 
 def initial_weights() -> np.ndarray:
@@ -61,9 +72,17 @@ def initial_weights() -> np.ndarray:
     for pt in MAT_TYPES:
         w[_mat_idx(pt)] = te.PIECE_VALUE_TBL[pt]
     for pt in PST_TYPES:
-        b = _pst_base(pt)
-        w[b:b + 64] = np.array(te.PST[pt], dtype=np.float64)
+        vals = np.array(te.PST[pt], dtype=np.float64)
+        w[_pst_base(pt):_pst_base(pt) + 64] = vals
+        w[_eg_base(pt):_eg_base(pt) + 64] = vals     # EG init == MG
     return w
+
+
+def _phase(board: chess.Board) -> int:
+    p = 0
+    for pt, wt in PHASE_WEIGHT.items():
+        p += wt * (len(board.pieces(pt, chess.WHITE)) + len(board.pieces(pt, chess.BLACK)))
+    return min(p, 24)
 
 
 def build_features(positions: list[dict]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -75,11 +94,14 @@ def build_features(positions: list[dict]) -> tuple[np.ndarray, np.ndarray, np.nd
     for i, rec in enumerate(positions):
         board = chess.Board(rec["fen"])
         target_cp[i] = rec["cp"]
+        p = _phase(board)
+        mg_w, eg_w = p / 24.0, (24 - p) / 24.0          # phase coefficients
         for sq, piece in board.piece_map().items():
             pt = piece.piece_type
             sign = 1.0 if piece.color == chess.WHITE else -1.0
             idx64 = te._pst_index_white(sq) if piece.color == chess.WHITE else te._pst_index_black(sq)
-            X[i, _pst_base(pt) + idx64] += sign
+            X[i, _pst_base(pt) + idx64] += sign * mg_w
+            X[i, _eg_base(pt) + idx64] += sign * eg_w
             if pt in MAT_TYPES:
                 X[i, _mat_idx(pt)] += sign
             elif pt == chess.PAWN:
@@ -120,10 +142,10 @@ def tune(positions, lam=1e-6, iters=6000, lr=3.0, K=300.0):
     b1, b2, eps = 0.9, 0.999, 1e-8
     fixed = np.zeros(N_PARAMS, dtype=bool)
     # Freeze PST cells that never occur (no gradient anyway, but be explicit):
-    # pawn PST ranks 1 and 8 (indices 0-7, 56-63) are never used.
-    pb = _pst_base(chess.PAWN)
-    fixed[pb:pb + 8] = True
-    fixed[pb + 56:pb + 64] = True
+    # pawn PST ranks 1 and 8 (indices 0-7, 56-63) are never used -- both MG+EG.
+    for pb in (_pst_base(chess.PAWN), _eg_base(chess.PAWN)):
+        fixed[pb:pb + 8] = True
+        fixed[pb + 56:pb + 64] = True
     for t in range(1, iters + 1):
         eval_cp = const + X @ w          # native units = real centipawns (no x10)
         pred = sigmoid(eval_cp / K)
@@ -140,10 +162,10 @@ def tune(positions, lam=1e-6, iters=6000, lr=3.0, K=300.0):
 def round_weights(w: np.ndarray) -> np.ndarray:
     r = np.rint(w).astype(int)
     for pt in PST_TYPES:
-        b = _pst_base(pt)
         # native PST cells are plain `int` (not signed bytes); keep generous
         # bound to avoid 16-bit eval-accumulator overflow surprises.
-        r[b:b + 64] = np.clip(r[b:b + 64], -2000, 2000)
+        for base in (_pst_base(pt), _eg_base(pt)):
+            r[base:base + 64] = np.clip(r[base:base + 64], -2000, 2000)
     for pt in MAT_TYPES:
         r[_mat_idx(pt)] = max(0, int(r[_mat_idx(pt)]))
     return r
@@ -180,6 +202,10 @@ _NATIVE_PST = {chess.PAWN: "PST_PAWN", chess.KNIGHT: "PST_KNIGHT",
                chess.BISHOP: "PST_BISHOP", chess.ROOK: "PST_ROOK",
                chess.QUEEN: "PST_QUEEN", chess.KING: "PST_KING_MID"}
 _PY_PST = dict(_NATIVE_PST)   # same symbol names in texel_eval.py
+# endgame tables share names across both files (PST_EG_PAWN.. PST_EG_KING)
+_EG_NAME = {chess.PAWN: "PST_EG_PAWN", chess.KNIGHT: "PST_EG_KNIGHT",
+            chess.BISHOP: "PST_EG_BISHOP", chess.ROOK: "PST_EG_ROOK",
+            chess.QUEEN: "PST_EG_QUEEN", chess.KING: "PST_EG_KING"}
 _MAT_C = {chess.KNIGHT: "knight", chess.BISHOP: "bishop",
           chess.ROOK: "rook", chess.QUEEN: "queen"}
 _MAT_PY = {chess.KNIGHT: "KNIGHT_VALUE", chess.BISHOP: "BISHOP_VALUE",
@@ -188,6 +214,11 @@ _MAT_PY = {chess.KNIGHT: "KNIGHT_VALUE", chess.BISHOP: "BISHOP_VALUE",
 
 def _pst_vals(weights: np.ndarray, pt: int) -> list[int]:
     b = _pst_base(pt)
+    return [int(weights[b + i]) for i in range(64)]
+
+
+def _eg_vals(weights: np.ndarray, pt: int) -> list[int]:
+    b = _eg_base(pt)
     return [int(weights[b + i]) for i in range(64)]
 
 
@@ -211,10 +242,13 @@ def write_back(weights: np.ndarray) -> None:
     # native/eval.c : static const int PST_NAME[64] = {\n ... \n};
     evalc = REPO / "native" / "eval.c"
     txt = evalc.read_text()
-    for pt, name in _NATIVE_PST.items():
+    for pt, name in _NATIVE_PST.items():    # MG: static const int PST_NAME[64] = {..};
         head = rf"static const int {name}\[64\] = \{{"
         txt = _replace_block(txt, head, r"\n\};", _rows_body(_pst_vals(weights, pt)))
-    for pt, nm in _MAT_C.items():       # g_w.<piece> = NNN;
+    for pt, name in _EG_NAME.items():       # EG tables
+        head = rf"static const int {name}\[64\] = \{{"
+        txt = _replace_block(txt, head, r"\n\};", _rows_body(_eg_vals(weights, pt)))
+    for pt, nm in _MAT_C.items():           # g_w.<piece> = NNN;
         val = int(weights[_mat_idx(pt)])
         txt = re.sub(rf"(g_w\.{nm}\s*=\s*)\d+(;)", rf"\g<1>{val}\g<2>", txt, count=1)
     evalc.write_text(txt)
@@ -225,6 +259,9 @@ def write_back(weights: np.ndarray) -> None:
     for pt, name in _PY_PST.items():
         head = rf"{name} = \["
         ptxt = _replace_block(ptxt, head, r"\n\]", _rows_body(_pst_vals(weights, pt)))
+    for pt, name in _EG_NAME.items():
+        head = rf"{name} = \["
+        ptxt = _replace_block(ptxt, head, r"\n\]", _rows_body(_eg_vals(weights, pt)))
     for pt, nm in _MAT_PY.items():
         val = int(weights[_mat_idx(pt)])
         ptxt = re.sub(rf"^{nm}\s*=\s*\d+", f"{nm} = {val}", ptxt, count=1, flags=re.M)

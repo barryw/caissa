@@ -30,9 +30,6 @@ typedef struct {
     /* New A/B eval terms (default 0 -> bit-exact to baseline until enabled). */
     int tempo, trapped_penalty, king_attack_escalation, pawn_storm,
         queen_attacks_minor;
-    /* king_taper: when 1, king square value is phase-tapered MG<->EG (PST_KING_MID
-     * <-> PST_KING_END) instead of MG-only + the binary endgame_king_activity. */
-    int king_taper;
 } EvalWeights;
 
 extern EvalWeights g_w;           /* live weights (override target) */

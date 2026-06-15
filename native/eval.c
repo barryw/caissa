@@ -91,7 +91,6 @@ void eval_reset_weights(void) {
     g_w.king_attack_escalation = 0;
     g_w.pawn_storm = 0;
     g_w.queen_attacks_minor = 0;
-    g_w.king_taper = 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -192,21 +191,79 @@ static const int PST_KING_MID[64] = {
     -346, -343, -339, -343, -345, -342, -336, -339,
     -346, -310, -339, -387, -350, -358, -339, -330,
 };
-/* Endgame king table: centralize. Used only when g_w.king_taper is enabled,
- * blended against PST_KING_MID by game phase. Center-peaked, x10 scale. */
-static const int PST_KING_END[64] = {
-    -500, -300, -300, -300, -300, -300, -300, -500,
-    -300, -200,  -50,  -50,  -50,  -50, -200, -300,
-    -300,  -50,  200,  300,  300,  200,  -50, -300,
-    -300,  -50,  300,  400,  400,  300,  -50, -300,
-    -300,  -50,  300,  400,  400,  300,  -50, -300,
-    -300,  -50,  200,  300,  300,  200,  -50, -300,
-    -300, -200,  -50,  -50,  -50,  -50, -200, -300,
-    -500, -300, -300, -300, -300, -300, -300, -500,
-};
 /* Indexed by piece type 1..6 (NULL placeholder at index 0). */
 static const int *const PST_BY_TYPE[7] = {
     0, PST_PAWN, PST_KNIGHT, PST_BISHOP, PST_ROOK, PST_QUEEN, PST_KING_MID
+};
+
+/* ------------------------------------------------------------------------- */
+/* Endgame piece-square tables (x10). EXACT copies of the MG tables above, so  */
+/* the tapered blend (EG-minus-MG) is a no-op until these EG values diverge.   */
+/* Mirrors tools/texel_eval.py PST_EG_*.                                       */
+/* ------------------------------------------------------------------------- */
+static const int PST_EG_PAWN[64] = {
+    0, 0, 0, 0, 0, 0, 0, 0,
+    237, 121, 122, 117, 141, 98, 143, 59,
+    28, 37, 30, 74, 31, 45, 34, 2,
+    3, 2, -13, -15, 15, -5, -7, 27,
+    -13, -4, -16, 2, -14, -6, 13, -7,
+    -24, -14, -10, -48, -26, 7, 23, -19,
+    -11, -8, -10, -73, -23, 20, 29, -25,
+    0, 0, 0, 0, 0, 0, 0, 0,
+};
+static const int PST_EG_KNIGHT[64] = {
+    -294, -127, -101, -112, -190, -74, 17, -205,
+    -102, -105, -117, -39, -77, -48, -86, -49,
+    -144, -76, -48, -51, -35, -70, -41, -125,
+    -83, -86, -77, -51, -56, -43, -71, -55,
+    -106, -82, -56, -59, -92, -72, -68, -95,
+    -106, -104, -83, -55, -45, -78, -73, -137,
+    -98, -44, -84, -100, -70, -85, -59, -85,
+    -152, -132, -102, -74, -107, -128, -121, 133,
+};
+static const int PST_EG_BISHOP[64] = {
+    -39, -61, -31, -8, -23, -46, -110, -52,
+    -53, -29, -31, 16, -36, 25, -89, -49,
+    0, -47, -29, 14, 15, -43, -56, 22,
+    -39, -5, 0, 27, -2, 3, 7, 3,
+    32, 4, 25, 4, 26, 13, 15, -2,
+    -5, 46, -3, 32, -1, 25, 10, 1,
+    -5, -15, 32, -14, 9, -8, 24, 16,
+    40, 18, -39, -11, -25, -11, 42, -33,
+};
+static const int PST_EG_ROOK[64] = {
+    11, 7, 14, -14, 38, 39, -4, 5,
+    16, 9, 43, 23, 41, 38, -4, 66,
+    33, 12, 20, 52, 10, 15, 26, -22,
+    9, 1, -13, 11, 5, -4, 18, 5,
+    -2, -2, -9, -4, -9, -8, 1, 12,
+    9, 5, -3, 1, -11, 4, 14, 28,
+    -28, -25, -4, 11, -18, -2, -16, -29,
+    -15, -18, -2, 10, 11, -17, -26, -41,
+};
+static const int PST_EG_QUEEN[64] = {
+    -132, -134, -151, -26, -18, -22, -48, 20,
+    -78, -50, 1, -23, -28, 119, -46, 65,
+    -81, -20, -39, -23, 27, 120, -53, 63,
+    -67, -73, -28, -36, 8, -13, 18, 11,
+    -72, -21, -56, -47, -24, -15, -22, 10,
+    -18, -47, -35, -41, -11, -12, -37, -37,
+    -82, -33, -26, -30, -34, -20, -27, 1,
+    -47, -51, -45, -41, -12, -101, -24, -51,
+};
+static const int PST_EG_KING[64] = {
+    -482, -387, -603, -625, -276, -309, -222, 281,
+    -345, -286, -261, -298, -299, -358, -301, -173,
+    -310, -253, -339, -278, -351, -230, -221, -275,
+    -281, -294, -277, -265, -314, -305, -289, -334,
+    -380, -294, -299, -316, -325, -349, -330, -338,
+    -367, -337, -342, -318, -317, -340, -338, -371,
+    -346, -343, -339, -343, -345, -342, -336, -339,
+    -346, -310, -339, -387, -350, -358, -339, -330,
+};
+/* Indexed by piece type 1..6 (NULL placeholder at index 0). */
+static const int *const PST_EG_BY_TYPE[7] = {
+    0, PST_EG_PAWN, PST_EG_KNIGHT, PST_EG_BISHOP, PST_EG_ROOK, PST_EG_QUEEN, PST_EG_KING
 };
 
 /* ------------------------------------------------------------------------- */
@@ -223,6 +280,7 @@ typedef struct {
     int bbishops;
     int endgame;
     int phase;              /* tapered-eval game phase: N/B=1,R=2,Q=4, clamp 24 */
+    int egdiff;             /* signed EG-minus-MG PST accumulator (tapered in) */
     int wpf[8];             /* white pawns per file */
     int bpf[8];             /* black pawns per file */
 
@@ -746,12 +804,8 @@ static void endgame_rook_activity(Eval *e) {
 }
 
 static void endgame(Eval *e) {
-    /* When king_taper is on, EG king centralization comes from PST_KING_END
-     * instead of this binary bonus. */
-    if (!g_w.king_taper) {
-        e->score += endgame_king_activity(e->wk);
-        e->score -= endgame_king_activity(e->bk);
-    }
+    e->score += endgame_king_activity(e->wk);
+    e->score -= endgame_king_activity(e->bk);
     if (e->pawns != 0 && e->nonpawn != 0) endgame_rook_activity(e);
 }
 
@@ -1045,6 +1099,8 @@ static void queen_attacks_minor(Eval *e) {
 int eval_material_pst(const Board *b) {
     int matv[7];
     int score = 0;
+    int egdiff = 0;   /* signed EG-minus-MG accumulator, tapered in below */
+    int phase = 0;    /* game phase: N/B=1, R=2, Q=4 both colors, clamp 24 */
     int x;
     matv[0] = 0;
     matv[PAWN_T]   = g_w.pawn;
@@ -1056,20 +1112,31 @@ int eval_material_pst(const Board *b) {
     for (x = 0; x < 128; x++) {
         uint8_t p;
         int ptype, idx;
-        const int *pst;
+        const int *pst, *pst_eg;
         if (x & 0x88) continue;
         p = b->sq[x];
         if (!p) continue;
         ptype = PT(p);
+        /* game-phase accumulation (both colors): N/B=1, R=2, Q=4 */
+        if (ptype == KNIGHT_T || ptype == BISHOP_T) phase += 1;
+        else if (ptype == ROOK_T) phase += 2;
+        else if (ptype == QUEEN_T) phase += 4;
         pst = PST_BY_TYPE[ptype];
+        pst_eg = PST_EG_BY_TYPE[ptype];
         if (IS_WHITE(p)) {
             idx = ((x & 0x70) >> 1) | (x & 0x07);
             score += matv[ptype] + pst[idx];
+            egdiff += pst_eg[idx] - pst[idx];
         } else {
             idx = (((x & 0x70) >> 1) | (x & 0x07)) ^ 0x38;
             score -= matv[ptype] + pst[idx];
+            egdiff -= pst_eg[idx] - pst[idx];
         }
     }
+    /* tapered PST: blend accumulated EG-minus-MG toward the endgame by phase.
+     * Plain C integer division truncates toward zero (matches the oracle). */
+    if (phase > 24) phase = 24;
+    score += egdiff * (24 - phase) / 24;
     return score;
 }
 
@@ -1091,6 +1158,7 @@ int eval_full(const Board *board) {
     e.bbishops = 0;
     e.endgame = 0;
     e.phase = 0;
+    e.egdiff = 0;
     for (i = 0; i < 8; i++) { e.wpf[i] = 0; e.bpf[i] = 0; }
 
     /* Rebuild g_w-derived per-type lookup tables (mirror apply_eval_overrides). */
@@ -1132,7 +1200,7 @@ int eval_full(const Board *board) {
     for (x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
         int piece = b[x];
         int color, ptype, val, idx;
-        const int *pst;
+        const int *pst, *pst_eg;
         if (piece == EMPTY) continue;
         color = piece & WHITE_COLOR;
         ptype = piece & 0x07;
@@ -1161,18 +1229,21 @@ int eval_full(const Board *board) {
         mobility(&e, x, color, ptype);
         seventh_rank(&e, x, color, ptype);
 
-        /* material + PST */
+        /* material + PST (MG added now; EG-minus-MG accumulated for the
+         * phase-tapered blend applied once after the loop). */
         val = e.PIECE_VALUE_TBL[ptype];
         pst = PST_BY_TYPE[ptype];
+        pst_eg = PST_EG_BY_TYPE[ptype];
         if (color) {
             e.score += val;
             idx = ((x & 0x70) >> 1) | (x & 0x07);          /* Sq88To64 */
-            /* king PST deferred to the tapered tail when king_taper is on */
-            if (!(g_w.king_taper && ptype == KING_T)) e.score += pst[idx];
+            e.score += pst[idx];
+            e.egdiff += pst_eg[idx] - pst[idx];
         } else {
             e.score -= val;
             idx = (((x & 0x70) >> 1) | (x & 0x07)) ^ 0x38; /* Sq88To64Mirror */
-            if (!(g_w.king_taper && ptype == KING_T)) e.score -= pst[idx];
+            e.score -= pst[idx];
+            e.egdiff -= pst_eg[idx] - pst[idx];
         }
     }
 
@@ -1183,14 +1254,12 @@ int eval_full(const Board *board) {
         e.endgame = 1;
     }
 
-    /* tapered king PST: blend MG<->EG by phase (king PST was deferred above). */
-    if (g_w.king_taper) {
-        int p = e.phase; int wi, bi;
+    /* tapered PST: blend accumulated EG-minus-MG toward the endgame by phase.
+     * Plain C integer division truncates toward zero (matches the oracle). */
+    {
+        int p = e.phase;
         if (p > 24) p = 24;
-        wi = ((e.wk & 0x70) >> 1) | (e.wk & 0x07);
-        bi = (((e.bk & 0x70) >> 1) | (e.bk & 0x07)) ^ 0x38;
-        e.score += (PST_KING_MID[wi] * p + PST_KING_END[wi] * (24 - p)) / 24;
-        e.score -= (PST_KING_MID[bi] * p + PST_KING_END[bi] * (24 - p)) / 24;
+        e.score += e.egdiff * (24 - p) / 24;
     }
 
     /* ---- full tail ---- */
