@@ -89,8 +89,10 @@ ELO_RE = re.compile(r"Elo diff ~\s*([+-]?\d+)")
 SPRT_RE = re.compile(r"->\s*(H0[^\n]*|H1[^\n]*|inconclusive)")
 
 
-def run_ab(spec: str, depth: int, games: int, jobs: int, sprt: bool) -> dict:
-    cmd = [str(CREF), "selfplay", "--games", str(games), "--depth", str(depth),
+def run_ab(spec: str, depth: int, games: int, jobs: int, sprt: bool, nodes: int = 0) -> dict:
+    # Fixed-nodes (the 6502-relevant budget) when nodes>0, else fixed-depth.
+    budget = ["--nodes", str(nodes)] if nodes else ["--depth", str(depth)]
+    cmd = [str(CREF), "selfplay", "--games", str(games), *budget,
            "--jobs", str(jobs), "--weights-a", spec, "--label", spec or "baseline"]
     if sprt:
         cmd.append("--sprt")
@@ -115,6 +117,7 @@ def candidates(only: list[str] | None):
 
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--nodes", type=int, default=0, help="fixed node budget (6502-relevant); overrides --*-depth")
     p.add_argument("--screen-depth", type=int, default=3)
     p.add_argument("--screen-games", type=int, default=120)
     p.add_argument("--confirm-depth", type=int, default=4)
@@ -136,7 +139,7 @@ def main(argv: list[str]) -> int:
     screened = []
     for i, (w, m, val) in enumerate(cand, 1):
         spec = f"{w}={val}"
-        r = run_ab(spec, args.screen_depth, args.screen_games, args.jobs, sprt=False)
+        r = run_ab(spec, args.screen_depth, args.screen_games, args.jobs, sprt=False, nodes=args.nodes)
         flag = "->confirm" if r["rate"] >= args.promote else ""
         print(f"[screen {i:>2}/{len(cand)}] {spec:<28} d{args.screen_depth} {r['rate']:5.1f}% "
               f"({r['elo']:+d} Elo) {flag}", flush=True)
@@ -145,7 +148,7 @@ def main(argv: list[str]) -> int:
     promoted = [s for s in screened if s["screen"]["rate"] >= args.promote]
     print(f"\n# {len(promoted)} promoted to d{args.confirm_depth} confirm\n")
     for i, s in enumerate(promoted, 1):
-        r = run_ab(s["spec"], args.confirm_depth, args.confirm_games, args.jobs, sprt=True)
+        r = run_ab(s["spec"], args.confirm_depth, args.confirm_games, args.jobs, sprt=True, nodes=args.nodes)
         s["confirm"] = r
         print(f"[confirm {i:>2}/{len(promoted)}] {s['spec']:<28} d{args.confirm_depth} {r['rate']:5.1f}% "
               f"({r['elo']:+d} Elo) SPRT:{r['sprt']}", flush=True)
