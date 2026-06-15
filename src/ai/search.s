@@ -7726,10 +7726,11 @@ __ai_search_pvs_research_done_0:
   lda SearchDepth
   bne __ai_search_skip_root_pawn_safety_0
   jsr ApplyRootAllowsMatePenalty
-  jsr ApplyRootMajorSafetyPenalty
-  jsr ApplyRootHangingQueenPenalty
-  jsr ApplyRootQueenDangerPawnPenalty
-  jsr ApplyRootQueenPawnRaidPenalty
+; EXP1: strip eval-shaping root penalties (test vs native clean-search).
+; jsr ApplyRootMajorSafetyPenalty
+; jsr ApplyRootHangingQueenPenalty
+; jsr ApplyRootQueenDangerPawnPenalty
+; jsr ApplyRootQueenPawnRaidPenalty
 
 ; FIX 1 (mate distance): the mating root move no longer scores exactly
 ; +MATE_SCORE (distance is encoded), so test "is a winning mate" =
@@ -7751,21 +7752,22 @@ __ai_search_root_mate_no_ov_0:
   bpl __ai_search_skip_root_pawn_safety_0; score > STATIC_EVAL_LIMIT -> mate
 __ai_search_root_not_mate_0:
 
-  jsr ApplyRootPawnSafetyPenalty
-  jsr ApplyRootHangingMinorPenalty
-  jsr ApplyRootLoosePiecePenalty
-  jsr ApplyRootMissedPawnWinPenalty
-  jsr ApplyRootMissedCentralPawnKickPenalty
-  jsr ApplyRootMissedAdvancedPawnPenalty
-  jsr ApplyRootMissedOpeningCenterBreakPenalty
-  jsr ApplyRootBlockedBishopRecapturePenalty
-  jsr ApplyRootMinorSafetyPenalty
-  jsr ApplyRootEarlyQueenRecapturePenalty
-  jsr ApplyRootEarlyQueenPenalty
-  jsr ApplyRootEarlyRookPenalty
-  jsr ApplyRootEarlyKingPenalty
-  jsr ApplyRootCheckedKingMovePenalty
-  jsr ApplyRootExposedKingFlankPawnPenalty
+; EXP1: strip eval-shaping root penalties (test vs native clean-search).
+; jsr ApplyRootPawnSafetyPenalty
+; jsr ApplyRootHangingMinorPenalty
+; jsr ApplyRootLoosePiecePenalty
+; jsr ApplyRootMissedPawnWinPenalty
+; jsr ApplyRootMissedCentralPawnKickPenalty
+; jsr ApplyRootMissedAdvancedPawnPenalty
+; jsr ApplyRootMissedOpeningCenterBreakPenalty
+; jsr ApplyRootBlockedBishopRecapturePenalty
+; jsr ApplyRootMinorSafetyPenalty
+; jsr ApplyRootEarlyQueenRecapturePenalty
+; jsr ApplyRootEarlyQueenPenalty
+; jsr ApplyRootEarlyRookPenalty
+; jsr ApplyRootEarlyKingPenalty
+; jsr ApplyRootCheckedKingMovePenalty
+; jsr ApplyRootExposedKingFlankPawnPenalty
   jsr ApplyRootLoopPenalty
 
 __ai_search_skip_root_pawn_safety_0:
@@ -10761,6 +10763,10 @@ __ai_search_no_root_mate_0:
   jsr TryRootAvoidMateThreatMove
   bcs __ai_search_finish_root_shortcut_0
 __ai_search_no_root_mate_threat_0:
+
+; EXP2 REVERTED: disabling the tactical shortcuts dropped on-chip strength
+; (~1072 -> ~934 vs SF-1320). They are net-positive safety nets that catch
+; obvious tactics the depth/timeout-limited search fumbles. Kept.
 
 ; Opening theory (book) outranks the crude root positional heuristics
 ; (center-pawn push / bishop recapture). Those moved below the book probe and
