@@ -38,10 +38,12 @@ def material_cp(b: chess.Board) -> int:
     return t
 
 
-def native_move(fen: str, depth: int, nodes: int = 0) -> chess.Move | None:
+def native_move(fen: str, depth: int, nodes: int = 0, weights: str = "") -> chess.Move | None:
     cmd = [str(CREF), "bestmove", fen, str(depth)]
-    if nodes:
-        cmd.append(str(nodes))
+    if nodes or weights:
+        cmd.append(str(nodes))          # nodes positional must precede weights
+    if weights:
+        cmd.append(weights)
     out = subprocess.run(cmd, capture_output=True, text=True).stdout
     if not out.startswith("bestmove"):
         return None
@@ -54,6 +56,7 @@ def native_move(fen: str, depth: int, nodes: int = 0) -> chess.Move | None:
 def play_game(arg: dict) -> float:
     """Returns native's score (1 win / 0.5 draw / 0 loss)."""
     fen, native_white, depth, nodes = arg["fen"], arg["native_white"], arg["depth"], arg.get("nodes", 0)
+    weights = arg.get("weights", "")
     sf_elo, sf_skill, sf_time = arg["sf_elo"], arg["sf_skill"], arg["sf_time"]
     board = chess.Board(fen)
     eng = chess.engine.SimpleEngine.popen_uci(SF)
@@ -65,7 +68,7 @@ def play_game(arg: dict) -> float:
         while not board.is_game_over(claim_draw=True) and board.ply() < 250:
             native_turn = (board.turn == chess.WHITE) == native_white
             if native_turn:
-                mv = native_move(board.fen(), depth, nodes)
+                mv = native_move(board.fen(), depth, nodes, weights)
                 if mv is None or mv not in board.legal_moves:
                     return 0.0  # native failed -> loss
             else:
@@ -94,6 +97,7 @@ def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--native-depth", type=int, default=5)
     p.add_argument("--native-nodes", type=int, default=0, help="node budget per move (0 = fixed depth)")
+    p.add_argument("--native-weights", type=str, default="", help="eval weight overrides key=val,... for native side")
     p.add_argument("--sf-elo", type=int, default=None, help="Stockfish UCI_Elo (>=1320)")
     p.add_argument("--sf-skill", type=int, default=None, help="Stockfish Skill Level 0-20 (weaker than 1320)")
     p.add_argument("--sf-time", type=float, default=0.1, help="Stockfish seconds/move")
@@ -111,7 +115,7 @@ def main(argv: list[str]) -> int:
     for i in range(pairs):
         for nw in (True, False):
             tasks.append({"fen": fens[i % len(fens)], "native_white": nw, "depth": args.native_depth,
-                          "nodes": args.native_nodes,
+                          "nodes": args.native_nodes, "weights": args.native_weights,
                           "sf_elo": args.sf_elo, "sf_skill": args.sf_skill, "sf_time": args.sf_time})
 
     opp = f"SF UCI_Elo={args.sf_elo}" if args.sf_elo else f"SF Skill={args.sf_skill}"

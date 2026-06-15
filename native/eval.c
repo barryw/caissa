@@ -91,6 +91,7 @@ void eval_reset_weights(void) {
     g_w.king_attack_escalation = 0;
     g_w.pawn_storm = 0;
     g_w.queen_attacks_minor = 0;
+    g_w.king_taper = 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -191,6 +192,18 @@ static const int PST_KING_MID[64] = {
     -300, -400, -400, -500, -500, -400, -400, -300,
     -300, -400, -400, -500, -500, -400, -400, -300,
 };
+/* Endgame king table: centralize. Used only when g_w.king_taper is enabled,
+ * blended against PST_KING_MID by game phase. Center-peaked, x10 scale. */
+static const int PST_KING_END[64] = {
+    -500, -300, -300, -300, -300, -300, -300, -500,
+    -300, -200,  -50,  -50,  -50,  -50, -200, -300,
+    -300,  -50,  200,  300,  300,  200,  -50, -300,
+    -300,  -50,  300,  400,  400,  300,  -50, -300,
+    -300,  -50,  300,  400,  400,  300,  -50, -300,
+    -300,  -50,  200,  300,  300,  200,  -50, -300,
+    -300, -200,  -50,  -50,  -50,  -50, -200, -300,
+    -500, -300, -300, -300, -300, -300, -300, -500,
+};
 /* Indexed by piece type 1..6 (NULL placeholder at index 0). */
 static const int *const PST_BY_TYPE[7] = {
     0, PST_PAWN, PST_KNIGHT, PST_BISHOP, PST_ROOK, PST_QUEEN, PST_KING_MID
@@ -209,6 +222,7 @@ typedef struct {
     int wbishops;
     int bbishops;
     int endgame;
+    int phase;              /* tapered-eval game phase: N/B=1,R=2,Q=4, clamp 24 */
     int wpf[8];             /* white pawns per file */
     int bpf[8];             /* black pawns per file */
 
@@ -732,8 +746,12 @@ static void endgame_rook_activity(Eval *e) {
 }
 
 static void endgame(Eval *e) {
-    e->score += endgame_king_activity(e->wk);
-    e->score -= endgame_king_activity(e->bk);
+    /* When king_taper is on, EG king centralization comes from PST_KING_END
+     * instead of this binary bonus. */
+    if (!g_w.king_taper) {
+        e->score += endgame_king_activity(e->wk);
+        e->score -= endgame_king_activity(e->bk);
+    }
     if (e->pawns != 0 && e->nonpawn != 0) endgame_rook_activity(e);
 }
 
@@ -1072,6 +1090,7 @@ int eval_full(const Board *board) {
     e.wbishops = 0;
     e.bbishops = 0;
     e.endgame = 0;
+    e.phase = 0;
     for (i = 0; i < 8; i++) { e.wpf[i] = 0; e.bpf[i] = 0; }
 
     /* Rebuild g_w-derived per-type lookup tables (mirror apply_eval_overrides). */
@@ -1128,6 +1147,10 @@ int eval_full(const Board *board) {
                 if (color) e.wbishops++; else e.bbishops++;
             }
             if (ptype == QUEEN_T) e.queens++;
+            /* game-phase accumulation (both colors): N/B=1, R=2, Q=4 */
+            if (ptype == ROOK_T) e.phase += 2;
+            else if (ptype == QUEEN_T) e.phase += 4;
+            else e.phase += 1;          /* knight or bishop */
         }
 
         /* per-piece full-eval terms (order matches eval.s) */
@@ -1144,11 +1167,12 @@ int eval_full(const Board *board) {
         if (color) {
             e.score += val;
             idx = ((x & 0x70) >> 1) | (x & 0x07);          /* Sq88To64 */
-            e.score += pst[idx];
+            /* king PST deferred to the tapered tail when king_taper is on */
+            if (!(g_w.king_taper && ptype == KING_T)) e.score += pst[idx];
         } else {
             e.score -= val;
             idx = (((x & 0x70) >> 1) | (x & 0x07)) ^ 0x38; /* Sq88To64Mirror */
-            e.score -= pst[idx];
+            if (!(g_w.king_taper && ptype == KING_T)) e.score -= pst[idx];
         }
     }
 
@@ -1157,6 +1181,16 @@ int eval_full(const Board *board) {
         e.endgame = 1;
     } else if (e.nonpawn == g_w.endgame_nonpawn_limit + 1 && e.queens == 0) {
         e.endgame = 1;
+    }
+
+    /* tapered king PST: blend MG<->EG by phase (king PST was deferred above). */
+    if (g_w.king_taper) {
+        int p = e.phase; int wi, bi;
+        if (p > 24) p = 24;
+        wi = ((e.wk & 0x70) >> 1) | (e.wk & 0x07);
+        bi = (((e.bk & 0x70) >> 1) | (e.bk & 0x07)) ^ 0x38;
+        e.score += (PST_KING_MID[wi] * p + PST_KING_END[wi] * (24 - p)) / 24;
+        e.score -= (PST_KING_MID[bi] * p + PST_KING_END[bi] * (24 - p)) / 24;
     }
 
     /* ---- full tail ---- */

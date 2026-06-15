@@ -51,6 +51,7 @@ static int set_weight(EvalWeights *w, const char *key, int val) {
         {"tempo", &w->tempo}, {"trapped_penalty", &w->trapped_penalty},
         {"king_attack_escalation", &w->king_attack_escalation},
         {"pawn_storm", &w->pawn_storm}, {"queen_attacks_minor", &w->queen_attacks_minor},
+        {"king_taper", &w->king_taper},
         {NULL, NULL}
     };
     for (int i = 0; map[i].k; i++)
@@ -338,18 +339,18 @@ static int cmd_selfplay(int argc, char **argv) {
 }
 
 /* ---- single-position commands ------------------------------------------ */
-static int cmd_eval(const char *fen) {
+static int cmd_eval(const char *fen, const char *wspec) {
     Board b;
     if (board_from_fen(&b, fen)) { fprintf(stderr, "bad fen\n"); return 2; }
-    eval_reset_weights();
+    if (build_weights(&g_w, wspec)) return 2;   /* resets to baseline then applies */
     printf("%d\n", eval_full(&b));
     return 0;
 }
 
-static int cmd_bestmove(const char *fen, int depth, long nodes) {
+static int cmd_bestmove(const char *fen, int depth, long nodes, const char *wspec) {
     Board b;
     if (board_from_fen(&b, fen)) { fprintf(stderr, "bad fen\n"); return 2; }
-    eval_reset_weights();
+    if (build_weights(&g_w, wspec)) return 2;   /* baseline, then optional overrides */
     search_reset_config();
     search_set_budget(nodes);
     if (nodes) depth = 64;            /* budget-bound: let ID run deep */
@@ -369,10 +370,12 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: %s eval FEN | bestmove FEN [depth] | selfplay [opts]\n", argv[0]);
         return 2;
     }
-    if (!strcmp(argv[1], "eval") && argc >= 3) return cmd_eval(argv[2]);
+    if (!strcmp(argv[1], "eval") && argc >= 3)
+        return cmd_eval(argv[2], argc >= 4 ? argv[3] : NULL);   /* eval FEN [weights] */
     if (!strcmp(argv[1], "bestmove") && argc >= 3)
         return cmd_bestmove(argv[2], argc >= 4 ? atoi(argv[3]) : 5,
-                            argc >= 5 ? atol(argv[4]) : 0);   /* bestmove FEN depth [nodes] */
+                            argc >= 5 ? atol(argv[4]) : 0,
+                            argc >= 6 ? argv[5] : NULL); /* bestmove FEN depth [nodes] [weights] */
     if (!strcmp(argv[1], "selfplay")) return cmd_selfplay(argc - 2, argv + 2);
     fprintf(stderr, "unknown subcommand %s\n", argv[1]);
     return 2;
