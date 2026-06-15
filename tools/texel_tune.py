@@ -11,12 +11,17 @@ vector and the whole fit is fast numpy logistic regression:
 
 Pawn value is anchored (sets the scale); knight/bishop/rook/queen values and all
 six PSTs are tunable. L2 toward the current hand-tuned values (w0) keeps PST
-cells sane where data is thin. Output is rounded to the engine's integer weights
-(PST signed bytes, piece values >=0); --write regenerates src/ai/pst.s and
-patches the piece-value constants in src/ai/eval.s.
+cells sane where data is thin. eval is in native real centipawns (the PST cells
+are added directly to material; no x10). --write regenerates the PST_* arrays +
+material constants in native/eval.c and keeps tools/texel_eval.py in sync (so it
+stays the faithful native oracle).
 
-The self-play A/B harness is the ground-truth gate -- a loss improvement here is
-necessary, not sufficient; confirm any written change with run_selfplay_match.py.
+GROUND TRUTH = absolute Elo vs Stockfish (tools/native_vs_stockfish.py), NOT
+self-play: self-play A/B was measured to inflate eval gains to ~0 absolute
+(+45 self-play -> +9 vs SF). An MSE improvement here is necessary, not
+sufficient; confirm any written change with native_vs_stockfish (baseline vs
+this), large sample. A correctness gate (verify_gate) asserts the linear model
+reproduces eval_material_pst bit-exact before tuning.
 """
 
 from __future__ import annotations
@@ -54,7 +59,7 @@ def _pst_base(pt: int) -> int:
 def initial_weights() -> np.ndarray:
     w = np.zeros(N_PARAMS, dtype=np.float64)
     for pt in MAT_TYPES:
-        w[_mat_idx(pt)] = te.PIECE_VALUE[pt]
+        w[_mat_idx(pt)] = te.PIECE_VALUE_TBL[pt]
     for pt in PST_TYPES:
         b = _pst_base(pt)
         w[b:b + 64] = np.array(te.PST[pt], dtype=np.float64)
@@ -78,7 +83,7 @@ def build_features(positions: list[dict]) -> tuple[np.ndarray, np.ndarray, np.nd
             if pt in MAT_TYPES:
                 X[i, _mat_idx(pt)] += sign
             elif pt == chess.PAWN:
-                const[i] += sign * te.PIECE_VALUE[chess.PAWN]
+                const[i] += sign * te.PIECE_VALUE_TBL[chess.PAWN]
             # king material = 0
     return X, const, target_cp
 
@@ -97,7 +102,7 @@ def best_k(eval_cp: np.ndarray, target_prob: np.ndarray) -> float:
 
 
 def loss_of(w, X, const, target_prob, K, lam, w0):
-    eval_cp = 10.0 * (const + X @ w)
+    eval_cp = const + X @ w          # native units = real centipawns (no x10)
     pred = sigmoid(eval_cp / K)
     return float(np.mean((pred - target_prob) ** 2) + lam * np.mean((w - w0) ** 2))
 
@@ -120,10 +125,10 @@ def tune(positions, lam=1e-6, iters=6000, lr=3.0, K=300.0):
     fixed[pb:pb + 8] = True
     fixed[pb + 56:pb + 64] = True
     for t in range(1, iters + 1):
-        eval_cp = 10.0 * (const + X @ w)
+        eval_cp = const + X @ w          # native units = real centipawns (no x10)
         pred = sigmoid(eval_cp / K)
         d = (pred - target_prob) * pred * (1 - pred)  # dLoss/d eval_cp * K  (per-sample, /n later)
-        grad = (10.0 / K) * (X.T @ (2.0 * d / n)) + 2.0 * lam * (w - w0)
+        grad = (1.0 / K) * (X.T @ (2.0 * d / n)) + 2.0 * lam * (w - w0)
         grad[fixed] = 0.0
         m = b1 * m + (1 - b1) * grad
         v = b2 * v + (1 - b2) * grad * grad
@@ -136,7 +141,9 @@ def round_weights(w: np.ndarray) -> np.ndarray:
     r = np.rint(w).astype(int)
     for pt in PST_TYPES:
         b = _pst_base(pt)
-        r[b:b + 64] = np.clip(r[b:b + 64], -128, 127)
+        # native PST cells are plain `int` (not signed bytes); keep generous
+        # bound to avoid 16-bit eval-accumulator overflow surprises.
+        r[b:b + 64] = np.clip(r[b:b + 64], -2000, 2000)
     for pt in MAT_TYPES:
         r[_mat_idx(pt)] = max(0, int(r[_mat_idx(pt)]))
     return r
@@ -146,70 +153,82 @@ def fmt_byte(v: int) -> str:
     return str(v) if v >= 0 else f"<({v})"
 
 
-def render_pst_s(weights: np.ndarray) -> str:
-    def table(name, comment, pt):
-        b = _pst_base(pt)
-        vals = [int(weights[b + i]) for i in range(64)]
-        rows = []
-        for r in range(8):
-            row = ",".join(f"{fmt_byte(v):>6}" for v in vals[r * 8:r * 8 + 8])
-            rows.append(f"  .byte {row}")
-        return f"; {comment}\n{name}:\n" + "\n".join(rows)
-    parts = [
-        "; Generated ca65 port from Chess/ai/pst.asm.",
-        "; Keep source changes in this repository in ca65 syntax.",
-        "; Piece-Square Tables -- Texel-tuned (tools/texel_tune.py --write).",
-        "",
-        ".if ENGINE_FIXED_PST",
-        '  .segment "PST"',
-        ".else",
-        '  .segment "CODE"',
-        ".endif",
-        "",
-        table("PST_Pawn", "Pawn PST (64 bytes)", chess.PAWN),
-        "",
-        table("PST_Knight", "Knight PST (64 bytes)", chess.KNIGHT),
-        "",
-        table("PST_Bishop", "Bishop PST (64 bytes)", chess.BISHOP),
-        "",
-        table("PST_Rook", "Rook PST (64 bytes)", chess.ROOK),
-        "",
-        table("PST_Queen", "Queen PST (64 bytes)", chess.QUEEN),
-        "",
-        table("PST_KingMid", "King PST - Middlegame (64 bytes)", chess.KING),
-        "",
-        "PST_Table_Lo:",
-        "  .byte 0",
-        "  .byte <PST_Pawn",
-        "  .byte <PST_Knight",
-        "  .byte <PST_Bishop",
-        "  .byte <PST_Rook",
-        "  .byte <PST_Queen",
-        "  .byte <PST_KingMid",
-        "",
-        "PST_Table_Hi:",
-        "  .byte 0",
-        "  .byte >PST_Pawn",
-        "  .byte >PST_Knight",
-        "  .byte >PST_Bishop",
-        "  .byte >PST_Rook",
-        "  .byte >PST_Queen",
-        "  .byte >PST_KingMid",
-        "",
-    ]
-    return "\n".join(parts)
+def verify_gate(positions: list[dict], w0: np.ndarray,
+                X: np.ndarray, const: np.ndarray) -> None:
+    """The linear model (const + X @ w0) MUST equal texel_eval.eval_material_pst
+    (white-POV material+PST) for every position, or the features/scale are
+    wrong. This is the load-bearing correctness gate (mirrors native_eval_check).
+    """
+    model = const + X @ w0
+    bad = 0
+    for i, rec in enumerate(positions):
+        ref = te.eval_material_pst(chess.Board(rec["fen"]))
+        if int(round(model[i])) != ref:
+            bad += 1
+            if bad <= 3:
+                print(f"  MISMATCH @ {rec['fen']}: model={model[i]:.1f} ref={ref}")
+    n = len(positions)
+    if bad:
+        raise SystemExit(f"GATE FAILED: {bad}/{n} positions mismatch model vs eval_material_pst")
+    print(f"GATE: {n}/{n} positions bit-exact (linear model == eval_material_pst)")
+
+
+# --- native write-back (regenerate native/eval.c PST arrays + material, and
+#     keep tools/texel_eval.py in sync so it stays the faithful native oracle) -
+
+_NATIVE_PST = {chess.PAWN: "PST_PAWN", chess.KNIGHT: "PST_KNIGHT",
+               chess.BISHOP: "PST_BISHOP", chess.ROOK: "PST_ROOK",
+               chess.QUEEN: "PST_QUEEN", chess.KING: "PST_KING_MID"}
+_PY_PST = dict(_NATIVE_PST)   # same symbol names in texel_eval.py
+_MAT_C = {chess.KNIGHT: "knight", chess.BISHOP: "bishop",
+          chess.ROOK: "rook", chess.QUEEN: "queen"}
+_MAT_PY = {chess.KNIGHT: "KNIGHT_VALUE", chess.BISHOP: "BISHOP_VALUE",
+           chess.ROOK: "ROOK_VALUE", chess.QUEEN: "QUEEN_VALUE"}
+
+
+def _pst_vals(weights: np.ndarray, pt: int) -> list[int]:
+    b = _pst_base(pt)
+    return [int(weights[b + i]) for i in range(64)]
+
+
+def _rows_body(vals: list[int]) -> str:
+    rows = []
+    for r in range(8):
+        rows.append("    " + ", ".join(str(v) for v in vals[r * 8:r * 8 + 8]) + ",")
+    return "\n".join(rows)
+
+
+def _replace_block(txt: str, head: str, tail: str, body: str) -> str:
+    """Replace the inner body of a `head ... tail` block (head/tail are regex)."""
+    pat = re.compile(rf"({head})(.*?)({tail})", re.S)
+    m = pat.search(txt)
+    if not m:
+        raise SystemExit(f"write-back: could not match /{head}/ ... /{tail}/")
+    return txt[:m.start()] + m.group(1) + "\n" + body + m.group(3) + txt[m.end():]
 
 
 def write_back(weights: np.ndarray) -> None:
-    (REPO / "src" / "ai" / "pst.s").write_text(render_pst_s(weights))
-    evalp = REPO / "src" / "ai" / "eval.s"
-    txt = evalp.read_text()
-    names = {chess.KNIGHT: "KNIGHT_VALUE", chess.BISHOP: "BISHOP_VALUE",
-             chess.ROOK: "ROOK_VALUE", chess.QUEEN: "QUEEN_VALUE"}
-    for pt, nm in names.items():
+    # native/eval.c : static const int PST_NAME[64] = {\n ... \n};
+    evalc = REPO / "native" / "eval.c"
+    txt = evalc.read_text()
+    for pt, name in _NATIVE_PST.items():
+        head = rf"static const int {name}\[64\] = \{{"
+        txt = _replace_block(txt, head, r"\n\};", _rows_body(_pst_vals(weights, pt)))
+    for pt, nm in _MAT_C.items():       # g_w.<piece> = NNN;
         val = int(weights[_mat_idx(pt)])
-        txt = re.sub(rf"^{nm} = \d+", f"{nm} = {val}", txt, count=1, flags=re.M)
-    evalp.write_text(txt)
+        txt = re.sub(rf"(g_w\.{nm}\s*=\s*)\d+(;)", rf"\g<1>{val}\g<2>", txt, count=1)
+    evalc.write_text(txt)
+
+    # tools/texel_eval.py : PST_NAME = [\n ... \n]  and  <PIECE>_VALUE = NNN
+    pyf = REPO / "tools" / "texel_eval.py"
+    ptxt = pyf.read_text()
+    for pt, name in _PY_PST.items():
+        head = rf"{name} = \["
+        ptxt = _replace_block(ptxt, head, r"\n\]", _rows_body(_pst_vals(weights, pt)))
+    for pt, nm in _MAT_PY.items():
+        val = int(weights[_mat_idx(pt)])
+        ptxt = re.sub(rf"^{nm}\s*=\s*\d+", f"{nm} = {val}", ptxt, count=1, flags=re.M)
+    pyf.write_text(ptxt)
 
 
 def main(argv: list[str]) -> int:
@@ -226,21 +245,24 @@ def main(argv: list[str]) -> int:
     print(f"dataset: {len(positions)} positions (label_depth={data.get('label_depth')})")
 
     w0, w, X, const, target_prob, K = tune(positions, args.lam, args.iters, args.lr)
+    # Load-bearing correctness gate: the linear model must reproduce the native
+    # material+PST eval exactly before we trust any tuned output.
+    verify_gate(positions, w0, X, const)
     l0 = loss_of(w0, X, const, target_prob, K, 0.0, w0)
     l1 = loss_of(w, X, const, target_prob, K, 0.0, w0)
     wr = round_weights(w).astype(np.float64)
     lr_ = loss_of(wr, X, const, target_prob, K, 0.0, w0)
     print(f"K={K:.0f}  MSE: baseline={l0:.5f}  tuned(float)={l1:.5f}  tuned(int)={lr_:.5f}")
-    print(f"improvement: {100*(l0-lr_)/l0:.1f}% MSE reduction")
-    # Show material + a couple PST deltas as a sanity check.
+    print(f"improvement: {100*(l0-lr_)/l0:.2f}% MSE reduction")
     print("piece values:", {chess.piece_name(pt): (int(w0[_mat_idx(pt)]), int(wr[_mat_idx(pt)])) for pt in MAT_TYPES})
 
     if args.write:
         write_back(round_weights(w))
-        print("wrote src/ai/pst.s + patched src/ai/eval.s piece values")
-        print("REBUILD + self-play A/B to confirm (run_selfplay_match.py).")
+        print("wrote native/eval.c PST + material; synced tools/texel_eval.py")
+        print("NEXT: make -C native; native_eval_check (22157 bit-exact);")
+        print("      native_vs_stockfish baseline-vs-this (ABSOLUTE gate -- NOT self-play).")
     else:
-        print("(dry run; pass --write to apply)")
+        print("(dry run; pass --write to apply to native/eval.c + texel_eval.py)")
     return 0
 
 
