@@ -330,7 +330,14 @@ int gen_legal(const Board *b, Move *list) {
     Move *pseudo = g_pseudo;
     int np = gen_pseudo(b, pseudo);
     int n = 0;
-    Board tmp;       /* make/unmake mutates; work on a local copy */
+    /* The legality probe make/unmakes moves, which is an EXACT round-trip (Undo
+     * restores every field), so it can run on `b` itself instead of a full
+     * ~160-byte `tmp = *b` copy per call: the pseudo list and the pinned set are
+     * both computed above before any probe, so nothing downstream depends on `b`
+     * staying unmutated mid-loop, and `*b` is byte-identical again on return.
+     * Cast away const for the in-place probe; the const contract still holds for
+     * callers since the board is unchanged net. */
+    Board *bb = (Board *)b;
     int i, d;
     int white = b->wtm;
     int ksq = white ? b->wk : b->bk;
@@ -373,8 +380,6 @@ int gen_legal(const Board *b, Move *list) {
         }
     }
 
-    tmp = *b;        /* struct assignment (cc65 rejects struct copy-INIT) */
-
     for (i = 0; i < np; i++) {
         Move m = pseudo[i];
         int needs_test;
@@ -391,13 +396,13 @@ int gen_legal(const Board *b, Move *list) {
         {
             Undo u;
             int kq;
-            make_move(&tmp, m, &u);
+            make_move(bb, m, &u);
             /* After make_move the side to move flipped; the mover's king must
              * not be attacked by the now-side-to-move (the opponent). */
-            kq = white ? tmp.wk : tmp.bk;
-            if (!is_square_attacked(&tmp, kq, opp_white))
+            kq = white ? bb->wk : bb->bk;
+            if (!is_square_attacked(bb, kq, opp_white))
                 list[n++] = m;
-            unmake_move(&tmp, m, &u);
+            unmake_move(bb, m, &u);
         }
     }
     return n;
