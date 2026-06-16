@@ -1211,23 +1211,55 @@ void eval_acc_init(Board *b) {
     }
 }
 
-/* Apply one move's material+PST delta. Mirrors make_move's board edits: lift the
- * mover off `from`, place it (promotion swaps type) on `to`, remove any captured
- * piece, and relocate the rook on a castle. */
+/* Fast path for a mover that goes from->to as the SAME piece (every move except
+ * promotion and castling): the material value and the phase contribution cancel
+ * between the lift and the place, so only the PST term moves. This replaces the
+ * two full acc_piece() calls -- which dominate acc maintenance -- with one
+ * PST difference. Byte-identical to lift+place (gate-verified). */
+static void acc_move_pst(Board *b, uint8_t p, int from, int to) {
+    int t = PT(p);
+    const int *pst = PST_BY_TYPE[t];
+    int fi, ti, d;
+    if (IS_WHITE(p)) {
+        fi = ((from & 0x70) >> 1) | (from & 0x07);
+        ti = ((to   & 0x70) >> 1) | (to   & 0x07);
+        d = pst[ti] - pst[fi];
+    } else {
+        fi = (((from & 0x70) >> 1) | (from & 0x07)) ^ 0x38;
+        ti = (((to   & 0x70) >> 1) | (to   & 0x07)) ^ 0x38;
+        d = pst[fi] - pst[ti];                /* black contributes - */
+    }
+    b->acc_mat += d;
+    if (g_eg_active) {
+        const int *pst_eg = PST_EG_BY_TYPE[t];
+        int eg = (pst_eg[ti] - pst[ti]) - (pst_eg[fi] - pst[fi]);
+        if (!IS_WHITE(p)) eg = -eg;
+        b->acc_egdiff += eg;
+    }
+}
+
+/* Apply one move's material+PST delta. Mirrors make_move's board edits. The
+ * common case (quiet/capture/ep/double -- mover keeps its type, no rook move)
+ * takes the fast path; only promotion and castling need the general lift/place. */
 void eval_acc_apply(Board *b, Move m, uint8_t mover, uint8_t captured, int cap_sq) {
-    uint8_t colorflag = mover & WHITE_FLAG;
-    uint8_t placed = (m.flags & MF_PROMO) ? (uint8_t)(m.promo | colorflag) : mover;
-    acc_piece(b, mover, m.from, 1);          /* lift mover */
-    acc_piece(b, placed, m.to, 0);           /* place (maybe promoted) */
-    if (captured) acc_piece(b, captured, cap_sq, 1);
-    if (m.flags & MF_CASTLE_K) {
-        uint8_t rook = (uint8_t)(ROOK_T | colorflag);
-        acc_piece(b, rook, m.to + 1, 1);     /* h-file rook lifted */
-        acc_piece(b, rook, m.to - 1, 0);     /* placed on f-file   */
-    } else if (m.flags & MF_CASTLE_Q) {
-        uint8_t rook = (uint8_t)(ROOK_T | colorflag);
-        acc_piece(b, rook, m.to - 2, 1);     /* a-file rook lifted */
-        acc_piece(b, rook, m.to + 1, 0);     /* placed on d-file   */
+    if (m.flags & (MF_PROMO | MF_CASTLE_K | MF_CASTLE_Q)) {
+        uint8_t colorflag = mover & WHITE_FLAG;
+        uint8_t placed = (m.flags & MF_PROMO) ? (uint8_t)(m.promo | colorflag) : mover;
+        acc_piece(b, mover, m.from, 1);          /* lift mover */
+        acc_piece(b, placed, m.to, 0);           /* place (maybe promoted) */
+        if (captured) acc_piece(b, captured, cap_sq, 1);
+        if (m.flags & MF_CASTLE_K) {
+            uint8_t rook = (uint8_t)(ROOK_T | colorflag);
+            acc_piece(b, rook, m.to + 1, 1);     /* h-file rook lifted */
+            acc_piece(b, rook, m.to - 1, 0);     /* placed on f-file   */
+        } else if (m.flags & MF_CASTLE_Q) {
+            uint8_t rook = (uint8_t)(ROOK_T | colorflag);
+            acc_piece(b, rook, m.to - 2, 1);     /* a-file rook lifted */
+            acc_piece(b, rook, m.to + 1, 0);     /* placed on d-file   */
+        }
+    } else {
+        acc_move_pst(b, mover, m.from, m.to);    /* mover (same piece) from->to */
+        if (captured) acc_piece(b, captured, cap_sq, 1);
     }
 }
 
