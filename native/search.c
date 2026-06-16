@@ -27,12 +27,16 @@
 
 enum { TT_EXACT, TT_LOWER, TT_UPPER };
 
+/* Packed to 12 bytes (was 16): `value` fits int16 (scores are within
+ * +-SEARCH_INF=32000, mate +-30013), depth (<= search depth) and flag (0..2) fit
+ * int8. The stored numeric values are unchanged, so the search reads identical
+ * entries -> bit-exact. Saves 4 bytes/entry (1 KB at TT_BITS=8). */
 typedef struct {
     hash_t key;
-    int32_t value;
     Move best;
-    int16_t depth;
-    int16_t flag;
+    int16_t value;
+    int8_t depth;
+    int8_t flag;
 } TTEntry;
 
 /* No _Thread_local: cc65 has no threads (6502), and host parallelism is fork()-
