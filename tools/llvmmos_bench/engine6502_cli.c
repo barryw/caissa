@@ -23,7 +23,7 @@
 #define SIM_PUTCHAR_REG 0xFFF9
 #define EXIT_SENTINEL   0x5A
 #define SIM_READY       0xA5
-#define MAX_CYCLES_RUN  60000000000ULL
+#define MAX_CYCLES_RUN  400000000000ULL
 
 static cpu6502_t cpu;
 static uint16_t A_g_fen, A_g_depth, A_g_from, A_g_to, A_g_promo, A_g_done, A_g_status, A_g_go;
