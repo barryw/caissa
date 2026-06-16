@@ -275,6 +275,7 @@ void make_move(Board *b, Move m, Undo *u) {
     eval_acc_apply(b, m, piece, u->captured, u->cap_sq);
 }
 
+#ifndef CREF_ASM_UNMAKE_MOVE
 void unmake_move(Board *b, Move m, const Undo *u) {
     int white;
     uint8_t colorflag;
@@ -311,6 +312,7 @@ void unmake_move(Board *b, Move m, const Undo *u) {
     b->acc_egdiff = u->acc_egdiff;
     b->acc_phase = u->acc_phase;
 }
+#endif /* CREF_ASM_UNMAKE_MOVE */
 
 /* ---- null move (pass the turn; for null-move pruning) ------------------- */
 void make_null(Board *b, Undo *u) {
