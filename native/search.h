@@ -18,6 +18,7 @@
 typedef struct {
     hash_t nodes, qnodes, tt_hits;
     int depth, score;
+    int pool_hw;            /* peak shared-move-pool occupancy (Move entries) */
     Move best;
 } SearchInfo;
 

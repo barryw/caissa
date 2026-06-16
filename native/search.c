@@ -47,26 +47,33 @@ static int rep_top;      /* current stack top */
 
 static SearchInfo g_info;
 
-/* Per-ply move buffers, OFF the C stack. cc65's ~256-byte call frame cannot hold
- * a MAX_MOVES Move array, and recursion needs a distinct buffer per ply. Indexed
- * by search ply; negamax and quiesce never occupy the same ply simultaneously,
- * so they share g_ml[ply]. g_score is call-scoped (order_moves never recurses). */
-/* MAX_PLY sizes the per-NEGAMAX-ply tables (g_ml, g_killer). Negamax recurses at
- * most `depth` plies deep (check extensions off by default; measured: depth 6 ->
- * negamax ply 6 over 400 corpus positions), so MAX_PLY only needs depth+1.
- * Quiescence does NOT consume a g_ml slot per ply: its raw move list (g_qml) is
- * consumed before it recurses, so all quiesce frames share one buffer. The host
- * keeps a generous 48; a bare 6502 shrinks to 7 (supports depth <= 6) so the move
- * buffers fit alongside code+history+stack in ~64K. Sized per profile (memcfg.h). */
+/* Move buffers live in a single shared POOL (g_pool below), OFF the C stack:
+ * cc65's ~256-byte call frame cannot hold a MAX_MOVES Move array, and each frame
+ * needs its own list across recursion. The pool packs the actual per-node move
+ * counts along the live path, which replaced the old [MAX_PLY][256] +
+ * [Q+1][256] fixed banks (~15 KB) -- see the g_pool comment.
+ *
+ * MAX_PLY now sizes only g_killer + the `ply < MAX_PLY` killer bound. Negamax
+ * recurses at most `depth` plies deep (check extensions off by default; measured:
+ * depth 6 -> negamax ply 6 over 400 corpus positions), so MAX_PLY needs depth+1.
+ * The host keeps a generous 48; a bare 6502 uses 7 (supports depth <= 6). Sized
+ * per profile (memcfg.h). */
 #define MAX_PLY CREF_MAX_PLY
-static Move g_ml[MAX_PLY][MAX_MOVES];     /* negamax per-ply node move list */
-static Move g_qml[MAX_MOVES];             /* quiesce raw list (shared: consumed before recursion) */
-/* g_filt holds the quiescence filtered list. It is indexed by quiescence depth
- * (qd 0..MAX_QUIESCE_DEPTH), NOT absolute ply: each live quiesce frame has a
- * unique qd along any root-to-leaf path, so one buffer per qd is collision-free
- * and far smaller than [MAX_PLY][MAX_MOVES]. Behavior-identical on every target. */
-static Move g_filt[MAX_QUIESCE_DEPTH + 1][MAX_MOVES];
-static int  g_score[MAX_MOVES];           /* order_moves scratch */
+
+/* Shared move pool (replaces the per-ply [MAX_PLY][256] negamax banks and the
+ * per-qd quiescence banks). Each search frame takes its move list at g_pool_top,
+ * RESERVES only the actual move count it will iterate (g_pool_top += count) for
+ * the lifetime of its loop, and restores g_pool_top on exit -- so the pool packs
+ * the real per-node counts along the live path instead of reserving 256 slots
+ * per ply. A frame whose generate would not leave MAX_MOVES of headroom returns a
+ * static-eval leaf rather than overflow (safe; CREF_POOL_SIZE is sized so this
+ * never fires in normal play -- see g_pool_hw). gen_legal writes <= MAX_MOVES at
+ * the top, so the MAX_MOVES headroom check makes the generate itself safe. */
+static Move g_pool[CREF_POOL_SIZE];
+static int  g_pool_top;
+static int  g_pool_hw;                    /* high-water mark (instrumentation) */
+static int  g_score[MAX_MOVES];           /* order_moves scratch (transient, shared) */
+#define POOL_ROOM (CREF_POOL_SIZE - g_pool_top >= MAX_MOVES)
 
 /* Search-feature config + node budget (the A/B knobs). */
 SearchConfig g_sc;
@@ -202,11 +209,8 @@ static void order_moves(const Board *b, Move *list, int n, Move tt_move, int ply
 static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
     int check;
     int best = -SEARCH_INF;
-    Move *list = g_qml;           /* shared: the raw list is consumed (filtered into
-                                   * `filt`) before this frame recurses, so all
-                                   * quiesce frames can reuse one buffer. */
-    Move *filt = g_filt[qd];      /* qd is unique per live quiesce frame */
-    int n, fn, i;
+    Move *list;                   /* allocated from the shared pool below */
+    int n, fn, i, pool_base;
     Move none = {0, 0, 0, 0};
 
     g_info.qnodes++;
@@ -228,14 +232,18 @@ static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
         if (stand > alpha) alpha = stand;
         best = stand;
     }
+    /* Pool full -> treat as a leaf (cannot generate safely). Vanishingly rare. */
+    if (!POOL_ROOM) return check ? eval_stm(b) : best;
+    list = g_pool + g_pool_top;
     n = gen_legal(b, list);
-    if (check && n == 0) return -MATE_SCORE + ply;   /* checkmate */
+    if (check && n == 0) return -MATE_SCORE + ply;   /* checkmate (pool not reserved) */
 
-    /* in check: search all evasions; else only captures/promotions */
+    /* in check: search all evasions; else only captures/promotions. Compact the
+     * kept moves to the FRONT of the same buffer in place (fn <= i always). */
     fn = 0;
     for (i = 0; i < n; i++) {
         if (check || (list[i].flags & (MF_CAPTURE | MF_EP | MF_PROMO)))
-            filt[fn++] = list[i];
+            list[fn++] = list[i];
     }
     /* Quiescence depth cap (matches the 6502 limiter): stop expanding captures
      * past MAX_QUIESCE_DEPTH plies, return the stand-pat (a static eval when in
@@ -243,18 +251,23 @@ static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
     if (qd >= MAX_QUIESCE_DEPTH)
         return check ? eval_stm(b) : best;
 
-    order_moves(b, filt, fn, none, ply);
+    order_moves(b, list, fn, none, ply);
+
+    pool_base = g_pool_top;
+    g_pool_top += fn;                          /* reserve only the kept moves */
+    if (g_pool_top > g_pool_hw) g_pool_hw = g_pool_top;
 
     for (i = 0; i < fn; i++) {
         Undo u;
         int score;
-        make_move(b, filt[i], &u);
+        make_move(b, list[i], &u);
         score = -quiesce(b, -beta, -alpha, ply + 1, qd + 1);
-        unmake_move(b, filt[i], &u);
-        if (score >= beta) return score;
+        unmake_move(b, list[i], &u);
         if (score > best) best = score;
         if (score > alpha) alpha = score;
+        if (alpha >= beta) break;              /* fail-high (== old score>=beta return) */
     }
+    g_pool_top = pool_base;
     return best;
 }
 
@@ -262,8 +275,8 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
     int alpha_orig = alpha;
     TTEntry *e = &tt[b->hash & TT_MASK];
     Move tt_move = {0, 0, 0, 0};
-    Move *list = g_ml[ply];
-    int n, i;
+    Move *list;                  /* allocated from the shared pool below */
+    int n, i, pool_base;
     int best_val;
     Move best_move;
     int sv;
@@ -320,12 +333,18 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
         if (nscore >= beta) return beta;
     }
 
+    /* Pool full -> static-eval leaf rather than overflow. Vanishingly rare. */
+    if (!POOL_ROOM) return eval_stm(b);
+    list = g_pool + g_pool_top;
     n = gen_legal(b, list);
-    if (n == 0) return in_check(b) ? -MATE_SCORE + ply : 0;
+    if (n == 0) return in_check(b) ? -MATE_SCORE + ply : 0;   /* nothing reserved */
     order_moves(b, list, n, tt_move, ply);
 
     best_val = -SEARCH_INF;
     best_move = list[0];
+    pool_base = g_pool_top;
+    g_pool_top += n;                   /* reserve this node's list for its loop */
+    if (g_pool_top > g_pool_hw) g_pool_hw = g_pool_top;
     rep[rep_top++] = b->hash;          /* current node is an ancestor for children */
     for (i = 0; i < n; i++) {
         Undo u;
@@ -370,6 +389,7 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
         }
     }
     rep_top--;
+    g_pool_top = pool_base;            /* free this node's move list */
 
     sv = best_val;            /* store mate scores relative to THIS node's ply */
     if (sv > MATE_THRESHOLD) sv += ply;
@@ -404,27 +424,31 @@ Move search_bestmove(const Board *b, int depth,
     work = *b;
     eval_acc_init(&work);   /* seed incremental material+PST under the live g_w */
     g_stop = 0;
+    g_pool_top = 0; g_pool_hw = 0;
     if (g_sc.killers) memset(g_killer, 0, sizeof(g_killer));
     if (g_sc.history) memset(g_history, 0, sizeof(g_history));
 
     {   /* fallback: first legal move, in case the node budget aborts iteration 1 */
-        int nn = gen_legal(&work, g_ml[0]);
-        if (nn > 0) best = g_ml[0][0];
+        int nn = gen_legal(&work, g_pool);   /* transient; top still 0 */
+        if (nn > 0) best = g_pool[0];
     }
 
     /* iterative deepening for better ordering via the TT */
     for (d = 1; d <= depth; d++) {
         int alpha = -SEARCH_INF, beta = SEARCH_INF;
-        Move *list = g_ml[0];
+        Move *list = g_pool;          /* root list at the pool base */
         int n, i;
         Move prev;
         int local_best;
         Move local_move;
         rep_top = rep_base;
+        g_pool_top = 0;
         n = gen_legal(&work, list);
         if (n == 0) break;
         prev = best;
         order_moves(&work, list, n, prev, 0);
+        g_pool_top = n;               /* reserve the root list for the root loop */
+        if (g_pool_top > g_pool_hw) g_pool_hw = g_pool_top;
         local_best = -SEARCH_INF;
         local_move = list[0];
         /* root position is already in rep[] (passed via hist); children check
@@ -446,6 +470,7 @@ Move search_bestmove(const Board *b, int depth,
 
     g_info.score = best_score;
     g_info.best = best;
+    g_info.pool_hw = g_pool_hw;
     if (out) *out = g_info;
     return best;
 }

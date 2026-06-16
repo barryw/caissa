@@ -362,10 +362,10 @@ static int cmd_bestmove(const char *fen, int depth, long nodes,
     hash_t hist[1] = { b.hash };
     Move m = search_bestmove(&b, depth, hist, 1, &info);
     char uci[6]; move_to_uci(m, uci);
-    printf("bestmove %s  score %+dcp  depth %d  nodes %llu  qnodes %llu  tt_hits %llu\n",
+    printf("bestmove %s  score %+dcp  depth %d  nodes %llu  qnodes %llu  tt_hits %llu  pool_hw %d\n",
            uci, info.score, info.depth,
            (unsigned long long)info.nodes, (unsigned long long)info.qnodes,
-           (unsigned long long)info.tt_hits);
+           (unsigned long long)info.tt_hits, info.pool_hw);
     return 0;
 }
 

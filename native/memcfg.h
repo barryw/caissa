@@ -43,9 +43,10 @@
 /* ---- per-profile knobs --------------------------------------------------- */
 #if defined(CREF_PROFILE_HOST)
 #  define CREF_TT_BITS      16    /* 65536-entry transposition table */
-#  define CREF_MAX_PLY      48    /* per-ply move/killer banks */
+#  define CREF_MAX_PLY      48    /* killer banks + ply bound */
 #  define CREF_MAX_PATH   1024    /* repetition stack (full game history) */
 #  define CREF_HISTORY_DIM  64    /* full [stm][64][64] butterfly history */
+#  define CREF_POOL_SIZE  8192    /* shared move pool (Move entries) */
 
 #elif defined(CREF_PROFILE_NOVA)
 /* Mirrors C64 for now -- see the XRAM caveat above. The larger values these will
@@ -55,12 +56,21 @@
 #  define CREF_MAX_PLY       7
 #  define CREF_MAX_PATH     64
 #  define CREF_HISTORY_DIM   1
+#  define CREF_POOL_SIZE  1024
 
 #else  /* CREF_PROFILE_C64 (and the default for any bare 6502 target) */
 #  define CREF_TT_BITS       8    /* 256-entry TT (cc65 int is 16-bit; 1<<16 wraps) */
 #  define CREF_MAX_PLY       7    /* supports search depth <= 6 */
 #  define CREF_MAX_PATH     64    /* search-path-only repetition stack */
 #  define CREF_HISTORY_DIM   1    /* 16 KB butterfly table does not fit -> stub off */
+/* Shared move pool: replaces the old [MAX_PLY][256] negamax banks + [Q+1][256]
+ * quiescence banks (~15 KB). It packs the ACTUAL per-node move counts (~35) along
+ * the live path. MEASURED peak occupancy is 333 at d6 / 380 at d7 (kiwipete), and
+ * a frame generates only when >= CREF_MAX_MOVES headroom remains, so 768 entries
+ * (3 KB) keeps the static-eval-leaf fallback from ever firing in normal play
+ * (fallback triggers above 768-256=512; peak is 380). Bit-exact in all tested
+ * cases; the fallback is a safety net that degrades, never corrupts. */
+#  define CREF_POOL_SIZE   768
 #endif
 
 /* ---- knobs that are the same on every profile ---------------------------- */
