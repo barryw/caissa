@@ -49,8 +49,13 @@ Latest session — **clean-C tier, all gate-green (incl. deep d6), Elo IDENTICAL
 | `1388d59` | incremental material+PST accumulator (Step A+B) | eval_full -20%, **-4.3%** |
 | `94b86be` | skip egdiff term while EG PST == MG | -2.3% |
 | `64564b4` | skip zobrist in quiescence make_move (86% of nodes) | **-4.2%** |
+| `1f94c76` | acc_piece mover fast path (PST delta only, ~99% of moves) | **-4.0%** |
 
-**Cumulative overall: ~2.1×** (1.82B → 871.4M cyc/move @ d4).
+**Cumulative overall: ~2.2×** (1.82B → 836.4M cyc/move @ d4). Profile now:
+eval_full 23.5%, gen_legal 22.8%, make_move 13.4%, is_square_attacked 10.8%
+(asm'd), order_moves 9.1%, unmake 5.9%, quiesce 3.1%, acc_piece 1.8%.
+**Clean-C tier is tapped** — eval_full/gen_legal need hand-asm or algorithm work;
+order_moves lazy-sort is the last clean-C-ish option but is RAM-gated on 6502.
 
 ### KEY LEARNINGS (read before re-attempting)
 - **Incremental accumulator only pays WITH eval_full using it (Step B).** make_move
@@ -87,33 +92,33 @@ A failure = real regression (fix it) OR intentional behavior change (re-bless:
 `python3 tools/llvmmos_bench/gen_golden.py`, then RE-MEASURE Elo). For pure speed
 work, golden + eval-bit-exact MUST stay green = moves identical = Elo preserved.
 
-## Profiler (where the cycles go — CURRENT, after the latest 5 opts)
+## Profiler (where the cycles go — CURRENT, after 7 clean-C opts)
 
 ```
 tools/llvmmos_bench/profile6502 /tmp/engine6502.sim /tmp/engine6502.map "FEN" DEPTH
 ```
-Current hot leaves (kiwipete d4): **eval_full 21%**, gen_legal 21%, make_move 16%,
-is_square_attacked 10% (already asm'd), order_moves 8%, acc_piece 7% (the new
-accumulator maintenance), unmake_move 5%, quiesce 3% (was 17% — the lazy eval is
-O(1) now), count_sliding_mobility 2%. memcpy is GONE; __memset down to 1%.
+Current hot leaves (kiwipete d4): **eval_full 23.5%**, **gen_legal 22.8%**,
+make_move 13.4%, is_square_attacked 10.8% (already asm'd), order_moves 9.1%,
+unmake_move 5.9%, quiesce 3.1% (was 17% — the lazy eval is O(1) now),
+count_sliding_mobility 2.4%, acc_piece 1.8%. memcpy GONE; __memset ~1%.
 
-The clean-C tier is largely harvested. What remains is structural — the big three
-(eval_full, gen_legal, make_move) need hand-asm or behavior-changing algorithm
-work, not C micro-opts.
+The clean-C tier is **tapped**. What remains is structural — eval_full and
+gen_legal co-lead and need hand-asm or behavior-changing algorithm work.
 
 ## NEXT (do these, in order of expected payoff)
 
-1. **Hand-asm the eval_full per-square loop** (6510 agent). Still the biggest slice
-   (21%). After the accumulator change it no longer accumulates material/PST — it's
-   the 6 positional helpers + counters per piece. eval-bit-exact gate (22157) is the
-   contract. Likely asm the loop body / hottest helpers (count_sliding_mobility,
+1. **order_moves lazy/partial selection sort** (9.1%, the LAST clean-C-ish lever):
+   skip the O(n²) sort tail on beta cutoffs (bit-exact, same visit order). BLOCKED
+   on 6502 by per-ply score storage — g_score is a single shared scratch and
+   recursion clobbers it; needs g_score[ply] (~3.5KB). **Verify RAM headroom in the
+   64K image FIRST** (check the build map free space); if it fits, ~4%.
+2. **Hand-asm the eval_full per-square loop / hottest helpers** (6510 agent, 23.5%).
+   After the accumulator change the loop no longer does material/PST — it's the 6
+   positional helpers + counters per piece. eval-bit-exact gate (22157) is the
+   contract. Asm the loop body / hottest helpers (count_sliding_mobility 2.4%,
    king_zone_pressure), not the whole sprawling function.
-2. **Hand-asm `make_move`** (16%, zobrist-heavy) + **`acc_piece`** (7%, called ~4×/
-   make — candidate to inline into make_move asm) + the gen_legal pseudo loops (21%).
-3. **order_moves** (8%): lazy/partial selection sort would skip the O(n²) tail on
-   beta cutoffs (bit-exact, same order). BLOCKED on 6502 by per-ply score storage
-   (g_score is a single shared scratch; recursion clobbers it). Needs g_score[ply]
-   (~3.5KB) — check RAM headroom before attempting.
+3. **Hand-asm `make_move`** (13.4%, still zobrist-heavy in negamax) + the gen_legal
+   pseudo-move loops (22.8%).
 4. **Lighter eval** (structural): a cheaper positional eval that holds ~1800 — but
    this CHANGES behavior (golden + Elo), so it needs re-measurement, not the
    pure-speed gate.
