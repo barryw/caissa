@@ -272,7 +272,13 @@ static const int *const PST_EG_BY_TYPE[7] = {
 typedef struct {
     const uint8_t *b;       /* 0x88 board (Board.sq[]) */
     int wk, bk;
-    long score;             /* eval accumulator; masked to 16-bit at the end */
+    /* eval accumulator. 16-bit, wrapping (uint16_t). The eval only ever does
+     * += / -= on this, and the result is the value mod 2^16 reinterpreted as a
+     * signed 16-bit int (see end of eval_full). Modular arithmetic makes a
+     * wrapping 16-bit accumulator bit-identical to a wide accumulator that is
+     * masked once at the end -- and it matches the 6502's native 16-bit EvalScore
+     * while replacing every 32-bit `long` add/sub with a cheap 16-bit op. */
+    uint16_t score;
     int nonpawn;
     int pawns;
     int queens;
@@ -1134,9 +1140,14 @@ int eval_material_pst(const Board *b) {
         }
     }
     /* tapered PST: blend accumulated EG-minus-MG toward the endgame by phase.
-     * Plain C integer division truncates toward zero (matches the oracle). */
-    if (phase > 24) phase = 24;
-    score += egdiff * (24 - phase) / 24;
+     * Plain C integer division truncates toward zero (matches the oracle).
+     * Guarded on egdiff!=0 so the wide multiply/divide is skipped while the EG
+     * tables equal the MG tables (egdiff stays 0); stays bit-exact if they ever
+     * diverge. */
+    if (egdiff) {
+        if (phase > 24) phase = 24;
+        score += egdiff * (24 - phase) / 24;
+    }
     return score;
 }
 
@@ -1221,13 +1232,19 @@ int eval_full(const Board *board) {
             else e.phase += 1;          /* knight or bishop */
         }
 
-        /* per-piece full-eval terms (order matches eval.s) */
-        pawn_pressure(&e, x, color, ptype);
-        queen_pressure(&e, x, color, ptype);
-        minor_pressure(&e, x, color, ptype);
-        knight_outpost(&e, x, color, ptype);
-        mobility(&e, x, color, ptype);
-        seventh_rank(&e, x, color, ptype);
+        /* per-piece full-eval terms (order matches eval.s). Every one of these
+         * six is a guarded no-op for pawns (type 1) and kings (type 6) -- they
+         * only act on knight..queen -- so the whole block is skipped for those
+         * two types, eliminating six call+guard sequences per pawn/king with no
+         * change to the computed value. */
+        if (ptype != PAWN_T && ptype != KING_T) {
+            pawn_pressure(&e, x, color, ptype);
+            queen_pressure(&e, x, color, ptype);
+            minor_pressure(&e, x, color, ptype);
+            knight_outpost(&e, x, color, ptype);
+            mobility(&e, x, color, ptype);
+            seventh_rank(&e, x, color, ptype);
+        }
 
         /* material + PST (MG added now; EG-minus-MG accumulated for the
          * phase-tapered blend applied once after the loop). */
@@ -1255,8 +1272,12 @@ int eval_full(const Board *board) {
     }
 
     /* tapered PST: blend accumulated EG-minus-MG toward the endgame by phase.
-     * Plain C integer division truncates toward zero (matches the oracle). */
-    {
+     * Plain C integer division truncates toward zero (matches the oracle).
+     * The blend is a no-op whenever egdiff is 0 (it is 0 for every position
+     * while the EG tables equal the MG tables), so the guard skips the wide
+     * multiply/divide (__mulsi3/__divhi3 on 6502) in that case while staying
+     * bit-exact if the EG tables ever diverge. */
+    if (e.egdiff) {
         int p = e.phase;
         if (p > 24) p = 24;
         e.score += e.egdiff * (24 - p) / 24;
