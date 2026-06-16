@@ -20,7 +20,7 @@
 #define MAX_QUIESCE_DEPTH 6    /* matches src/ai/search.s MAX_QUIESCE_DEPTH */
 /* TT size differs by target: a big table on the host (strong measurement), a
  * small one on the 6502 (RAM-fit; cc65 int is 16-bit so 1<<16 would overflow). */
-#ifdef __CC65__
+#if defined(__CC65__) || defined(__mos__)
 #define TT_BITS 8
 #else
 #define TT_BITS 16
@@ -54,9 +54,25 @@ static SearchInfo g_info;
  * a MAX_MOVES Move array, and recursion needs a distinct buffer per ply. Indexed
  * by search ply; negamax and quiesce never occupy the same ply simultaneously,
  * so they share g_ml[ply]. g_score is call-scoped (order_moves never recurses). */
+/* MAX_PLY sizes the per-NEGAMAX-ply tables (g_ml, g_killer). Negamax recurses at
+ * most `depth` plies deep (check extensions off by default; measured: depth 6 ->
+ * negamax ply 6 over 400 corpus positions), so MAX_PLY only needs depth+1.
+ * Quiescence does NOT consume a g_ml slot per ply: its raw move list (g_qml) is
+ * consumed before it recurses, so all quiesce frames share one buffer. The host
+ * keeps a generous 48; the 6502 (__mos__/__CC65__) shrinks to 7 (supports depth
+ * <= 6) so the move buffers fit alongside code+history+stack in ~64K. */
+#if defined(__CC65__) || defined(__mos__)
+#define MAX_PLY 7
+#else
 #define MAX_PLY 48
-static Move g_ml[MAX_PLY][MAX_MOVES];     /* node move list (negamax or quiesce) */
-static Move g_filt[MAX_PLY][MAX_MOVES];   /* quiesce filtered list */
+#endif
+static Move g_ml[MAX_PLY][MAX_MOVES];     /* negamax per-ply node move list */
+static Move g_qml[MAX_MOVES];             /* quiesce raw list (shared: consumed before recursion) */
+/* g_filt holds the quiescence filtered list. It is indexed by quiescence depth
+ * (qd 0..MAX_QUIESCE_DEPTH), NOT absolute ply: each live quiesce frame has a
+ * unique qd along any root-to-leaf path, so one buffer per qd is collision-free
+ * and far smaller than [MAX_PLY][MAX_MOVES]. Behavior-identical on every target. */
+static Move g_filt[MAX_QUIESCE_DEPTH + 1][MAX_MOVES];
 static int  g_score[MAX_MOVES];           /* order_moves scratch */
 
 /* Search-feature config + node budget (the A/B knobs). */
@@ -64,15 +80,32 @@ SearchConfig g_sc;
 static long g_node_budget;    /* 0 = unlimited */
 static int  g_stop;           /* set when the budget is exhausted mid-iteration */
 
-/* killer + history tables (used only when the toggles are on). */
+/* killer + history tables (used only when the toggles are on).
+ *
+ * The full butterfly-history table is short[2][64][64] = 16 KB. On the 6502
+ * (__mos__/__CC65__) that 16 KB does not coexist with the full eval's code, the
+ * per-ply move banks, and the TT inside 64 KB, so the history HEURISTIC is
+ * disabled there (search_reset_config sets g_sc.history=0) and the table shrinks
+ * to a 1-entry stub. The 6502 search keeps every other ordering term (TT move,
+ * MVV-LVA captures, killers) plus null-move + LMR; only butterfly history is off.
+ * The HOST keeps the full table and the heuristic ON (its gates are unchanged). */
+#if defined(__CC65__) || defined(__mos__)
+#define HISTORY_DIM 1
+#else
+#define HISTORY_DIM 64
+#endif
 static Move  g_killer[MAX_PLY][2];
-static short g_history[2][64][64];     /* [stm][from64][to64], idx64 0..63 */
+static short g_history[2][HISTORY_DIM][HISTORY_DIM]; /* [stm][from64][to64], idx64 0..63 */
 
 void search_reset_config(void) {
     /* Proven winners ON by default (each +Elo at fixed nodes, SPRT-confirmed as a
      * stack). Candidate features below stay off until measured. */
     g_sc.killers = 1;
+#if defined(__CC65__) || defined(__mos__)
+    g_sc.history = 0;     /* 16 KB butterfly table does not fit in 64 KB; see above */
+#else
     g_sc.history = 1;
+#endif
     g_sc.nullmove = 1;
     g_sc.null_r = 2;
     g_sc.lmr = 1;          /* +78 Elo @ fixed nodes (SPRT H1) */
@@ -148,7 +181,12 @@ static void order_moves(const Board *b, Move *list, int n, Move tt_move, int ply
             score[i] = 10000 + mvv_lva(b, m);
         } else {
             int s = 0, k;
-            if (g_sc.killers && (k = is_killer(ply, m))) {
+            /* Killers are only ever STORED for negamax plies (ply < MAX_PLY,
+             * guarded at the cutoff). Quiescence can reach plies >= MAX_PLY where
+             * g_killer would be out of bounds -- but those slots are always empty,
+             * so skipping the lookup there is behavior-identical and lets MAX_PLY
+             * size g_killer/g_ml to the negamax depth only (RAM diet on 6502). */
+            if (g_sc.killers && ply < MAX_PLY && (k = is_killer(ply, m))) {
                 s = (k == 1) ? 9000 : 8900;
             } else if (g_sc.history) {
                 s = g_history[stm][idx64_from_0x88(m.from)][idx64_from_0x88(m.to)];
@@ -173,8 +211,10 @@ static void order_moves(const Board *b, Move *list, int n, Move tt_move, int ply
 static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
     int check;
     int best = -SEARCH_INF;
-    Move *list = g_ml[ply];
-    Move *filt = g_filt[ply];
+    Move *list = g_qml;           /* shared: the raw list is consumed (filtered into
+                                   * `filt`) before this frame recurses, so all
+                                   * quiesce frames can reuse one buffer. */
+    Move *filt = g_filt[qd];      /* qd is unique per live quiesce frame */
     int n, fn, i;
     Move none = {0, 0, 0, 0};
 

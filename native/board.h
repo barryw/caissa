@@ -14,11 +14,16 @@
 
 #include <stdint.h>
 
-/* Zobrist/repetition key type. cc65 (6502) has no 64-bit integers, so we use
- * `unsigned long`, which is >=32 bits on every target: 32-bit on cc65 (the hash
- * narrows to 32 bits there -- fine, it only keys the TT/repetition table) and
- * 64-bit on the LP64 host. Use hash_t everywhere a zobrist key is stored. */
-typedef unsigned long hash_t;
+/* Zobrist/repetition key type. FIXED at exactly 32 bits (uint32_t) on EVERY
+ * target. This matters for bit-exact move agreement between the host and the
+ * 6502 (llvm-mos) port: the splitmix zobrist mixer folds high bits down with
+ * shifts, so a 64-bit `unsigned long` host and a 32-bit 6502 would compute
+ * DIFFERENT keys -> different TT collisions and repetition hits -> occasionally
+ * different best moves. Pinning to uint32_t makes the keys identical on both, so
+ * the 6502 reproduces the host search exactly. 32 bits is ample to key the TT
+ * (<=64K entries) and the repetition table. (perft counts at the depths we verify
+ * stay < 2^32, so the `hash_t perft()` return is unaffected.) */
+typedef uint32_t hash_t;
 
 #define WHITE_FLAG 0x80
 #define PT(p)       ((p) & 7)          /* piece type 1..6, 0 if empty */

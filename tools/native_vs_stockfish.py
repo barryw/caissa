@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -26,7 +27,7 @@ import chess  # noqa: E402
 import chess.engine  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-CREF = ROOT / "native" / "cref"
+CREF = Path(os.environ["NATIVE_CREF"]) if os.environ.get("NATIVE_CREF") else ROOT / "native" / "cref"
 SF = "/opt/homebrew/bin/stockfish"
 _MAT = {chess.PAWN: 100, chess.KNIGHT: 320, chess.BISHOP: 330, chess.ROOK: 500, chess.QUEEN: 900}
 

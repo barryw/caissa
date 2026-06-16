@@ -1,0 +1,8 @@
+# build artifacts
+engine6502_cli
+validate
+run_sim
+*.o
+*.sim
+*.map
+*.prg
