@@ -304,6 +304,15 @@ static int ET_QUEEN_ATTACK[7];
 static int ET_MINOR_ATTACK[7];
 static int ET_PINNED[7];
 
+/* 1 if any EG PST value differs from its MG counterpart -- i.e. the tapered
+ * EG-minus-MG blend can be nonzero. When 0 (the shipped config, where the EG
+ * tables are exact copies of MG) the egdiff term is structurally 0 everywhere,
+ * so the accumulator skips maintaining it and the eval skips the taper. Computed
+ * by eval_sync_tables() from the const PST tables (so it is really a constant,
+ * but recomputed cheaply if the tables ever diverge). Defaults to the safe full
+ * path until the first sync. */
+static int g_eg_active = 1;
+
 void eval_sync_tables(void) {
     int i;
     for (i = 0; i < 7; i++) {
@@ -336,6 +345,18 @@ void eval_sync_tables(void) {
     ET_PINNED[BISHOP_T] = g_w.pinned_minor;
     ET_PINNED[ROOK_T]   = g_w.pinned_rook;
     ET_PINNED[QUEEN_T]  = g_w.pinned_queen;
+
+    /* Detect whether the EG PST tables diverge from MG anywhere; if not, the
+     * accumulator can skip the egdiff term entirely (see g_eg_active). */
+    {
+        int t, sq;
+        g_eg_active = 0;
+        for (t = PAWN_T; t <= KING_T && !g_eg_active; t++) {
+            const int *mg = PST_BY_TYPE[t], *eg = PST_EG_BY_TYPE[t];
+            for (sq = 0; sq < 64; sq++)
+                if (mg[sq] != eg[sq]) { g_eg_active = 1; break; }
+        }
+    }
 }
 
 /* 6502 8-bit add (wraps mod 256). */
@@ -1147,8 +1168,8 @@ static void queen_attacks_minor(Eval *e) {
  * rescan at all times (gate-verified). */
 static void acc_piece(Board *b, uint8_t p, int x, int remove) {
     int t = PT(p);
-    const int *pst = PST_BY_TYPE[t], *pst_eg = PST_EG_BY_TYPE[t];
-    int idx, ph, mat, eg, neg;
+    const int *pst = PST_BY_TYPE[t];
+    int idx, ph, mat, neg;
     if (t == KNIGHT_T || t == BISHOP_T) ph = 1;
     else if (t == ROOK_T) ph = 2;
     else if (t == QUEEN_T) ph = 4;
@@ -1161,11 +1182,18 @@ static void acc_piece(Board *b, uint8_t p, int x, int remove) {
         neg = 1;                              /* black piece contributes - */
     }
     mat = ET_PIECE_VALUE[t] + pst[idx];
-    eg  = pst_eg[idx] - pst[idx];
-    if (neg ^ remove) { mat = -mat; eg = -eg; }   /* net sign: color XOR remove */
+    if (neg ^ remove) mat = -mat;             /* net sign: color XOR remove */
     b->acc_mat    += mat;
-    b->acc_egdiff += eg;
-    b->acc_phase  += remove ? -ph : ph;           /* phase is color-agnostic */
+    b->acc_phase  += remove ? -ph : ph;       /* phase is color-agnostic */
+    /* egdiff term skipped entirely while the EG tables equal MG (the ship
+     * config): it is structurally 0 there, so acc_egdiff stays 0 and the eval
+     * taper is skipped. Maintained only when the tables actually diverge. */
+    if (g_eg_active) {
+        const int *pst_eg = PST_EG_BY_TYPE[t];
+        int eg = pst_eg[idx] - pst[idx];
+        if (neg ^ remove) eg = -eg;
+        b->acc_egdiff += eg;
+    }
 }
 
 /* Full rescan: seed the accumulators under the live g_w. Called at each search
