@@ -51,7 +51,17 @@ Latest session — **clean-C tier, all gate-green (incl. deep d6), Elo IDENTICAL
 | `64564b4` | skip zobrist in quiescence make_move (86% of nodes) | **-4.2%** |
 | `1f94c76` | acc_piece mover fast path (PST delta only, ~99% of moves) | **-4.0%** |
 
-**Cumulative overall: ~2.2×** (1.82B → 836.4M cyc/move @ d4). Profile now:
+Then **PORTABILITY + hand-asm** (engine now FITS a real C64; asm transfers to the ship target):
+
+| commit | lever | result |
+|---|---|---|
+| `091e224` | memcfg.h memory profiles (C64/NOVA/HOST) | (infra) |
+| `11bf2e8` | **shared move pool** (per-ply [7][256] banks → 768-entry pool) | **fits C64** (−10.7KB → +fit); 15KB→3KB bss |
+| `389961a` | TTEntry 16→12 bytes | −1KB |
+| `f45662e` | hand-asm `unmake_move` | 668→323B (−52%), **−2.5%** |
+| `efdb363` | hand-asm `make_move` | 3148→1150B (−63%), **−4.5%** |
+
+**Cumulative overall: ~2.34×** (1.82B → **778.3M cyc/move @ d4**). C64: links for the real mos-c64 target with **~3.5KB RAM free** (all 3 asm overrides). Profile (pre-asm) was:
 eval_full 23.5%, gen_legal 22.8%, make_move 13.4%, is_square_attacked 10.8%
 (asm'd), order_moves 9.1%, unmake 5.9%, quiesce 3.1%, acc_piece 1.8%.
 **Clean-C tier is tapped** — eval_full/gen_legal need hand-asm or algorithm work;
