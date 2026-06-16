@@ -1,6 +1,7 @@
 /* board.c -- FEN, make/unmake, zobrist, uci for the native reference engine. */
 #include "board.h"
 #include "movegen.h"
+#include "eval.h"          /* eval_acc_apply/init: incremental material+PST */
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -117,6 +118,7 @@ int board_from_fen(Board *b, const char *fen) {
     if (*p) { b->halfmove = atoi(p); while (*p && *p != ' ') p++; while (*p == ' ') p++; }
     if (*p) b->fullmove = atoi(p);
     b->hash = board_zobrist(b);
+    eval_acc_init(b);   /* seed incremental material+PST accumulators */
     return (b->wk >= 0 && b->bk >= 0) ? 0 : -1;
 }
 
@@ -249,6 +251,14 @@ void make_move(Board *b, Move m, Undo *u) {
     b->wtm ^= 1;
     h ^= Z_SIDE;
     b->hash = h;
+
+    /* incremental material+PST: stash pre-move accumulators for unmake, then
+     * apply this move's delta. `piece` is the original mover (read at the top,
+     * before promotion). */
+    u->acc_mat = b->acc_mat;
+    u->acc_egdiff = b->acc_egdiff;
+    u->acc_phase = b->acc_phase;
+    eval_acc_apply(b, m, piece, u->captured, u->cap_sq);
 }
 
 void unmake_move(Board *b, Move m, const Undo *u) {
@@ -283,6 +293,9 @@ void unmake_move(Board *b, Move m, const Undo *u) {
     b->halfmove = u->halfmove;
     b->wk = u->wk; b->bk = u->bk;
     b->hash = u->hash;
+    b->acc_mat = u->acc_mat;
+    b->acc_egdiff = u->acc_egdiff;
+    b->acc_phase = u->acc_phase;
 }
 
 /* ---- null move (pass the turn; for null-move pruning) ------------------- */

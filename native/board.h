@@ -61,6 +61,15 @@ typedef struct {
     int halfmove;      /* halfmove clock (50-move rule) */
     int fullmove;
     hash_t hash;       /* incremental zobrist */
+    /* Incremental material+PST accumulators (white-POV), maintained by
+     * make/unmake so the lazy eval (eval_material_pst) is O(1) instead of a full
+     * board scan. APPENDED at the end: the FROZEN 0x88 layout above keeps its
+     * exact offsets, so sq[]-indexing code is unaffected. Seeded by
+     * eval_acc_init() at each search root (reflects the live g_w); rebuilt
+     * bit-exact to eval_material_pst's old loop -- gate-verified. */
+    int acc_mat;       /* sum matv[t]+pst_mg[idx], white +, black - (pre-taper) */
+    int acc_egdiff;    /* sum (pst_eg-pst_mg)[idx], white +, black -            */
+    int acc_phase;     /* raw game phase: N/B=1,R=2,Q=4 both colors (unclamped) */
 } Board;
 
 typedef struct {
@@ -71,6 +80,7 @@ typedef struct {
     int halfmove;      /* prior halfmove clock */
     int wk, bk;        /* prior king squares */
     hash_t hash;       /* prior hash */
+    int acc_mat, acc_egdiff, acc_phase;  /* prior accumulators (restored on unmake) */
 } Undo;
 
 /* 0x88 <-> 0..63 helpers (0..63 is python-chess square: a1=0, h8=63).

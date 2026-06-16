@@ -401,6 +401,7 @@ Move search_bestmove(const Board *b, int depth,
     }
 
     work = *b;
+    eval_acc_init(&work);   /* seed incremental material+PST under the live g_w */
     g_stop = 0;
     if (g_sc.killers) memset(g_killer, 0, sizeof(g_killer));
     if (g_sc.history) memset(g_history, 0, sizeof(g_history));

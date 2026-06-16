@@ -40,4 +40,10 @@ void eval_sync_tables(void);      /* rebuild g_w-derived lookup tables; call aft
 int eval_full(const Board *b);    /* white-POV centipawns */
 int eval_material_pst(const Board *b);  /* lazy stage: material + PST only, white-POV */
 
+/* Incremental material+PST accumulator (eval_material_pst reads b->acc_*). */
+void eval_acc_init(Board *b);     /* full rescan -> seed acc_* from current g_w  */
+/* Apply one move's material+PST delta to b->acc_* (called by make_move). The
+ * mover/captured pieces and cap_sq are passed in explicitly. */
+void eval_acc_apply(Board *b, Move m, uint8_t mover, uint8_t captured, int cap_sq);
+
 #endif

@@ -102,6 +102,11 @@ int main(void) {
 #if BENCH_FULL
         sink += (int16_t)eval_full(&g_board);
 #else
+        /* eval_material_pst is now O(1) (reads b->acc_*); the cost moved into
+         * make_move's incremental update. Standalone here there is no
+         * make/unmake, so rescan the perturbed board into the accumulators
+         * first -- kept in the timed loop so the call cannot be hoisted. */
+        eval_acc_init(&g_board);
         sink += (int16_t)eval_material_pst(&g_board);
 #endif
     }

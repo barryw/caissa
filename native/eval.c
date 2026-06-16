@@ -1137,48 +1137,91 @@ static void queen_attacks_minor(Eval *e) {
     }
 }
 
+/* ---- incremental material+PST accumulator -------------------------------- */
+/* Fold one piece into (acc_mat, acc_egdiff, acc_phase). `remove`=0 adds the
+ * piece, =1 removes it. MULTIPLY-FREE on purpose: the v1 of this used `sign*v`
+ * per term, which llvm-mos lowered to __mulhi3 calls (~12 per make_move) and
+ * made the whole scheme a net loss; here the sign is applied by a conditional
+ * negate (two's complement, cheap). Arithmetic is byte-identical to
+ * eval_material_pst's old per-square loop, so the accumulator equals a full
+ * rescan at all times (gate-verified). */
+static void acc_piece(Board *b, uint8_t p, int x, int remove) {
+    int t = PT(p);
+    const int *pst = PST_BY_TYPE[t], *pst_eg = PST_EG_BY_TYPE[t];
+    int idx, ph, mat, eg, neg;
+    if (t == KNIGHT_T || t == BISHOP_T) ph = 1;
+    else if (t == ROOK_T) ph = 2;
+    else if (t == QUEEN_T) ph = 4;
+    else ph = 0;                              /* pawn/king add 0 to phase */
+    if (IS_WHITE(p)) {
+        idx = ((x & 0x70) >> 1) | (x & 0x07);
+        neg = 0;                              /* white piece contributes + */
+    } else {
+        idx = (((x & 0x70) >> 1) | (x & 0x07)) ^ 0x38;
+        neg = 1;                              /* black piece contributes - */
+    }
+    mat = ET_PIECE_VALUE[t] + pst[idx];
+    eg  = pst_eg[idx] - pst[idx];
+    if (neg ^ remove) { mat = -mat; eg = -eg; }   /* net sign: color XOR remove */
+    b->acc_mat    += mat;
+    b->acc_egdiff += eg;
+    b->acc_phase  += remove ? -ph : ph;           /* phase is color-agnostic */
+}
+
+/* Full rescan: seed the accumulators under the live g_w. Called at each search
+ * root so the incremental state reflects the current weights. */
+void eval_acc_init(Board *b) {
+    int x;
+    b->acc_mat = 0;
+    b->acc_egdiff = 0;
+    b->acc_phase = 0;
+    for (x = 0; x < 128; x++) {
+        uint8_t p;
+        if (x & 0x88) continue;
+        p = b->sq[x];
+        if (p) acc_piece(b, p, x, 0);
+    }
+}
+
+/* Apply one move's material+PST delta. Mirrors make_move's board edits: lift the
+ * mover off `from`, place it (promotion swaps type) on `to`, remove any captured
+ * piece, and relocate the rook on a castle. */
+void eval_acc_apply(Board *b, Move m, uint8_t mover, uint8_t captured, int cap_sq) {
+    uint8_t colorflag = mover & WHITE_FLAG;
+    uint8_t placed = (m.flags & MF_PROMO) ? (uint8_t)(m.promo | colorflag) : mover;
+    acc_piece(b, mover, m.from, 1);          /* lift mover */
+    acc_piece(b, placed, m.to, 0);           /* place (maybe promoted) */
+    if (captured) acc_piece(b, captured, cap_sq, 1);
+    if (m.flags & MF_CASTLE_K) {
+        uint8_t rook = (uint8_t)(ROOK_T | colorflag);
+        acc_piece(b, rook, m.to + 1, 1);     /* h-file rook lifted */
+        acc_piece(b, rook, m.to - 1, 0);     /* placed on f-file   */
+    } else if (m.flags & MF_CASTLE_Q) {
+        uint8_t rook = (uint8_t)(ROOK_T | colorflag);
+        acc_piece(b, rook, m.to - 2, 1);     /* a-file rook lifted */
+        acc_piece(b, rook, m.to + 1, 0);     /* placed on d-file   */
+    }
+}
+
 /* Lazy stage: material + PST only (white-POV), matching the 6502 EvaluateLazy
  * stage-one (eval.s lazy=1). The 6502 quiescence stand-pat uses THIS, paying for
  * the full positional terms only when the lazy score is within LAZY_EVAL_MARGIN
  * of the window -- so the native search must mirror it or it over-credits the
- * full-eval-only terms relative to the real engine. */
+ * full-eval-only terms relative to the real engine.
+ *
+ * Now O(1): reads the incremental accumulators (maintained by make/unmake) and
+ * applies only the phase taper. Bit-identical to the old full rescan. */
 int eval_material_pst(const Board *b) {
-    int score = 0;
-    int egdiff = 0;   /* signed EG-minus-MG accumulator, tapered in below */
-    int phase = 0;    /* game phase: N/B=1, R=2, Q=4 both colors, clamp 24 */
-    int x;
-    for (x = 0; x < 128; x++) {
-        uint8_t p;
-        int ptype, idx;
-        const int *pst, *pst_eg;
-        if (x & 0x88) continue;
-        p = b->sq[x];
-        if (!p) continue;
-        ptype = PT(p);
-        /* game-phase accumulation (both colors): N/B=1, R=2, Q=4 */
-        if (ptype == KNIGHT_T || ptype == BISHOP_T) phase += 1;
-        else if (ptype == ROOK_T) phase += 2;
-        else if (ptype == QUEEN_T) phase += 4;
-        pst = PST_BY_TYPE[ptype];
-        pst_eg = PST_EG_BY_TYPE[ptype];
-        if (IS_WHITE(p)) {
-            idx = ((x & 0x70) >> 1) | (x & 0x07);
-            score += ET_PIECE_VALUE[ptype] + pst[idx];
-            egdiff += pst_eg[idx] - pst[idx];
-        } else {
-            idx = (((x & 0x70) >> 1) | (x & 0x07)) ^ 0x38;
-            score -= ET_PIECE_VALUE[ptype] + pst[idx];
-            egdiff -= pst_eg[idx] - pst[idx];
-        }
-    }
+    int score = b->acc_mat;
     /* tapered PST: blend accumulated EG-minus-MG toward the endgame by phase.
      * Plain C integer division truncates toward zero (matches the oracle).
      * Guarded on egdiff!=0 so the wide multiply/divide is skipped while the EG
      * tables equal the MG tables (egdiff stays 0); stays bit-exact if they ever
      * diverge. */
-    if (egdiff) {
+    if (b->acc_egdiff) {
+        int phase = b->acc_phase;
         if (phase > 24) phase = 24;
-        score += egdiff * (24 - phase) / 24;
+        score += b->acc_egdiff * (24 - phase) / 24;
     }
     return score;
 }
@@ -1193,15 +1236,23 @@ int eval_full(const Board *board) {
     e.b = board->sq;
     e.wk = board->wk;
     e.bk = board->bk;
-    e.score = 0;
+    /* Material+PST (MG sum), phase, and egdiff come from the incremental
+     * accumulators maintained by make/unmake -- the loop below no longer
+     * recomputes them, only the positional terms it adds onto e.score. uint16_t
+     * e.score wraps mod 2^16 and add is order-independent, so seeding the
+     * material sum up front and letting the helpers add positional terms is
+     * byte-identical to the old interleaved accumulation. acc_* must be fresh for
+     * the live g_w: search seeds at its root, board_from_fen at parse; direct
+     * eval callers that override g_w after parse re-seed (cmd_eval). */
+    e.score = board->acc_mat;
     e.nonpawn = 0;
     e.pawns = 0;
     e.queens = 0;
     e.wbishops = 0;
     e.bbishops = 0;
     e.endgame = 0;
-    e.phase = 0;
-    e.egdiff = 0;
+    e.phase = board->acc_phase;
+    e.egdiff = board->acc_egdiff;
     for (i = 0; i < 8; i++) { e.wpf[i] = 0; e.bpf[i] = 0; }
 
     /* g_w-derived tables (ET_*) are kept in sync by eval_sync_tables(); no
@@ -1212,13 +1263,13 @@ int eval_full(const Board *board) {
     /* ---- main board pass (0x88 walk skipping offboard) ---- */
     for (x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
         int piece = b[x];
-        int color, ptype, val, idx;
-        const int *pst, *pst_eg;
+        int color, ptype;
         if (piece == EMPTY) continue;
         color = piece & WHITE_COLOR;
         ptype = piece & 0x07;
 
-        /* phase counters + per-pawn advanced bonus */
+        /* piece counters + per-pawn advanced bonus (material+PST and phase are
+         * pre-seeded from the accumulators, so they are NOT accumulated here). */
         if (ptype == PAWN_T) {
             e.pawns++;
             advanced_pawn(&e, x, color, ptype);
@@ -1228,10 +1279,6 @@ int eval_full(const Board *board) {
                 if (color) e.wbishops++; else e.bbishops++;
             }
             if (ptype == QUEEN_T) e.queens++;
-            /* game-phase accumulation (both colors): N/B=1, R=2, Q=4 */
-            if (ptype == ROOK_T) e.phase += 2;
-            else if (ptype == QUEEN_T) e.phase += 4;
-            else e.phase += 1;          /* knight or bishop */
         }
 
         /* per-piece full-eval terms (order matches eval.s). Every one of these
@@ -1246,23 +1293,6 @@ int eval_full(const Board *board) {
             knight_outpost(&e, x, color, ptype);
             mobility(&e, x, color, ptype);
             seventh_rank(&e, x, color, ptype);
-        }
-
-        /* material + PST (MG added now; EG-minus-MG accumulated for the
-         * phase-tapered blend applied once after the loop). */
-        val = ET_PIECE_VALUE[ptype];
-        pst = PST_BY_TYPE[ptype];
-        pst_eg = PST_EG_BY_TYPE[ptype];
-        if (color) {
-            e.score += val;
-            idx = ((x & 0x70) >> 1) | (x & 0x07);          /* Sq88To64 */
-            e.score += pst[idx];
-            e.egdiff += pst_eg[idx] - pst[idx];
-        } else {
-            e.score -= val;
-            idx = (((x & 0x70) >> 1) | (x & 0x07)) ^ 0x38; /* Sq88To64Mirror */
-            e.score -= pst[idx];
-            e.egdiff -= pst_eg[idx] - pst[idx];
         }
     }
 

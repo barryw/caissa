@@ -344,6 +344,7 @@ static int cmd_eval(const char *fen, const char *wspec) {
     if (board_from_fen(&b, fen)) { fprintf(stderr, "bad fen\n"); return 2; }
     if (build_weights(&g_w, wspec)) return 2;   /* resets to baseline then applies */
     eval_sync_tables();   /* build_weights overrode g_w after reset -> resync */
+    eval_acc_init(&b);    /* re-seed acc: weights changed after board_from_fen */
     printf("%d\n", eval_full(&b));
     return 0;
 }

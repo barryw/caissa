@@ -13,8 +13,10 @@ all: cref
 cref: $(CORE) search.c cref.c $(HDRS)
 	$(CC) $(CFLAGS) $(CORE) search.c cref.c -o cref $(LDLIBS)
 
-test_perft: board.c movegen.c test_perft.c $(HDRS)
-	$(CC) $(CFLAGS) board.c movegen.c test_perft.c -o test_perft
+# eval.c is linked in because board.c/movegen.c now reference the incremental
+# material+PST accumulator helpers (eval_acc_apply/eval_acc_init).
+test_perft: board.c movegen.c eval.c test_perft.c $(HDRS)
+	$(CC) $(CFLAGS) board.c movegen.c eval.c test_perft.c -o test_perft
 
 test_eval: board.c eval.c test_eval.c $(HDRS)
 	$(CC) $(CFLAGS) board.c eval.c test_eval.c -o test_eval
