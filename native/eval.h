@@ -34,6 +34,8 @@ typedef struct {
 
 extern EvalWeights g_w;           /* live weights (override target) */
 void eval_reset_weights(void);    /* restore baseline into g_w */
+void eval_sync_tables(void);      /* rebuild g_w-derived lookup tables; call after
+                                   * any direct mutation of g_w (the A/B swap path) */
 
 int eval_full(const Board *b);    /* white-POV centipawns */
 int eval_material_pst(const Board *b);  /* lazy stage: material + PST only, white-POV */

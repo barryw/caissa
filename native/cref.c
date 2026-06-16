@@ -161,6 +161,7 @@ static void play_game(const char *start_fen, int a_white,
 
         int use_a = (b.wtm == a_white);
         g_w = use_a ? *wa : *wb;
+        eval_sync_tables();   /* g_w mutated directly -> refresh derived tables */
         g_sc = use_a ? *sca : *scb;
         search_set_budget(node_budget);
         SearchInfo info;
@@ -342,6 +343,7 @@ static int cmd_eval(const char *fen, const char *wspec) {
     Board b;
     if (board_from_fen(&b, fen)) { fprintf(stderr, "bad fen\n"); return 2; }
     if (build_weights(&g_w, wspec)) return 2;   /* resets to baseline then applies */
+    eval_sync_tables();   /* build_weights overrode g_w after reset -> resync */
     printf("%d\n", eval_full(&b));
     return 0;
 }
@@ -351,6 +353,7 @@ static int cmd_bestmove(const char *fen, int depth, long nodes,
     Board b;
     if (board_from_fen(&b, fen)) { fprintf(stderr, "bad fen\n"); return 2; }
     if (build_weights(&g_w, wspec)) return 2;   /* baseline, then optional overrides */
+    eval_sync_tables();   /* build_weights overrode g_w after reset -> resync */
     if (build_search(&g_sc, scfg)) return 2;    /* defaults, then optional overrides */
     search_set_budget(nodes);
     if (nodes) depth = 64;            /* budget-bound: let ID run deep */
@@ -369,6 +372,7 @@ static int cmd_bestmove(const char *fen, int depth, long nodes,
  * loss = mean( (sigmoid(eval/K) - sigmoid(label/K))^2 ), K=300 (matches texel_tune). */
 static int cmd_mse(const char *tsv, const char *wspec) {
     if (build_weights(&g_w, wspec)) return 2;
+    eval_sync_tables();   /* build_weights overrode g_w after reset -> resync */
     FILE *f = fopen(tsv, "r");
     if (!f) { fprintf(stderr, "cannot open %s\n", tsv); return 2; }
     const double K = 300.0;

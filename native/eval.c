@@ -91,6 +91,7 @@ void eval_reset_weights(void) {
     g_w.king_attack_escalation = 0;
     g_w.pawn_storm = 0;
     g_w.queen_attacks_minor = 0;
+    eval_sync_tables();   /* refresh g_w-derived ET_* tables for the new weights */
 }
 
 /* ------------------------------------------------------------------------- */
@@ -289,14 +290,53 @@ typedef struct {
     int egdiff;             /* signed EG-minus-MG PST accumulator (tapered in) */
     int wpf[8];             /* white pawns per file */
     int bpf[8];             /* black pawns per file */
-
-    /* g_w-derived per-type lookup tables (rebuilt each eval_full). */
-    int PIECE_VALUE_TBL[7];
-    int PAWN_ATTACK_PENALTY[7];
-    int QUEEN_ATTACK_PENALTY[7];
-    int MINOR_ATTACK_PENALTY[7];
-    int PINNED_PIECE_PENALTY[7];
 } Eval;
+
+/* g_w-derived per-type lookup tables. Pure functions of g_w, so they are
+ * loop-invariant across an entire search: rebuilt ONCE by eval_sync_tables()
+ * whenever g_w changes (eval_reset_weights + the cref A/B swap sites), never
+ * per eval call. This removes the ~70-store table setup that eval_full and
+ * eval_material_pst used to redo on every node. Values are bit-identical to
+ * the old per-call build, so the eval-bit-exact gate stays green. */
+static int ET_PIECE_VALUE[7];
+static int ET_PAWN_ATTACK[7];
+static int ET_QUEEN_ATTACK[7];
+static int ET_MINOR_ATTACK[7];
+static int ET_PINNED[7];
+
+void eval_sync_tables(void) {
+    int i;
+    for (i = 0; i < 7; i++) {
+        ET_PIECE_VALUE[i] = 0;
+        ET_PAWN_ATTACK[i]  = 0;
+        ET_QUEEN_ATTACK[i] = 0;
+        ET_MINOR_ATTACK[i] = 0;
+        ET_PINNED[i]       = 0;
+    }
+    ET_PIECE_VALUE[PAWN_T]   = g_w.pawn;
+    ET_PIECE_VALUE[KNIGHT_T] = g_w.knight;
+    ET_PIECE_VALUE[BISHOP_T] = g_w.bishop;
+    ET_PIECE_VALUE[ROOK_T]   = g_w.rook;
+    ET_PIECE_VALUE[QUEEN_T]  = g_w.queen;
+    ET_PIECE_VALUE[KING_T]   = g_w.king;
+    /* PAWN_ATTACK = [0,0, minor, minor, rook, queen, 0] */
+    ET_PAWN_ATTACK[KNIGHT_T] = g_w.pawn_attack_minor;
+    ET_PAWN_ATTACK[BISHOP_T] = g_w.pawn_attack_minor;
+    ET_PAWN_ATTACK[ROOK_T]   = g_w.pawn_attack_rook;
+    ET_PAWN_ATTACK[QUEEN_T]  = g_w.pawn_attack_queen;
+    /* QUEEN_ATTACK = [0,0, minor, minor, 0,0,0] */
+    ET_QUEEN_ATTACK[KNIGHT_T] = g_w.queen_attack_minor;
+    ET_QUEEN_ATTACK[BISHOP_T] = g_w.queen_attack_minor;
+    /* MINOR_ATTACK = [0,0,0,0, rook, queen, 0] */
+    ET_MINOR_ATTACK[ROOK_T]  = g_w.minor_attack_rook;
+    ET_MINOR_ATTACK[QUEEN_T] = g_w.minor_attack_queen;
+    /* PINNED = [0, pawn, minor, minor, rook, queen, 0] */
+    ET_PINNED[PAWN_T]   = g_w.pinned_pawn;
+    ET_PINNED[KNIGHT_T] = g_w.pinned_minor;
+    ET_PINNED[BISHOP_T] = g_w.pinned_minor;
+    ET_PINNED[ROOK_T]   = g_w.pinned_rook;
+    ET_PINNED[QUEEN_T]  = g_w.pinned_queen;
+}
 
 /* 6502 8-bit add (wraps mod 256). */
 static int add8(int a, int b) { return (a + b) & 0xFF; }
@@ -402,14 +442,14 @@ static int is_queen_attacked(const Eval *e, int sq, int color, int ptype) {
 static void pawn_pressure(Eval *e, int sq, int color, int ptype) {
     int pen;
     if (!is_pawn_attacked(e, sq, color, ptype)) return;
-    pen = e->PAWN_ATTACK_PENALTY[ptype];
+    pen = ET_PAWN_ATTACK[ptype];
     if (color) e->score -= pen; else e->score += pen;
 }
 
 static void queen_pressure(Eval *e, int sq, int color, int ptype) {
     int pen;
     if (!is_queen_attacked(e, sq, color, ptype)) return;
-    pen = e->QUEEN_ATTACK_PENALTY[ptype];
+    pen = ET_QUEEN_ATTACK[ptype];
     if (color) e->score -= pen; else e->score += pen;
 }
 
@@ -419,7 +459,7 @@ static void minor_pressure(Eval *e, int sq, int color, int ptype) {
     attacked = is_knight_attacked(e, sq, color);
     if (!attacked) attacked = is_bishop_attacked(e, sq, color);
     if (!attacked) return;
-    pen = e->MINOR_ATTACK_PENALTY[ptype];
+    pen = ET_MINOR_ATTACK[ptype];
     if (pen == 0) return;
     if (color) e->score -= pen; else e->score += pen;
 }
@@ -757,7 +797,7 @@ static void pins_from_king(Eval *e, int king_sq, int king_color) {
                 if (t != QUEEN_T) {
                     if (PIN_SLIDER_TYPES[d] != t) break;
                 }
-                pen = e->PINNED_PIECE_PENALTY[candidate_type];
+                pen = ET_PINNED[candidate_type];
                 if (pen == 0) break;
                 if (king_color) e->score -= pen; /* pinned side white */
                 else            e->score += pen;
@@ -1103,18 +1143,10 @@ static void queen_attacks_minor(Eval *e) {
  * of the window -- so the native search must mirror it or it over-credits the
  * full-eval-only terms relative to the real engine. */
 int eval_material_pst(const Board *b) {
-    int matv[7];
     int score = 0;
     int egdiff = 0;   /* signed EG-minus-MG accumulator, tapered in below */
     int phase = 0;    /* game phase: N/B=1, R=2, Q=4 both colors, clamp 24 */
     int x;
-    matv[0] = 0;
-    matv[PAWN_T]   = g_w.pawn;
-    matv[KNIGHT_T] = g_w.knight;
-    matv[BISHOP_T] = g_w.bishop;
-    matv[ROOK_T]   = g_w.rook;
-    matv[QUEEN_T]  = g_w.queen;
-    matv[KING_T]   = g_w.king;
     for (x = 0; x < 128; x++) {
         uint8_t p;
         int ptype, idx;
@@ -1131,11 +1163,11 @@ int eval_material_pst(const Board *b) {
         pst_eg = PST_EG_BY_TYPE[ptype];
         if (IS_WHITE(p)) {
             idx = ((x & 0x70) >> 1) | (x & 0x07);
-            score += matv[ptype] + pst[idx];
+            score += ET_PIECE_VALUE[ptype] + pst[idx];
             egdiff += pst_eg[idx] - pst[idx];
         } else {
             idx = (((x & 0x70) >> 1) | (x & 0x07)) ^ 0x38;
-            score -= matv[ptype] + pst[idx];
+            score -= ET_PIECE_VALUE[ptype] + pst[idx];
             egdiff -= pst_eg[idx] - pst[idx];
         }
     }
@@ -1172,38 +1204,8 @@ int eval_full(const Board *board) {
     e.egdiff = 0;
     for (i = 0; i < 8; i++) { e.wpf[i] = 0; e.bpf[i] = 0; }
 
-    /* Rebuild g_w-derived per-type lookup tables (mirror apply_eval_overrides). */
-    e.PIECE_VALUE_TBL[0] = 0;
-    e.PIECE_VALUE_TBL[PAWN_T]   = g_w.pawn;
-    e.PIECE_VALUE_TBL[KNIGHT_T] = g_w.knight;
-    e.PIECE_VALUE_TBL[BISHOP_T] = g_w.bishop;
-    e.PIECE_VALUE_TBL[ROOK_T]   = g_w.rook;
-    e.PIECE_VALUE_TBL[QUEEN_T]  = g_w.queen;
-    e.PIECE_VALUE_TBL[KING_T]   = g_w.king;
-
-    for (i = 0; i < 7; i++) {
-        e.PAWN_ATTACK_PENALTY[i] = 0;
-        e.QUEEN_ATTACK_PENALTY[i] = 0;
-        e.MINOR_ATTACK_PENALTY[i] = 0;
-        e.PINNED_PIECE_PENALTY[i] = 0;
-    }
-    /* PAWN_ATTACK_PENALTY = [0,0, minor, minor, rook, queen, 0] */
-    e.PAWN_ATTACK_PENALTY[KNIGHT_T] = g_w.pawn_attack_minor;
-    e.PAWN_ATTACK_PENALTY[BISHOP_T] = g_w.pawn_attack_minor;
-    e.PAWN_ATTACK_PENALTY[ROOK_T]   = g_w.pawn_attack_rook;
-    e.PAWN_ATTACK_PENALTY[QUEEN_T]  = g_w.pawn_attack_queen;
-    /* QUEEN_ATTACK_PENALTY = [0,0, minor, minor, 0,0,0] */
-    e.QUEEN_ATTACK_PENALTY[KNIGHT_T] = g_w.queen_attack_minor;
-    e.QUEEN_ATTACK_PENALTY[BISHOP_T] = g_w.queen_attack_minor;
-    /* MINOR_ATTACK_PENALTY = [0,0,0,0, rook, queen, 0] */
-    e.MINOR_ATTACK_PENALTY[ROOK_T]  = g_w.minor_attack_rook;
-    e.MINOR_ATTACK_PENALTY[QUEEN_T] = g_w.minor_attack_queen;
-    /* PINNED_PIECE_PENALTY = [0, pawn, minor, minor, rook, queen, 0] */
-    e.PINNED_PIECE_PENALTY[PAWN_T]   = g_w.pinned_pawn;
-    e.PINNED_PIECE_PENALTY[KNIGHT_T] = g_w.pinned_minor;
-    e.PINNED_PIECE_PENALTY[BISHOP_T] = g_w.pinned_minor;
-    e.PINNED_PIECE_PENALTY[ROOK_T]   = g_w.pinned_rook;
-    e.PINNED_PIECE_PENALTY[QUEEN_T]  = g_w.pinned_queen;
+    /* g_w-derived tables (ET_*) are kept in sync by eval_sync_tables(); no
+     * per-call rebuild here. */
 
     b = e.b;
 
@@ -1248,7 +1250,7 @@ int eval_full(const Board *board) {
 
         /* material + PST (MG added now; EG-minus-MG accumulated for the
          * phase-tapered blend applied once after the loop). */
-        val = e.PIECE_VALUE_TBL[ptype];
+        val = ET_PIECE_VALUE[ptype];
         pst = PST_BY_TYPE[ptype];
         pst_eg = PST_EG_BY_TYPE[ptype];
         if (color) {
