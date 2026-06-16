@@ -15,8 +15,10 @@
  * still filled (the multiplies fold the shifted-in low bits upward); on cc65 the
  * key is a 32-bit value. Either way it is only a hash key for the TT/repetition
  * table -- it never affects eval, movegen, or search results. */
-static hash_t Z_PIECE[64][12];
-static hash_t Z_SIDE, Z_CASTLE[16], Z_EP[8];
+/* Non-static so the hand-asm make_move (native/make_move_6502.s) can reference
+ * these zobrist tables by symbol. Still only used within board.c from C. */
+hash_t Z_PIECE[64][12];
+hash_t Z_SIDE, Z_CASTLE[16], Z_EP[8];
 static int z_inited = 0;
 
 static hash_t splitmix_next(hash_t *s) {
@@ -175,6 +177,7 @@ static int castle_mask(int sq, int cur) {
  * it never reads b->hash). Default 1 = always maintain the hash. */
 int g_make_hash = 1;
 
+#ifndef CREF_ASM_MAKE_MOVE
 void make_move(Board *b, Move m, Undo *u) {
     uint8_t piece = b->sq[m.from];
     int white = IS_WHITE(piece) ? 1 : 0;
@@ -274,6 +277,7 @@ void make_move(Board *b, Move m, Undo *u) {
     u->acc_phase = b->acc_phase;
     eval_acc_apply(b, m, piece, u->captured, u->cap_sq);
 }
+#endif /* CREF_ASM_MAKE_MOVE */
 
 #ifndef CREF_ASM_UNMAKE_MOVE
 void unmake_move(Board *b, Move m, const Undo *u) {
