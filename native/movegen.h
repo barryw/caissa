@@ -3,8 +3,9 @@
 #define CREF_MOVEGEN_H
 
 #include "board.h"
+#include "memcfg.h"
 
-#define MAX_MOVES 256
+#define MAX_MOVES CREF_MAX_MOVES
 
 /* Is square `sq` (0x88) attacked by side `by_white` (1=white,0=black)? */
 int is_square_attacked(const Board *b, int sq, int by_white);

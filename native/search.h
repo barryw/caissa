@@ -3,16 +3,14 @@
 #define CREF_SEARCH_H
 
 #include "board.h"
+#include "memcfg.h"
 
-/* repetition stack: game history + search depth. The host keeps a generous 1024
- * (full game history); the 6502 build (__mos__/__CC65__) only ever searches from
- * a single position with no game history (hist=NULL), so the stack just holds the
- * search path (<= MAX_PLY) -- 64 is ample and saves ~3.8KB of bss. */
-#if defined(__CC65__) || defined(__mos__)
-#define MAX_PATH       64
-#else
-#define MAX_PATH       1024
-#endif
+/* repetition stack: game history + search depth. Sized per memory profile
+ * (memcfg.h): the host keeps a generous 1024 (full game history); a bare 6502
+ * build only ever searches from a single position with no game history
+ * (hist=NULL), so the stack just holds the search path (<= MAX_PLY) -- 64 is
+ * ample and saves ~3.8KB of bss. */
+#define MAX_PATH       CREF_MAX_PATH
 #define MATE_SCORE     30000
 #define MATE_THRESHOLD 29000
 #define SEARCH_INF     32000

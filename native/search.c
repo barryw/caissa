@@ -17,14 +17,11 @@
 #include <string.h>
 
 #define LAZY_EVAL_MARGIN 240   /* matches src/ai/search.s LAZY_EVAL_MARGIN */
-#define MAX_QUIESCE_DEPTH 6    /* matches src/ai/search.s MAX_QUIESCE_DEPTH */
-/* TT size differs by target: a big table on the host (strong measurement), a
- * small one on the 6502 (RAM-fit; cc65 int is 16-bit so 1<<16 would overflow). */
-#if defined(__CC65__) || defined(__mos__)
-#define TT_BITS 8
-#else
-#define TT_BITS 16
-#endif
+#define MAX_QUIESCE_DEPTH CREF_MAX_QUIESCE_DEPTH  /* matches src/ai/search.s */
+/* TT size is per memory profile (memcfg.h): a big table on the host (strong
+ * measurement), a small one on a bare 6502 (RAM-fit; cc65 int is 16-bit so
+ * 1<<16 would overflow). */
+#define TT_BITS CREF_TT_BITS
 #define TT_SIZE (1 << TT_BITS)
 #define TT_MASK (TT_SIZE - 1)
 
@@ -59,13 +56,9 @@ static SearchInfo g_info;
  * negamax ply 6 over 400 corpus positions), so MAX_PLY only needs depth+1.
  * Quiescence does NOT consume a g_ml slot per ply: its raw move list (g_qml) is
  * consumed before it recurses, so all quiesce frames share one buffer. The host
- * keeps a generous 48; the 6502 (__mos__/__CC65__) shrinks to 7 (supports depth
- * <= 6) so the move buffers fit alongside code+history+stack in ~64K. */
-#if defined(__CC65__) || defined(__mos__)
-#define MAX_PLY 7
-#else
-#define MAX_PLY 48
-#endif
+ * keeps a generous 48; a bare 6502 shrinks to 7 (supports depth <= 6) so the move
+ * buffers fit alongside code+history+stack in ~64K. Sized per profile (memcfg.h). */
+#define MAX_PLY CREF_MAX_PLY
 static Move g_ml[MAX_PLY][MAX_MOVES];     /* negamax per-ply node move list */
 static Move g_qml[MAX_MOVES];             /* quiesce raw list (shared: consumed before recursion) */
 /* g_filt holds the quiescence filtered list. It is indexed by quiescence depth
@@ -82,18 +75,14 @@ static int  g_stop;           /* set when the budget is exhausted mid-iteration 
 
 /* killer + history tables (used only when the toggles are on).
  *
- * The full butterfly-history table is short[2][64][64] = 16 KB. On the 6502
- * (__mos__/__CC65__) that 16 KB does not coexist with the full eval's code, the
- * per-ply move banks, and the TT inside 64 KB, so the history HEURISTIC is
- * disabled there (search_reset_config sets g_sc.history=0) and the table shrinks
- * to a 1-entry stub. The 6502 search keeps every other ordering term (TT move,
- * MVV-LVA captures, killers) plus null-move + LMR; only butterfly history is off.
- * The HOST keeps the full table and the heuristic ON (its gates are unchanged). */
-#if defined(__CC65__) || defined(__mos__)
-#define HISTORY_DIM 1
-#else
-#define HISTORY_DIM 64
-#endif
+ * The full butterfly-history table is short[2][64][64] = 16 KB. On a bare 6502
+ * that 16 KB does not coexist with the full eval's code, the per-ply move banks,
+ * and the TT inside 64 KB, so the history HEURISTIC is disabled there
+ * (search_reset_config sets g_sc.history=0) and the table shrinks to a 1-entry
+ * stub (HISTORY_DIM from memcfg.h). The 6502 search keeps every other ordering
+ * term (TT move, MVV-LVA captures, killers) plus null-move + LMR; only butterfly
+ * history is off. The HOST keeps the full table and the heuristic ON. */
+#define HISTORY_DIM CREF_HISTORY_DIM
 static Move  g_killer[MAX_PLY][2];
 static short g_history[2][HISTORY_DIM][HISTORY_DIM]; /* [stm][from64][to64], idx64 0..63 */
 
@@ -101,10 +90,12 @@ void search_reset_config(void) {
     /* Proven winners ON by default (each +Elo at fixed nodes, SPRT-confirmed as a
      * stack). Candidate features below stay off until measured. */
     g_sc.killers = 1;
-#if defined(__CC65__) || defined(__mos__)
-    g_sc.history = 0;     /* 16 KB butterfly table does not fit in 64 KB; see above */
-#else
+    /* history needs the full butterfly table; only enable it when the profile
+     * actually allocates one (HISTORY_DIM > 1). The stub profiles keep it off. */
+#if CREF_HISTORY_DIM > 1
     g_sc.history = 1;
+#else
+    g_sc.history = 0;     /* 16 KB butterfly table does not fit; table is a stub */
 #endif
     g_sc.nullmove = 1;
     g_sc.null_r = 2;
