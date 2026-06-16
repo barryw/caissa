@@ -15,7 +15,7 @@
  *      unsigned char g_from       chosen move FROM square (0x88 encoding)
  *      unsigned char g_to         chosen move TO   square (0x88 encoding)
  *      unsigned char g_promo      promotion piece TYPE (PT_KNIGHT..PT_QUEEN), 0 = none
- *      signed   int  g_score      search score (white-relative cp, stm-POV)
+ *      signed   int  g_drvscore   search score (white-relative cp, stm-POV)
  *      unsigned char g_done       set to 1 when the search has finished
  *      unsigned char g_status     0 = ok, 1 = FEN parse error
  *
@@ -25,7 +25,7 @@
  *      1. load image, run from reset until putchar register == SIM_READY,
  *      2. inject g_fen / g_depth, set g_go = 1,
  *      3. resume until g_done == 1 (and the sim exit register is written),
- *      4. read g_from / g_to / g_promo / g_score.
+ *      4. read g_from / g_to / g_promo / g_drvscore.
  *    g_go lives in .bss (zeroed by crt0), so the busy-wait is entered cleanly
  *    every run; the host flips it only after READY, which is after bss-zeroing.
  */
@@ -40,7 +40,9 @@ volatile unsigned char g_depth  = 4;
 volatile unsigned char g_from   = 0xFF;
 volatile unsigned char g_to     = 0xFF;
 volatile unsigned char g_promo  = 0;
-volatile int           g_score  = 0;
+volatile int           g_drvscore = 0;  /* search score out (renamed from g_score
+                                          * to avoid colliding with search.c's now-
+                                          * exported int g_score[] ordering scratch) */
 volatile unsigned char g_done   = 0;
 volatile unsigned char g_status = 0;
 volatile unsigned char g_go     = 0;   /* host sets to 1 to start the search */
@@ -100,7 +102,7 @@ void bench_bestmove(void) {
     g_from   = best.from;
     g_to     = best.to;
     g_promo  = best.promo;
-    g_score  = si.score;
+    g_drvscore = si.score;
     g_nodes  = si.nodes;
     g_qnodes = si.qnodes;
     g_status = 0;
