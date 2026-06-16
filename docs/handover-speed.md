@@ -27,7 +27,9 @@ Colossus Chess (C64, 6502, ~1MHz, ~1750 Elo) examined **~520 positions/sec** =
 campaign: compiled-C + a heavy full positional eval vs Colossus's hand-asm + lean
 eval. Closing even half of it makes d5-d6 practical.
 
-## What's been done (4 commits this session, all gate-green, Elo IDENTICAL)
+## What's been done
+
+Earlier session (all gate-green, Elo IDENTICAL):
 
 | commit | lever | result |
 |---|---|---|
@@ -37,7 +39,31 @@ eval. Closing even half of it makes d5-d6 practical.
 | `181f951` | eval_full bit-exact tweaks | +1% |
 | `8d6db07` | `is_square_attacked` hand-asm (6510 agent) | +6%, **asm path proven** |
 
-**Cumulative: ~1.74×** (1.82B → 1.045B cyc/move @ d4).
+Latest session — **clean-C tier, all gate-green, Elo IDENTICAL** (baseline 1.0447B → **909.2M cyc/move @ d4, -13.0%**):
+
+| commit | lever | result |
+|---|---|---|
+| `7403660` | cache g_w-derived eval tables (no per-call rebuild) | eval_full -9%, -1.0% |
+| `1441772` | gen_legal probes in-place (drops `tmp=*b` board copy) | **-3.8%** |
+| `4fcda38` | sparse-clear the pin table (was a 128B memset/node) | -2.3% |
+| `1388d59` | incremental material+PST accumulator (Step A+B) | eval_full -20%, **-4.3%** |
+| `94b86be` | skip egdiff term while EG PST == MG | -2.3% |
+
+**Cumulative overall: ~2.0×** (1.82B → 909.2M cyc/move @ d4).
+
+### KEY LEARNINGS (read before re-attempting)
+- **Incremental accumulator only pays WITH eval_full using it (Step B).** make_move
+  runs on every node; the lazy eval only fires in quiescence. Maintaining the
+  accumulator just for `eval_material_pst` (Step A alone) is ~neutral (-0.4%). The
+  win comes from `eval_full` ALSO seeding from the accumulators and dropping its
+  per-square material/PST/phase math (-20% on eval_full) — that's pure gain on
+  already-paid make_move cost. A v1 that used `sign*v` per term was a **+16.6%
+  LOSS** (llvm-mos lowered it to ~12 `__mulhi3`/make_move); the multiply-free
+  conditional-negate version is what works. acc must be re-seeded (`eval_acc_init`)
+  at every search root + any direct-eval site that changes g_w after board setup.
+- **The `tmp = *b` board-copy trick generalizes:** make/unmake is an exact
+  round-trip, so any "copy board to mutate" can often run in place + unmake.
+- **Per-node memset/memcpy is a smell** — gen_legal had both; both gone now.
 
 ## THE REGRESSION GATE — run before/after every change
 
@@ -55,27 +81,36 @@ A failure = real regression (fix it) OR intentional behavior change (re-bless:
 `python3 tools/llvmmos_bench/gen_golden.py`, then RE-MEASURE Elo). For pure speed
 work, golden + eval-bit-exact MUST stay green = moves identical = Elo preserved.
 
-## Profiler (where the cycles go — after the 3 opts)
+## Profiler (where the cycles go — CURRENT, after the latest 5 opts)
 
 ```
 tools/llvmmos_bench/profile6502 /tmp/engine6502.sim /tmp/engine6502.map "FEN" DEPTH
 ```
-Current hot leaves: **eval_full 30%**, gen_legal 14%, quiesce 11%, make_move 8%,
-is_square_attacked 7% (already asm'd), order_moves 4%, __memset+memcpy ~6% (board copies).
+Current hot leaves (kiwipete d4): **eval_full 21%**, gen_legal 21%, make_move 16%,
+is_square_attacked 10% (already asm'd), order_moves 8%, acc_piece 7% (the new
+accumulator maintenance), unmake_move 5%, quiesce 3% (was 17% — the lazy eval is
+O(1) now), count_sliding_mobility 2%. memcpy is GONE; __memset down to 1%.
+
+The clean-C tier is largely harvested. What remains is structural — the big three
+(eval_full, gen_legal, make_move) need hand-asm or behavior-changing algorithm
+work, not C micro-opts.
 
 ## NEXT (do these, in order of expected payoff)
 
-1. **Hand-asm `eval_full` and/or the lazy `eval_material_pst`** (6510 agent). 30% of
-   cycles, the single biggest slice. eval-bit-exact gate (22157) is the perfect
-   contract. Big function — may need to asm the inner per-square loop only.
-2. **Hand-asm `make_move`** (8%) and the gen_legal pseudo-move loops (14%).
-3. **Incremental material+PST** maintained in make/unmake (kills the lazy eval at
-   most leaves). SKIPPED earlier because the A/B harness overrides `g_w` weights
-   mid-game; for the SHIP config weights are fixed, so it's valid — guard/invalidate
-   when g_w changes. Eval value must stay bit-exact (gate enforces).
-4. **Lighter eval** (structural): the full positional eval is the heaviest single
-   cost. A cheaper eval that holds ~1800 would be a big win — but this CHANGES
-   behavior (golden + Elo), so it needs re-measurement, not the pure-speed gate.
+1. **Hand-asm the eval_full per-square loop** (6510 agent). Still the biggest slice
+   (21%). After the accumulator change it no longer accumulates material/PST — it's
+   the 6 positional helpers + counters per piece. eval-bit-exact gate (22157) is the
+   contract. Likely asm the loop body / hottest helpers (count_sliding_mobility,
+   king_zone_pressure), not the whole sprawling function.
+2. **Hand-asm `make_move`** (16%, zobrist-heavy) + **`acc_piece`** (7%, called ~4×/
+   make — candidate to inline into make_move asm) + the gen_legal pseudo loops (21%).
+3. **order_moves** (8%): lazy/partial selection sort would skip the O(n²) tail on
+   beta cutoffs (bit-exact, same order). BLOCKED on 6502 by per-ply score storage
+   (g_score is a single shared scratch; recursion clobbers it). Needs g_score[ply]
+   (~3.5KB) — check RAM headroom before attempting.
+4. **Lighter eval** (structural): a cheaper positional eval that holds ~1800 — but
+   this CHANGES behavior (golden + Elo), so it needs re-measurement, not the
+   pure-speed gate.
 5. **Lower ship depth**: d4 (~1760, ~18min/move) is close to 1800; combined with
    the speedups it gets practical. Decide the ship depth once it's fast enough.
 
