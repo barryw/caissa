@@ -76,9 +76,7 @@ static SearchInfo g_info;
 static Move g_pool[CREF_POOL_SIZE];
 static int  g_pool_top;
 static int  g_pool_hw;                    /* high-water mark (instrumentation) */
-/* g_score/g_killer are non-static so the hand-asm order_moves can reference them
- * by symbol (the asm is built only for the 6502 image). */
-int  g_score[MAX_MOVES];                  /* order_moves scratch (transient, shared) */
+static int  g_score[MAX_MOVES];           /* order_moves scratch (transient, shared) */
 #define POOL_ROOM (CREF_POOL_SIZE - g_pool_top >= MAX_MOVES)
 
 /* Search-feature config + node budget (the A/B knobs). */
@@ -96,7 +94,7 @@ static int  g_stop;           /* set when the budget is exhausted mid-iteration 
  * term (TT move, MVV-LVA captures, killers) plus null-move + LMR; only butterfly
  * history is off. The HOST keeps the full table and the heuristic ON. */
 #define HISTORY_DIM CREF_HISTORY_DIM
-Move  g_killer[MAX_PLY][2];           /* non-static: referenced by the asm order_moves */
+static Move  g_killer[MAX_PLY][2];
 static short g_history[2][HISTORY_DIM][HISTORY_DIM]; /* [stm][from64][to64], idx64 0..63 */
 
 void search_reset_config(void) {
@@ -169,16 +167,8 @@ static int is_killer(int ply, Move m) {
 
 /* score moves for ordering, then selection-sort descending (n is small).
  * 16-bit-safe scores (cc65 int): TT 30000 > captures 10000+MVV-LVA > killers
- * 9000/8900 > history quiets 0..8000.
- *
- * Non-static + body-guarded so the 6502 image can link a hand-asm replacement
- * (native/order_moves_6502.s) while the host keeps this C body as the oracle.
- * NOTE for the asm: the bare-6502 profiles (C64/NOVA) run with g_sc.history == 0
- * (HISTORY_DIM is a 1-entry stub), so the asm need only implement the history-OFF
- * path -- quiets that are not killers score 0; it never touches g_history. */
-void order_moves(const Board *b, Move *list, int n, Move tt_move, int ply);
-#ifndef CREF_ASM_ORDER_MOVES
-void order_moves(const Board *b, Move *list, int n, Move tt_move, int ply) {
+ * 9000/8900 > history quiets 0..8000. */
+static void order_moves(const Board *b, Move *list, int n, Move tt_move, int ply) {
     int *score = g_score;
     int have_tt = (tt_move.from != tt_move.to);
     int stm = b->wtm ? 1 : 0;
@@ -209,17 +199,18 @@ void order_moves(const Board *b, Move *list, int n, Move tt_move, int ply) {
     }
     for (i = 0; i < n; i++) {
         int best = i;
-        for (j = i + 1; j < n; j++)
-            if (score[j] > score[best]) best = j;
-        if (best != i) {
-            int ts = score[i];
+        int bestval = score[i];   /* cache the running max in a register so the
+                                   * inner loop never reloads score[best] */
+        for (j = i + 1; j < n; j++) {
+            if (score[j] > bestval) { bestval = score[j]; best = j; }
+        }
+        if (best != i) {          /* bestval == score[best]; swap into front */
             Move tm;
-            score[i] = score[best]; score[best] = ts;
+            score[best] = score[i]; score[i] = bestval;
             tm = list[i]; list[i] = list[best]; list[best] = tm;
         }
     }
 }
-#endif /* !CREF_ASM_ORDER_MOVES */
 
 static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
     int check;
