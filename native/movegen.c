@@ -307,8 +307,14 @@ static Move g_pseudo[MAX_MOVES];
 
 /* Per-from-square pin flag: 1 if the piece on that 0x88 square is ABSOLUTELY
  * pinned to its own king (any move off the pin ray is illegal). Indexed by the
- * 0x88 from-square. File scope mirrors g_pseudo: gen_legal is non-recursive. */
+ * 0x88 from-square. File scope mirrors g_pseudo: gen_legal is non-recursive.
+ * Sparse-clear: only <=8 squares (one per king ray) are ever set, so instead of
+ * a 128-byte memset every call we record the set squares in g_pin_list and clear
+ * just those next call. Invariant: between calls g_pinned is nonzero ONLY at the
+ * indices listed in g_pin_list[0..g_pin_n). */
 static uint8_t g_pinned[128];
+static uint8_t g_pin_list[8];
+static int g_pin_n;
 
 /* The same 8 ray directions a queen moves: 4 orthogonal, 4 diagonal. Index 0..3
  * are orthogonal (rook-like), 4..7 are diagonal (bishop-like). A pin along an
@@ -350,7 +356,8 @@ int gen_legal(const Board *b, Move *list) {
      * is pinned iff the next occupied square on the same ray holds an enemy
      * slider that can attack along that ray (rook/queen on orthogonals,
      * bishop/queen on diagonals). */
-    for (i = 0; i < 128; i++) g_pinned[i] = 0;
+    for (i = 0; i < g_pin_n; i++) g_pinned[g_pin_list[i]] = 0;   /* clear prior set */
+    g_pin_n = 0;
     for (d = 0; d < 8; d++) {
         int delta = PIN_RAY[d];
         int diagonal = (d >= 4);
@@ -371,7 +378,7 @@ int gen_legal(const Board *b, Move *list) {
                         int pt = PT(p);
                         if (pt == PT_QUEEN ||
                             (diagonal ? pt == PT_BISHOP : pt == PT_ROOK))
-                            g_pinned[cand] = 1;
+                            { g_pinned[cand] = 1; g_pin_list[g_pin_n++] = (uint8_t)cand; }
                     }
                     break;             /* second piece blocks the ray either way */
                 }
