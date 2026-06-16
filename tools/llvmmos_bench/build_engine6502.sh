@@ -36,8 +36,15 @@ cc -O3 -w -D__mos__ -I"$NATIVE" $CORE "$NATIVE/cref.c" -o /tmp/cref_mos -lm
 echo "   built native/cref and /tmp/cref_mos"
 
 echo ">> [3/5] compile + link the 6502 image (mos-sim, full native engine + ABI driver)"
+# HAND-ASM OVERRIDE: is_square_attacked (~15% of 6502 cycles) is replaced by a
+# hand-written 6502 asm version. -DCREF_ASM_IS_SQUARE_ATTACKED #ifdef's out the
+# C body in movegen.c (only matters for movegen.c; harmless for the others), and
+# native/is_square_attacked_6502.s supplies the override symbol. The asm is
+# BIT-IDENTICAL to the C (proven by the gate: PERFT EXACT + image == cref_mos).
+# This affects ONLY the mos-sim image; the host cref/cref_mos builds keep the C.
+ASM_OVERRIDE="$NATIVE/is_square_attacked_6502.s"
 # shellcheck disable=SC2086
-"$SIMCC" -Os -I"$NATIVE" engine6502.c $CORE \
+"$SIMCC" -Os -DCREF_ASM_IS_SQUARE_ATTACKED -I"$NATIVE" engine6502.c $CORE "$ASM_OVERRIDE" \
     -o /tmp/engine6502.sim -Wl,-Map=/tmp/engine6502.map
 ls -l /tmp/engine6502.sim | awk '{print "   image:", $5, "bytes ->", $NF}'
 

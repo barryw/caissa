@@ -29,7 +29,15 @@ static const int ROOK_OFF[4]   = { -16, 16, -1, 1 };
 static const int KING_OFF[8]   = { -17, -16, -15, -1, 1, 15, 16, 17 };
 
 /* ---- is_square_attacked ------------------------------------------------- */
-/* Is square `sq` (0x88) attacked by side `by_white` (1=white, 0=black)? */
+/* Is square `sq` (0x88) attacked by side `by_white` (1=white, 0=black)?
+ *
+ * On the mos-sim 6502 image this hot function (~15% of all cycles) is replaced
+ * by a hand-written 6502 assembly version in native/is_square_attacked_6502.s,
+ * which the mos-sim build compiles with -DCREF_ASM_IS_SQUARE_ATTACKED and links
+ * in to override this C body. The asm is BIT-IDENTICAL to this C (proven by the
+ * speed_gate: PERFT EXACT + 6502 image == cref_mos). The host (clang) build
+ * never defines CREF_ASM_IS_SQUARE_ATTACKED, so it keeps and uses this C body. */
+#ifndef CREF_ASM_IS_SQUARE_ATTACKED
 int is_square_attacked(const Board *b, int sq, int by_white) {
     uint8_t color_match = by_white ? WHITE_FLAG : 0;
     int i;
@@ -113,6 +121,7 @@ int is_square_attacked(const Board *b, int sq, int by_white) {
 
     return 0;
 }
+#endif /* !CREF_ASM_IS_SQUARE_ATTACKED */
 
 /* ---- in_check ----------------------------------------------------------- */
 int in_check(const Board *b) {
