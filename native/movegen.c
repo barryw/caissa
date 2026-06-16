@@ -3,7 +3,11 @@
  * Clean-room port of standard 0x88 chess move-generation logic against this
  * project's OWN board representation (board.h). Pseudo-legal moves are emitted
  * with the exact flag/from/to/promo encoding that board.c's make_move expects,
- * then filtered to legal by make_move + king-safety check + unmake_move.
+ * then filtered to legal by a pin/check-aware test: only king moves, evasions
+ * while in check, moves of an absolutely-pinned piece, and en-passant captures
+ * can leave the king in check, so ONLY those are verified by
+ * make_move + king-safety check + unmake_move; every other move is legal
+ * directly (see gen_legal for the full argument). Same move set and order.
  *
  * Geometry recap (from board.h):
  *   index = (7 - rank)*16 + file   (a8 = 0, h1 = 119)
@@ -292,27 +296,100 @@ static int gen_pseudo(const Board *b, Move *list) {
  * recurses into itself, so a single file-scope buffer is safe. */
 static Move g_pseudo[MAX_MOVES];
 
+/* Per-from-square pin flag: 1 if the piece on that 0x88 square is ABSOLUTELY
+ * pinned to its own king (any move off the pin ray is illegal). Indexed by the
+ * 0x88 from-square. File scope mirrors g_pseudo: gen_legal is non-recursive. */
+static uint8_t g_pinned[128];
+
+/* The same 8 ray directions a queen moves: 4 orthogonal, 4 diagonal. Index 0..3
+ * are orthogonal (rook-like), 4..7 are diagonal (bishop-like). A pin along an
+ * orthogonal ray can only be made by a rook or queen; along a diagonal by a
+ * bishop or queen. */
+static const int PIN_RAY[8] = { -16, 16, -1, 1, -17, -15, 15, 17 };
+
+/* Make the fast legality test exact: a pseudo-move is illegal ONLY if
+ *   (1) it's a KING move,                          (king safety must be checked)
+ *   (2) the side to move is IN CHECK,              (evasion must resolve check)
+ *   (3) the moved piece is ABSOLUTELY PINNED,      (must stay on the pin ray)
+ *   (4) it's an EN-PASSANT capture.                (horizontal discovered check)
+ * Every other move is ALWAYS legal -- accept it directly, no make/test/unmake.
+ * For exactly the four cases above we fall back to the original
+ * make_move -> king-safety probe -> unmake_move verification, which is known
+ * correct. This preserves the EXACT legal move set and order (we iterate the
+ * same pseudo-moves in the same order; only the per-move test changes). */
 int gen_legal(const Board *b, Move *list) {
     Move *pseudo = g_pseudo;
     int np = gen_pseudo(b, pseudo);
     int n = 0;
     Board tmp;       /* make/unmake mutates; work on a local copy */
-    int i;
+    int i, d;
+    int white = b->wtm;
+    int ksq = white ? b->wk : b->bk;
+    int opp_white = white ? 0 : 1;
+    int in_chk = is_square_attacked(b, ksq, opp_white);
+    uint8_t my_color = white ? WHITE_FLAG : 0;
+
+    /* Compute the absolutely-pinned set in ONE scan of the 8 slider rays from
+     * the king. Along each ray, the first friendly piece is a pin candidate; it
+     * is pinned iff the next occupied square on the same ray holds an enemy
+     * slider that can attack along that ray (rook/queen on orthogonals,
+     * bishop/queen on diagonals). */
+    for (i = 0; i < 128; i++) g_pinned[i] = 0;
+    for (d = 0; d < 8; d++) {
+        int delta = PIN_RAY[d];
+        int diagonal = (d >= 4);
+        int t = ksq + delta;
+        int cand = -1;                 /* 0x88 square of the friendly candidate */
+        while (!OFFBOARD(t)) {
+            uint8_t p = b->sq[t];
+            if (p) {
+                if (cand < 0) {
+                    /* first piece on the ray: must be friendly to be a pin
+                     * candidate (and not the king itself, which can't be). */
+                    if ((IS_WHITE(p) ? WHITE_FLAG : 0) != my_color) break;
+                    cand = t;
+                } else {
+                    /* second piece: an enemy slider aligned with this ray pins
+                     * the candidate. */
+                    if ((IS_WHITE(p) ? WHITE_FLAG : 0) != my_color) {
+                        int pt = PT(p);
+                        if (pt == PT_QUEEN ||
+                            (diagonal ? pt == PT_BISHOP : pt == PT_ROOK))
+                            g_pinned[cand] = 1;
+                    }
+                    break;             /* second piece blocks the ray either way */
+                }
+            }
+            t += delta;
+        }
+    }
+
     tmp = *b;        /* struct assignment (cc65 rejects struct copy-INIT) */
 
     for (i = 0; i < np; i++) {
-        Move m;
-        int mover_white = tmp.wtm;
-        Undo u;
-        int ksq;
-        m = pseudo[i];
-        make_move(&tmp, m, &u);
-        /* After make_move, the side to move flipped; the mover's king must not
-         * be attacked by the now-side-to-move (the opponent). */
-        ksq = mover_white ? tmp.wk : tmp.bk;
-        if (!is_square_attacked(&tmp, ksq, mover_white ? 0 : 1))
-            list[n++] = m;
-        unmake_move(&tmp, m, &u);
+        Move m = pseudo[i];
+        int needs_test;
+        /* A move needs the make/test/unmake verification ONLY in the four cases
+         * that can leave the mover's king in check. */
+        needs_test = in_chk
+                  || (m.from == (uint8_t)ksq)        /* king move */
+                  || g_pinned[m.from]                /* pinned piece */
+                  || (m.flags & MF_EP);              /* en-passant discovery */
+        if (!needs_test) {
+            list[n++] = m;             /* provably legal -- accept directly */
+            continue;
+        }
+        {
+            Undo u;
+            int kq;
+            make_move(&tmp, m, &u);
+            /* After make_move the side to move flipped; the mover's king must
+             * not be attacked by the now-side-to-move (the opponent). */
+            kq = white ? tmp.wk : tmp.bk;
+            if (!is_square_attacked(&tmp, kq, opp_white))
+                list[n++] = m;
+            unmake_move(&tmp, m, &u);
+        }
     }
     return n;
 }
