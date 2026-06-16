@@ -303,7 +303,17 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
      * forcing line fall into quiescence early). */
     if (g_sc.check_ext && ply > 0 && ply < MAX_PLY - 4 && in_check(b)) depth++;
 
-    if (depth <= 0) return quiesce(b, alpha, beta, ply, 0);
+    if (depth <= 0) {
+        /* Quiescence never reads b->hash (no TT probe, no repetition check), so
+         * make_move can skip the zobrist update for the whole quiescence subtree.
+         * The board is net-restored on return, leaving b->hash == this node's
+         * hash. Save/restore the flag so nested calls stay correct. */
+        int qv, saved = g_make_hash;
+        g_make_hash = 0;
+        qv = quiesce(b, alpha, beta, ply, 0);
+        g_make_hash = saved;
+        return qv;
+    }
 
     /* null-move pruning: if passing the turn still fails high, prune. Skip at the
      * root, in check, near mate, and in likely-zugzwang (no non-pawn material). */

@@ -171,12 +171,15 @@ static int castle_mask(int sq, int cur) {
 }
 
 /* ---- make / unmake ------------------------------------------------------ */
+/* When 0, make_move skips the incremental zobrist update (quiescence sets this:
+ * it never reads b->hash). Default 1 = always maintain the hash. */
+int g_make_hash = 1;
+
 void make_move(Board *b, Move m, Undo *u) {
     uint8_t piece = b->sq[m.from];
     int white = IS_WHITE(piece) ? 1 : 0;
     uint8_t colorflag = white ? WHITE_FLAG : 0;
     int push = white ? -16 : 16;
-    hash_t h;
     uint8_t placed;
 
     u->castle = b->castle;
@@ -187,59 +190,43 @@ void make_move(Board *b, Move m, Undo *u) {
     u->captured = 0;
     u->cap_sq = m.to;
 
-    h = b->hash;
-    if (b->ep >= 0) h ^= Z_EP[b->ep & 7];
-    h ^= Z_CASTLE[b->castle & 15];
+    /* ---- board mutation (no hash; the zobrist update is a separate, skippable
+     * block at the end -- see g_make_hash) ---- */
 
     /* lift mover */
-    h ^= Z_PIECE[idx64_from_0x88(m.from)][pidx(piece)];
     b->sq[m.from] = 0;
 
     /* capture */
     if (m.flags & MF_EP) {
         u->cap_sq = m.to - push;        /* captured pawn sits "behind" to */
         u->captured = b->sq[u->cap_sq];
-        h ^= Z_PIECE[idx64_from_0x88(u->cap_sq)][pidx(u->captured)];
         b->sq[u->cap_sq] = 0;
     } else if (m.flags & MF_CAPTURE) {
         u->captured = b->sq[m.to];
-        h ^= Z_PIECE[idx64_from_0x88(m.to)][pidx(u->captured)];
         /* (capture of a rook on its home square clears opp rights below) */
     }
 
     /* place mover (promotion swaps type) */
     placed = (m.flags & MF_PROMO) ? (uint8_t)(m.promo | colorflag) : piece;
-    h ^= Z_PIECE[idx64_from_0x88(m.to)][pidx(placed)];
     b->sq[m.to] = placed;
     if (PT(piece) == PT_KING) { if (white) b->wk = m.to; else b->bk = m.to; }
 
     /* castling: relocate the rook */
     if (m.flags & MF_CASTLE_K) {
         int rf = m.to + 1, rt = m.to - 1;
-        uint8_t rook = b->sq[rf];
-        h ^= Z_PIECE[idx64_from_0x88(rf)][pidx(rook)];
-        h ^= Z_PIECE[idx64_from_0x88(rt)][pidx(rook)];
-        b->sq[rt] = rook; b->sq[rf] = 0;
+        b->sq[rt] = b->sq[rf]; b->sq[rf] = 0;
     } else if (m.flags & MF_CASTLE_Q) {
         int rf = m.to - 2, rt = m.to + 1;
-        uint8_t rook = b->sq[rf];
-        h ^= Z_PIECE[idx64_from_0x88(rf)][pidx(rook)];
-        h ^= Z_PIECE[idx64_from_0x88(rt)][pidx(rook)];
-        b->sq[rt] = rook; b->sq[rf] = 0;
+        b->sq[rt] = b->sq[rf]; b->sq[rf] = 0;
     }
 
     /* castle rights */
     b->castle = castle_mask(m.from, b->castle);
     b->castle = castle_mask(m.to, b->castle);
-    h ^= Z_CASTLE[b->castle & 15];
 
     /* ep square */
-    if (m.flags & MF_DOUBLE) {
-        b->ep = m.from + push;
-        h ^= Z_EP[b->ep & 7];
-    } else {
-        b->ep = -1;
-    }
+    if (m.flags & MF_DOUBLE) b->ep = m.from + push;
+    else b->ep = -1;
 
     /* halfmove clock */
     if (PT(piece) == PT_PAWN || (m.flags & (MF_CAPTURE | MF_EP)))
@@ -249,8 +236,35 @@ void make_move(Board *b, Move m, Undo *u) {
 
     if (!white) b->fullmove++;
     b->wtm ^= 1;
-    h ^= Z_SIDE;
-    b->hash = h;
+
+    /* ---- incremental zobrist, computed from the saved Undo + move locals.
+     * XOR commutes, so the order here is irrelevant -- the result is identical
+     * to the old interleaved version. SKIPPED in quiescence (g_make_hash==0),
+     * which never reads b->hash (no TT probe, no repetition check there), so
+     * ~86% of nodes avoid the ~8 32-bit table XORs. b->hash is left unchanged
+     * (== u->hash) when skipped, which unmake restores to anyway. ---- */
+    if (g_make_hash) {
+        hash_t h = u->hash;
+        if (u->ep >= 0) h ^= Z_EP[u->ep & 7];
+        h ^= Z_CASTLE[u->castle & 15];                       /* old rights out */
+        h ^= Z_PIECE[idx64_from_0x88(m.from)][pidx(piece)];  /* lift mover */
+        if (u->captured)
+            h ^= Z_PIECE[idx64_from_0x88(u->cap_sq)][pidx(u->captured)];
+        h ^= Z_PIECE[idx64_from_0x88(m.to)][pidx(placed)];   /* place mover */
+        if (m.flags & MF_CASTLE_K) {
+            uint8_t rook = (uint8_t)(PT_ROOK | colorflag);
+            h ^= Z_PIECE[idx64_from_0x88(m.to + 1)][pidx(rook)];
+            h ^= Z_PIECE[idx64_from_0x88(m.to - 1)][pidx(rook)];
+        } else if (m.flags & MF_CASTLE_Q) {
+            uint8_t rook = (uint8_t)(PT_ROOK | colorflag);
+            h ^= Z_PIECE[idx64_from_0x88(m.to - 2)][pidx(rook)];
+            h ^= Z_PIECE[idx64_from_0x88(m.to + 1)][pidx(rook)];
+        }
+        h ^= Z_CASTLE[b->castle & 15];                       /* new rights in */
+        if (m.flags & MF_DOUBLE) h ^= Z_EP[b->ep & 7];       /* new ep target */
+        h ^= Z_SIDE;
+        b->hash = h;
+    }
 
     /* incremental material+PST: stash pre-move accumulators for unmake, then
      * apply this move's delta. `piece` is the original mover (read at the top,

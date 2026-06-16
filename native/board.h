@@ -94,6 +94,7 @@ int board_from_fen(Board *b, const char *fen);
 /* Writes the FEN into out (>= 100 bytes). */
 void board_to_fen(const Board *b, char *out);
 
+extern int g_make_hash;   /* 0 -> make_move skips the zobrist update (quiescence) */
 void make_move(Board *b, Move m, Undo *u);
 void unmake_move(Board *b, Move m, const Undo *u);
 void make_null(Board *b, Undo *u);            /* pass the turn (null-move pruning) */
