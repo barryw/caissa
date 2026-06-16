@@ -39,7 +39,7 @@ Earlier session (all gate-green, Elo IDENTICAL):
 | `181f951` | eval_full bit-exact tweaks | +1% |
 | `8d6db07` | `is_square_attacked` hand-asm (6510 agent) | +6%, **asm path proven** |
 
-Latest session — **clean-C tier, all gate-green, Elo IDENTICAL** (baseline 1.0447B → **909.2M cyc/move @ d4, -13.0%**):
+Latest session — **clean-C tier, all gate-green (incl. deep d6), Elo IDENTICAL** (baseline 1.0447B → **871.4M cyc/move @ d4, -16.6%**):
 
 | commit | lever | result |
 |---|---|---|
@@ -48,8 +48,9 @@ Latest session — **clean-C tier, all gate-green, Elo IDENTICAL** (baseline 1.0
 | `4fcda38` | sparse-clear the pin table (was a 128B memset/node) | -2.3% |
 | `1388d59` | incremental material+PST accumulator (Step A+B) | eval_full -20%, **-4.3%** |
 | `94b86be` | skip egdiff term while EG PST == MG | -2.3% |
+| `64564b4` | skip zobrist in quiescence make_move (86% of nodes) | **-4.2%** |
 
-**Cumulative overall: ~2.0×** (1.82B → 909.2M cyc/move @ d4).
+**Cumulative overall: ~2.1×** (1.82B → 871.4M cyc/move @ d4).
 
 ### KEY LEARNINGS (read before re-attempting)
 - **Incremental accumulator only pays WITH eval_full using it (Step B).** make_move
@@ -64,6 +65,11 @@ Latest session — **clean-C tier, all gate-green, Elo IDENTICAL** (baseline 1.0
 - **The `tmp = *b` board-copy trick generalizes:** make/unmake is an exact
   round-trip, so any "copy board to mutate" can often run in place + unmake.
 - **Per-node memset/memcpy is a smell** — gen_legal had both; both gone now.
+- **Quiescence (86% of nodes) doesn't read `b->hash`** (no TT, no repetition) — so
+  make_move skips the whole zobrist update there (a flag + the hash factored into
+  one end-of-function block). Same idea may extend to other per-node work that
+  quiescence computes but never reads. ALWAYS verify "unused in quiescence" against
+  the actual quiesce() body; the golden gate (TT-key-dependent) catches mistakes.
 
 ## THE REGRESSION GATE — run before/after every change
 
