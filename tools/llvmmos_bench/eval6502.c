@@ -7,7 +7,7 @@
  * (tools/texel_eval.py eval_full) over the entire 22157-position texel corpus.
  * It is the bit-exact safety net the future asm eval is held to.
  *
- * Mirrors engine6502.c's ABI/handshake exactly, except the work function calls
+ * Mirrors caissa.c's ABI/handshake exactly, except the work function calls
  * eval_full instead of search, and publishes a single result: g_score = eval.
  *
  * ===========================================================================

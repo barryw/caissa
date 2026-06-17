@@ -49,8 +49,8 @@ test: `test/test_api.c`. Cross-toolchain embedding: `apps/c64/caissa_abi.c`.
 ## Build + measurement (`tools/`)
 - `tools/build_c64.sh` — build the C64 `chess.prg` (llvm-mos `mos-c64-clang` + asm).
 - `tools/llvmmos_bench/` — the 6502 build + fidelity/speed rig:
-  - `build_engine6502.sh` — compile the C engine to a mos-sim 6502 image
-    (`engine6502.sim`) with the asm hot paths; validate move-for-move vs the
+  - `build_caissa.sh` — compile the C engine to a mos-sim 6502 image
+    (`caissa.sim`) with the asm hot paths; validate move-for-move vs the
     matched-config host oracle (`/tmp/cref_mos`).
   - `speed_gate.sh` (`make gate`) — the regression gate: PERFT EXACT, eval
     22157/22157, golden search moves, 6502 image == host, and reports cyc/move.

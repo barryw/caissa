@@ -59,7 +59,7 @@ blob in `apps/c64/caissa_abi.c`.
   then tune the engine against it.
 
 ## Measurement harness
-The 6502 build + fidelity/speed gate live in `tools/llvmmos_bench/` (`build_engine6502.sh`,
+The 6502 build + fidelity/speed gate live in `tools/llvmmos_bench/` (`build_caissa.sh`,
 `speed_gate.sh`, the `validate` FEN→move runner). The Colossus match harness drives the
 real Colossus 4.0 inside a **headless VICE** core (accurate by construction) and plays it
 against the engine; `docs/colossus.md` has the details. (The legacy Stockfish strength/Elo

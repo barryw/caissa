@@ -81,8 +81,8 @@ positions whose shared feature localizes the bug. This makes a 35-term asm debug
 ## Staging plan
 1. **Build the asm-eval validator first** (~half a session): a 6502 image entry
    "eval this FEN → int score", run over the 22157 corpus, diff each score vs C
-   `eval_full`. Mirror `engine6502.c`'s driver. Without this, debugging is infeasible.
-   (The existing `build_engine6502.sh` + texel corpus give most of the plumbing.)
+   `eval_full`. Mirror `caissa.c`'s driver. Without this, debugging is infeasible.
+   (The existing `build_caissa.sh` + texel corpus give most of the plumbing.)
 2. **Implement the monolith, validate via per-position diff.** Implement all terms,
    then iterate against the 22157 oracle; mismatching positions bisect to the buggy
    term. Term-group order: (a) main-loop pressure/outpost/advanced, (b) mobility +

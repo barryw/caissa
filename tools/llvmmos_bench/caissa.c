@@ -1,4 +1,4 @@
-/* engine6502.c -- 6502-side "bestmove" driver for the NATIVE C chess engine,
+/* caissa.c -- 6502-side "bestmove" driver for the NATIVE C chess engine,
  * compiled+linked with native/{board,movegen,eval,search}.c via llvm-mos
  * (mos-sim target) and run inside tools/fast6502_bridge/cpu6502.
  *

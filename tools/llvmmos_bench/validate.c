@@ -1,12 +1,12 @@
-/* validate.c -- drive the llvm-mos 6502 "bestmove" image (engine6502.sim) inside
+/* validate.c -- drive the llvm-mos 6502 "bestmove" image (caissa.sim) inside
  * the cycle-exact fast6502 core and compare its chosen move, move-for-move, to
  * the host reference engine (native/cref bestmove).
  *
  * This is the VALIDATION GATE for "native C chess engine, running on a real 6502,
- * computes the same best move as the host." See engine6502.c for the memory ABI.
+ * computes the same best move as the host." See caissa.c for the memory ABI.
  *
- * Flow per FEN (handshake described in engine6502.c):
- *   1. load engine6502.sim chunks into the 6502's flat 64K, PC <- reset vector
+ * Flow per FEN (handshake described in caissa.c):
+ *   1. load caissa.sim chunks into the 6502's flat 64K, PC <- reset vector
  *   2. run until the sim putchar register == SIM_READY (main() is ready)
  *   3. write the FEN string into g_fen[], the depth into g_depth, set g_go = 1
  *   4. run until the sim exit register is written (main returned) or g_done == 1
@@ -16,7 +16,7 @@
  * that relocates symbols stays correct with no edits here.
  *
  * Build: cc -O2 validate.c ../fast6502_bridge/cpu6502.c -o validate
- * Run:   ./validate engine6502.sim engine6502.map <fenlist> <depth> [oracle]
+ * Run:   ./validate caissa.sim caissa.map <fenlist> <depth> [oracle]
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -181,7 +181,7 @@ int main(int argc, char **argv) {
 
     if (argc < 5) {
         fprintf(stderr,
-          "usage: %s engine6502.sim engine6502.map fenlist.txt depth [oracle=../../build/cref]\n",
+          "usage: %s caissa.sim caissa.map fenlist.txt depth [oracle=../../build/cref]\n",
           argv[0]);
         return 2;
     }

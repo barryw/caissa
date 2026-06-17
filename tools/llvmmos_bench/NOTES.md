@@ -134,7 +134,7 @@ tools/llvmmos_bench/build_and_run.sh
 
 # Validated bestmove-on-6502 program (the measurable artifact)
 
-`engine6502.c` links the **full** native engine (board + movegen + full eval +
+`caissa.c` links the **full** native engine (board + movegen + full eval +
 alpha-beta + TT + quiescence + killers + null-move + LMR) for the `mos-sim`
 target and computes a best move for any FEN, **validated move-for-move against the
 host reference engine** inside the cycle-exact fast6502 core (`validate.c`).
@@ -142,12 +142,12 @@ host reference engine** inside the cycle-exact fast6502 core (`validate.c`).
 ## One command to rebuild + validate
 
 ```
-tools/llvmmos_bench/build_engine6502.sh [DEPTH=4] [FENLIST]
+tools/llvmmos_bench/build_caissa.sh [DEPTH=4] [FENLIST]
 ```
 
 It (1) re-runs the host gates, (2) builds `native/cref` (canonical, TT16) and
 `/tmp/cref_mos` (the host engine in the **exact 6502 config**, `-D__mos__`), (3)
-links `/tmp/engine6502.sim`, (4) builds the validator, (5) reports N/N best moves
+links `/tmp/caissa.sim`, (4) builds the validator, (5) reports N/N best moves
 identical to the matched-config oracle.
 
 ## Validation result (the whole point)
@@ -222,5 +222,5 @@ all host gates stay green**:
 6. `MAX_PATH 64` on 6502 (host 1024): the tool searches a single position with no
    game history, so the repetition stack only holds the search path (<= MAX_PLY).
 
-Everything else lives under `tools/llvmmos_bench/` (`engine6502.c`, `validate.c`,
-`build_engine6502.sh`).
+Everything else lives under `tools/llvmmos_bench/` (`caissa.c`, `validate.c`,
+`build_caissa.sh`).

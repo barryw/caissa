@@ -1,5 +1,5 @@
 # build artifacts
-engine6502_cli
+caissa_cli
 validate
 run_sim
 *.o

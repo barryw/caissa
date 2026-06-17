@@ -1,12 +1,12 @@
 /* profile6502.c -- PC-sampling profiler for the llvm-mos 6502 chess image.
  *
- * Runs a bestmove search on the engine6502.sim image inside the cycle-exact
+ * Runs a bestmove search on the caissa.sim image inside the cycle-exact
  * fast6502 core, samples the program counter every SAMPLE_EVERY cycles, and
  * attributes samples to functions parsed from the linker .map. Tells us where
  * the cycles actually go so the speed campaign optimizes the right thing.
  *
  * Build: cc -O2 profile6502.c ../fast6502_bridge/cpu6502.c -o profile6502
- * Run:   ./profile6502 /tmp/engine6502.sim /tmp/engine6502.map "FEN" DEPTH
+ * Run:   ./profile6502 /tmp/caissa.sim /tmp/caissa.map "FEN" DEPTH
  */
 #include <stdio.h>
 #include <stdlib.h>

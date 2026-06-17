@@ -1,17 +1,17 @@
-/* engine6502_cli.c -- cref-compatible CLI over the REAL llvm-mos 6502 image.
+/* caissa_cli.c -- cref-compatible CLI over the REAL llvm-mos 6502 image.
  *
- * Drives /tmp/engine6502.sim (the native C engine compiled to 6502, in its
+ * Drives /tmp/caissa.sim (the native C engine compiled to 6502, in its
  * exact on-chip RAM config) inside the cycle-exact fast6502 core and prints a
  * move in the SAME format as `native/cref bestmove`, so existing tooling
  * (tools/native_vs_stockfish.py via NATIVE_CREF=...) measures the ACTUAL 6502
  * binary vs Stockfish -- the definitive on-chip strength, not a host proxy.
  *
- *   engine6502_cli bestmove "FEN" DEPTH   -> "bestmove <uci> score 0 depth D ..."
+ *   caissa_cli bestmove "FEN" DEPTH   -> "bestmove <uci> score 0 depth D ..."
  *
- * Image/map paths default to /tmp/engine6502.{sim,map}; override with
+ * Image/map paths default to /tmp/caissa.{sim,map}; override with
  * ENGINE6502_SIM / ENGINE6502_MAP env vars.
  *
- * Build: cc -O2 engine6502_cli.c ../fast6502_bridge/cpu6502.c -o engine6502_cli
+ * Build: cc -O2 caissa_cli.c ../fast6502_bridge/cpu6502.c -o caissa_cli
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -102,8 +102,8 @@ static int run_bestmove(const char *fen, unsigned char depth, char *uci, int *st
 
 int main(int argc, char **argv) {
     const char *sim = getenv("ENGINE6502_SIM"); const char *map = getenv("ENGINE6502_MAP");
-    if (!sim) sim = "/tmp/engine6502.sim";
-    if (!map) map = "/tmp/engine6502.map";
+    if (!sim) sim = "/tmp/caissa.sim";
+    if (!map) map = "/tmp/caissa.map";
     if (argc < 4 || strcmp(argv[1], "bestmove") != 0) {
         fprintf(stderr, "usage: %s bestmove \"FEN\" DEPTH\n", argv[0]); return 2;
     }

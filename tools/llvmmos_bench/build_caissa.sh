@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# build_engine6502.sh -- build the validated NATIVE-C-on-6502 "bestmove" program
+# build_caissa.sh -- build the validated NATIVE-C-on-6502 "bestmove" program
 # and validate it move-for-move against the host reference engine.
 #
 # Produces:
-#   /tmp/engine6502.sim   -- the mos-sim 6502 image (native engine + ABI driver)
-#   /tmp/engine6502.map   -- linker map (ABI symbol addresses; read by validate)
+#   /tmp/caissa.sim   -- the mos-sim 6502 image (native engine + ABI driver)
+#   /tmp/caissa.map   -- linker map (ABI symbol addresses; read by validate)
 #   native/cref           -- canonical host engine (TT16, history on)
 #   /tmp/cref_mos          -- host engine built in the EXACT 6502 config (-D__mos__:
 #                            TT8, MAX_PLY=7, history off) = the matched-config oracle
@@ -15,7 +15,7 @@
 # Prereqs: the one-time llvm-mos toolchain setup in NOTES.md (compiler at
 # ~/Git/llvm-mos/build, mos-sim-clang driver, compiler-rt builtins, llvm-mos-sdk).
 #
-# Usage: ./build_engine6502.sh [DEPTH=4] [FENLIST]
+# Usage: ./build_caissa.sh [DEPTH=4] [FENLIST]
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
@@ -45,9 +45,9 @@ echo ">> [3/5] compile + link the 6502 image (mos-sim, full native engine + ABI 
 # This affects ONLY the mos-sim image; the host cref/cref_mos builds keep the C.
 ASM_OVERRIDE="$NATIVE/is_square_attacked_6502.s $NATIVE/unmake_move_6502.s $NATIVE/make_move_6502.s $NATIVE/gen_pseudo_6502.s $NATIVE/gen_legal_6502.s $NATIVE/eval_full_6502.s"
 # shellcheck disable=SC2086
-"$SIMCC" -Os -DCREF_ASM_IS_SQUARE_ATTACKED -DCREF_ASM_UNMAKE_MOVE -DCREF_ASM_MAKE_MOVE -DCREF_ASM_GEN_PSEUDO -DCREF_ASM_GEN_LEGAL -DCREF_ASM_EVAL_FULL -I"$NATIVE" engine6502.c $CORE $ASM_OVERRIDE \
-    -o /tmp/engine6502.sim -Wl,-Map=/tmp/engine6502.map
-ls -l /tmp/engine6502.sim | awk '{print "   image:", $5, "bytes ->", $NF}'
+"$SIMCC" -Os -DCREF_ASM_IS_SQUARE_ATTACKED -DCREF_ASM_UNMAKE_MOVE -DCREF_ASM_MAKE_MOVE -DCREF_ASM_GEN_PSEUDO -DCREF_ASM_GEN_LEGAL -DCREF_ASM_EVAL_FULL -I"$NATIVE" caissa.c $CORE $ASM_OVERRIDE \
+    -o /tmp/caissa.sim -Wl,-Map=/tmp/caissa.map
+ls -l /tmp/caissa.sim | awk '{print "   image:", $5, "bytes ->", $NF}'
 
 echo ">> [4/5] build host harness (cpu6502 cycle-exact runner + validator)"
 cc -O2 -o /tmp/validate validate.c ../fast6502_bridge/cpu6502.c
@@ -73,4 +73,4 @@ for f in fens:
 open(out, "w").write("\n".join(uniq[:30]) + "\n")
 PY
 fi
-/tmp/validate /tmp/engine6502.sim /tmp/engine6502.map "$FENLIST" "$DEPTH" /tmp/cref_mos
+/tmp/validate /tmp/caissa.sim /tmp/caissa.map "$FENLIST" "$DEPTH" /tmp/cref_mos

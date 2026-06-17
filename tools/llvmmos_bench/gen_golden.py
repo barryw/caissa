@@ -7,7 +7,7 @@ MAX_PLY=7, history off) best move at d4 and d6 over regression_fens.txt. The
 golden mismatch == a real behavior change.
 
 Run this to RE-BLESS golden ONLY after an INTENTIONAL behavior change (then
-re-measure Elo: NATIVE_CREF=tools/llvmmos_bench/engine6502_cli
+re-measure Elo: NATIVE_CREF=tools/llvmmos_bench/caissa_cli
 python3 tools/native_vs_stockfish.py --native-depth 6 --sf-elo 1700 ...).
 
 Prereq: native/cref_mos built
