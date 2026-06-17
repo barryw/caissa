@@ -7,7 +7,7 @@
 ; tapered-blend guard, the tempo term, and the final 16-bit wrap.
 ;
 ; TERM HELPER STATUS (the per-piece + advanced_pawn positional terms):
-;   INLINE asm (groups a + b + c, bit-exact 22157/22157):
+;   INLINE asm (groups a + b + c + d, bit-exact 22157/22157):
 ;     advanced_pawn, pawn_pressure, knight_outpost, queen_pressure,
 ;     minor_pressure   (+ their inlined probes: check_white/black_pawn_at,
 ;     is_pawn_attacked, is_knight_attacked, is_bishop_attacked, is_queen_attacked),
@@ -17,9 +17,14 @@
 ;       connected/protected/blockaded passer, rook-behind-passer, rook open/
 ;       semi-open file; + inlined helpers white/black_passed, white/black_
 ;       connected, white/black_protected, white/black_blockaded, white/black_
-;       rook_behind)
+;       rook_behind),
+;     king_pins  (group d: pins_from_king pin ray-scan + pinned_attack_pressure,
+;       reusing is_pawn_attacked / is_knight_attacked),
+;     king_safety (group d: single_king_safety SIGNED-BYTE accumulation then x10;
+;       + inlined add8s/sub8s/byte_x10, king_zone_pressure, white/black_file_
+;       exposure, penalize_white/black_file)
 ;   still jsr-to-C (the tail, later sessions):
-;     bishop_pair, king_pins, king_safety, endgame,
+;     bishop_pair, endgame,
 ;     king_attack_escalation, pawn_storm, queen_attacks_minor
 ; The jsr'd helpers keep external linkage via EVAL_HELPER (eval.c) when
 ; CREF_ASM_EVAL_FULL is defined; the validator stays 22157/22157 the whole way
@@ -110,8 +115,19 @@
 ;     +58   int heavy_seventh_rank   (field 29)
 ;     +60   int endgame_nonpawn_limit
 ;     +68   int passed_pawn_bonus[8] (field 34; entry = base + row*2, full 16-bit)
+;     +34   int pinned_attacked      (field 17; used by pinned_attack_pressure)
+;     +84   int castled              (field 42)  -- king_safety (group d)
+;     +86   int pawn_shield          (field 43)
+;     +88   int open_file_penalty    (field 44)
+;     +90   int semi_open_file_penalty (field 45)
+;     +92   int king_center          (field 46)
+;     +94   int king_march_base      (field 47)  -- march pen = (advanced<<3)+base
+;     +96   int king_march_step      (field 48)  -- NOT USED (march uses literal <<3)
+;     +98   int king_zone_attack     (field 49)  -- king_zone_pressure penalty
 ;     +100  int tempo
 ;     +102  int trapped_penalty      (field 51)
+;   ET_PINNED int[7] (externalized via EVAL_DATA): read live as
+;     ET_PINNED + candidate_type*2 (full 16-bit) by pins_from_king.
 ;
 ;   ASSEMBLER QUIRK (llvm-mos integrated as): `#<(-N)` mis-assembles to `#N`
 ;   (the negation is dropped: <(-0x10) -> 0x10, NOT 0xF0). Pre-existing group-(a)
@@ -153,6 +169,7 @@
 	.globl	ET_PAWN_ATTACK
 	.globl	ET_QUEEN_ATTACK
 	.globl	ET_MINOR_ATTACK
+	.globl	ET_PINNED          ; int[7]; read live as ET_PINNED + candidate_type*2
 
 ; ---- C constants (board.h / eval.c) ----------------------------------------
 EMPTY       = 0
@@ -205,6 +222,14 @@ W_ROOK_SEMI_OPEN_FILE   = 56      ; field 28
 W_HEAVY_SEVENTH_RANK    = 58
 W_ENDGAME_NONPAWN_LIMIT = 60
 W_PASSED_PAWN_BONUS     = 68      ; int[8] base (field 34); entry = base + row*2
+W_PINNED_ATTACKED       = 34      ; field 17 (confirmed via offsetof probe)
+W_CASTLED               = 84      ; field 42
+W_PAWN_SHIELD           = 86      ; field 43
+W_OPEN_FILE_PENALTY     = 88      ; field 44
+W_SEMI_OPEN_FILE_PENALTY= 90      ; field 45
+W_KING_CENTER           = 92      ; field 46
+W_KING_MARCH_BASE       = 94      ; field 47 (king_march_step@96 is NOT used)
+W_KING_ZONE_ATTACK      = 98      ; field 49
 W_TEMPO                 = 100
 W_TRAPPED_PENALTY       = 102
 
@@ -234,6 +259,9 @@ KNIGHT_OFFS:   .byte 0xDF,0xE1,0xEE,0xF2,0x0E,0x12,0x1F,0x21   ; KNIGHT_OFFSETS[
 DIAG_OFFS:     .byte 0xEF,0xF1,0x0F,0x11                       ; DIAGONAL_OFFSETS[4]
 ORTHO_OFFS:    .byte 0xF0,0x10,0xFF,0x01                       ; ORTHOGONAL_OFFSETS[4]
 ALLDIR_OFFS:   .byte 0xEF,0xF0,0xF1,0xFF,0x01,0x0F,0x10,0x11   ; ALL_DIRECTION_OFFSETS[8]
+; PIN_SLIDER_TYPES[8] (eval.c 147): BISHOP_T(3) for diagonal dirs {0,2,5,7},
+; ROOK_T(4) for orthogonal dirs {1,3,4,6}. Index matches ALLDIR_OFFS.
+PINSLIDE:      .byte 3,4,3,4,4,3,4,3                            ; PIN_SLIDER_TYPES[8]
 
 ; ============================================================================
 ; .bss  --  persistent eval state (eval_full is non-recursive: static buffers).
@@ -255,6 +283,23 @@ PSF:      .zero  1           ; doubled/isolated file loop index f (0..7)
 PSX:      .zero  1           ; pawn_structure board-walk index x (0..127)
 PSFILE:   .zero  1           ; current pawn's file (x & 7)
 PSROW:    .zero  1           ; current pawn's row  (x >> 4, 0..7)
+; ---- king_pins / king_safety inline scratch (term group d) -----------------
+KP_KSQ:   .zero  1           ; pins_from_king: king_sq (low byte; idx)
+KP_KCOL:  .zero  1           ; pins_from_king: king_color (0 or 0x80)
+KP_D:     .zero  1           ; pins_from_king: direction index d (0..7)
+KP_RAY:   .zero  1           ; pins_from_king: ray index (low byte)
+KP_CSQ:   .zero  1           ; pins_from_king: candidate_sq
+KP_CTYPE: .zero  1           ; pins_from_king: candidate_type (0 = none yet)
+KS_S:     .zero  1           ; single_king_safety: signed-byte accumulator s
+KS_KSQ:   .zero  1           ; single_king_safety: king_sq
+KS_FILE:  .zero  1           ; single_king_safety: file (king_sq & 7)
+KS_ROW:   .zero  1           ; single_king_safety: row  (king_sq >> 4)
+KS_ACOL:  .zero  1           ; king_zone_pressure: attacker_color
+KS_KZK:   .zero  1           ; king_zone_pressure: king_sq (separate from KS_KSQ)
+KS_D:     .zero  1           ; king_zone_pressure: direction index d
+KS_RAY:   .zero  1           ; king_zone_pressure: ray index
+KS_I:     .zero  1           ; king_zone_pressure: knight offset index i
+EXF:      .zero  1           ; file_exposure: file argument f to penalize_*_file
 
 	.section	.text.eval_full,"ax",@progbits
 	.type	eval_full,@function
@@ -717,10 +762,9 @@ eval_full:
 	jsr	endgame
 	jmp	.Ltail_done
 .Ltail_notend:
-	jsr	.Lset_e_ptr
-	jsr	king_pins
-	jsr	.Lset_e_ptr
-	jsr	king_safety
+; king_pins(&e); king_safety(&e)  [INLINE, term group (d)]
+	jsr	.Ls_king_pins
+	jsr	.Ls_king_safety
 .Ltail_done:
 
 ; ============================================================================
@@ -2095,6 +2139,707 @@ eval_full:
 	rts
 .Lbrb_no:
 	lda	#0
+	rts
+
+; ============================================================================
+; TERM GROUP (d): king_pins + king_safety (eval.c 790-1035). Fully INLINE.
+;   king_pins -> pins_from_king (pin ray-scan, 16-bit score +/-).
+;   king_safety -> single_king_safety (SIGNED-BYTE accumulator) -> byte_x10.
+; All take state from .bss; require __rc2/3 = BPTR for board reads. They reuse
+; .Ls_pawn_attacked / .Ls_knight_attacked (which read WALKX/CURCOL/CURPT and
+; need __rc2/3 = BPTR) by staging args into WALKX/CURCOL/CURPT (all dead now,
+; post-walk). e.score is the live uint16 accumulator at E_BUF+E_SCORE.
+; ============================================================================
+
+; ----------------------------------------------------------------------------
+; .Ls_king_pins -- king_pins(e). eval.c 839-842.
+;   pins_from_king(e, e.wk, WHITE_COLOR); pins_from_king(e, e.bk, 0).
+;   e.wk / e.bk are 16-bit ints but king squares are 0..119 so the low byte is
+;   the index (the C add8/board-index path only uses the low byte). Set KP_KSQ /
+;   KP_KCOL and call .Ls_pins_from_king.
+; ----------------------------------------------------------------------------
+.Ls_king_pins:
+; pins_from_king(e, e.wk, WHITE_COLOR)
+	lda	E_BUF + E_WK
+	sta	KP_KSQ
+	lda	#WHITE_COLOR
+	sta	KP_KCOL
+	jsr	.Ls_pins_from_king
+; pins_from_king(e, e.bk, 0)
+	lda	E_BUF + E_BK
+	sta	KP_KSQ
+	lda	#0
+	sta	KP_KCOL
+	jmp	.Ls_pins_from_king   ; tail-call (rts)
+
+; ----------------------------------------------------------------------------
+; .Ls_pins_from_king -- pins_from_king(e, KP_KSQ, KP_KCOL). eval.c 797-837.
+;   for d=0..7: delta=ALLDIR_OFFS[d]; ray=king_sq; candidate_type=0; candidate_sq=0;
+;     ray-step loop (add8, offboard break, EMPTY continue):
+;       first occupied (candidate_type==0): must be friendly non-king ->
+;         set candidate_sq, candidate_type=t; t==KING_T -> break (no candidate);
+;         (p&0x80)!=king_color -> break.
+;       second occupied: must be enemy aligned slider:
+;         (p&0x80)==king_color -> break; t=p&7;
+;         if t!=QUEEN_T && PIN_SLIDER_TYPES[d]!=t -> break;
+;         pen=ET_PINNED[candidate_type]; if pen==0 break;
+;         king_color ? score-=pen : score+=pen;
+;         pinned_attack_pressure(king_color, candidate_type, candidate_sq);
+;         break.
+;   Requires __rc2/3 = BPTR. Uses A/X/Y, __rc8 (delta), KP_* scratch.
+; ----------------------------------------------------------------------------
+.Ls_pins_from_king:
+; __rc2/3 = BPTR (board base for (zp),Y reads).
+	lda	BPTR
+	sta	__rc2
+	lda	BPTR+1
+	sta	__rc3
+	lda	#0
+	sta	KP_D                 ; d = 0
+.Lpfk_dir:
+; ray = king_sq; candidate_type = 0; candidate_sq = 0 (csq need not be init: only
+; read after candidate_type set, but match C: leave it -- we always set it before
+; the second-occupied branch reads it).
+	lda	KP_KSQ
+	sta	KP_RAY
+	lda	#0
+	sta	KP_CTYPE
+.Lpfk_step:
+; ray = add8(ray, delta);  delta = ALLDIR_OFFS[d] (re-read each step: cheap, and
+; survives any clobber from pinned_attack_pressure on the apply path).
+	ldx	KP_D
+	lda	ALLDIR_OFFS, x
+	clc
+	adc	KP_RAY
+	sta	KP_RAY               ; ray (low byte)
+; if (ray & 0x88) break;
+	and	#OFFBOARD_MASK
+	beq	.Lpfk_onboard
+	jmp	.Lpfk_dir_done       ; offboard -> break this direction
+.Lpfk_onboard:
+; piece = b[ray]; if (piece == EMPTY) continue;
+	ldy	KP_RAY
+	lda	(__rc2),y            ; A = piece
+	bne	.Lpfk_occ
+	jmp	.Lpfk_step           ; EMPTY -> continue ray
+.Lpfk_occ:
+; A = piece. branch on candidate_type==0 (first occupied) vs else (second).
+	sta	__rc8                ; __rc8 = piece (preserve across compares)
+	lda	KP_CTYPE
+	bne	.Lpfk_second         ; candidate_type != 0 -> second-occupied branch
+; ---- first occupied: must be friendly non-king ----
+; if ((piece & WHITE_COLOR) != king_color) break;
+	lda	__rc8
+	and	#WHITE_COLOR
+	cmp	KP_KCOL
+	beq	.Lpfk_first_friendly
+	jmp	.Lpfk_dir_done       ; enemy first -> break (no pin this direction)
+.Lpfk_first_friendly:
+; candidate_sq = ray; t = piece & 7; if (t == KING_T) break; candidate_type = t; continue;
+	lda	KP_RAY
+	sta	KP_CSQ
+	lda	__rc8
+	and	#0x07
+	cmp	#PT_KING
+	bne	.Lpfk_first_setcand
+	jmp	.Lpfk_dir_done       ; first occupied is the king itself -> break
+.Lpfk_first_setcand:
+	sta	KP_CTYPE             ; candidate_type = t (1..5)
+	jmp	.Lpfk_step           ; continue ray scan
+; ---- second occupied: enemy aligned slider? ----
+.Lpfk_second:
+; if ((piece & WHITE_COLOR) == king_color) break;
+	lda	__rc8
+	and	#WHITE_COLOR
+	cmp	KP_KCOL
+	bne	.Lpfk_second_enemy
+	jmp	.Lpfk_dir_done       ; friendly blocker -> break
+.Lpfk_second_enemy:
+; t = piece & 7;
+	lda	__rc8
+	and	#0x07
+	tax                          ; X = t (preserve t for slider-type compare)
+	cpx	#PT_QUEEN
+	beq	.Lpfk_aligned        ; t == QUEEN_T -> always aligned
+; if (PIN_SLIDER_TYPES[d] != t) break;
+	ldy	KP_D
+	lda	PINSLIDE, y
+	stx	__rc9                ; __rc9 = t
+	cmp	__rc9
+	beq	.Lpfk_aligned
+	jmp	.Lpfk_dir_done       ; wrong slider type for this direction -> break
+.Lpfk_aligned:
+; pen = ET_PINNED[candidate_type] (16-bit); if (pen == 0) break;
+	lda	KP_CTYPE
+	asl	a                    ; candidate_type * 2
+	tay
+	lda	ET_PINNED, y         ; pen lo
+	sta	__rc10
+	iny
+	lda	ET_PINNED, y         ; pen hi
+	sta	__rc11
+	lda	__rc10
+	ora	__rc11
+	bne	.Lpfk_pen_nz
+	jmp	.Lpfk_dir_done       ; pen == 0 -> break
+.Lpfk_pen_nz:
+; if (king_color) e.score -= pen; else e.score += pen.
+	lda	__rc10               ; A = pen lo
+	ldx	__rc11               ; X = pen hi
+	ldy	KP_KCOL
+	beq	.Lpfk_score_add      ; king_color == 0 -> add
+	jsr	.Ls_score_subAX      ; king_color != 0 -> subtract
+	jmp	.Lpfk_pressure
+.Lpfk_score_add:
+	jsr	.Ls_score_addAX
+.Lpfk_pressure:
+; pinned_attack_pressure(e, king_color, candidate_type, candidate_sq).
+	jsr	.Ls_pinned_attack_pressure
+	jmp	.Lpfk_dir_done       ; break after applying
+
+.Lpfk_dir_done:
+; d++; while (d < 8)
+	inc	KP_D
+	lda	KP_D
+	cmp	#8
+	bcs	.Lpfk_ret
+	jmp	.Lpfk_dir
+.Lpfk_ret:
+	rts
+
+; ----------------------------------------------------------------------------
+; .Ls_pinned_attack_pressure -- pinned_attack_pressure(e, pinned_color=KP_KCOL,
+;   ptype=KP_CTYPE, sq=KP_CSQ). eval.c 790-795.
+;   if (is_pawn_attacked(sq,pinned_color,ptype) || is_knight_attacked(sq,pinned_color)):
+;       if (pinned_color) e.score -= g_w.pinned_attacked; else += .
+;   REUSES .Ls_pawn_attacked / .Ls_knight_attacked, which read sq from WALKX,
+;   color from CURCOL, ptype from CURPT, and need __rc2/3 = BPTR. We stage those
+;   .bss slots (all dead post-walk) and restore __rc2/3 = BPTR (the score helpers
+;   above don't touch it, but be defensive).
+;   Requires __rc2/3 = BPTR on entry (caller keeps it). Uses A/X/Y, __rc8/9.
+; ----------------------------------------------------------------------------
+.Ls_pinned_attack_pressure:
+; stage probe args: WALKX=sq, CURCOL=pinned_color, CURPT=ptype.
+	lda	KP_CSQ
+	sta	WALKX
+	lda	KP_KCOL
+	sta	CURCOL
+	lda	KP_CTYPE
+	sta	CURPT
+; __rc2/3 = BPTR (probes do (zp),Y board reads).
+	lda	BPTR
+	sta	__rc2
+	lda	BPTR+1
+	sta	__rc3
+; if (is_pawn_attacked(...)) -> apply
+	jsr	.Ls_pawn_attacked
+	bne	.Lpap_apply
+; else if (is_knight_attacked(...)) -> apply  (note: re-set __rc2/3 unchanged;
+; .Ls_pawn_attacked preserves __rc2/3, so still BPTR.)
+	jsr	.Ls_knight_attacked
+	bne	.Lpap_apply
+	rts                          ; neither -> nothing
+.Lpap_apply:
+; if (pinned_color) e.score -= g_w.pinned_attacked; else += .
+	lda	g_w + W_PINNED_ATTACKED
+	ldx	g_w + W_PINNED_ATTACKED + 1
+	ldy	KP_KCOL              ; pinned_color (== king_color)
+	beq	.Lpap_add            ; pinned_color == 0 -> add
+	jmp	.Ls_score_subAX      ; pinned_color != 0 -> subtract (tail rts)
+.Lpap_add:
+	jmp	.Ls_score_addAX      ; tail-call (rts)
+
+; ----------------------------------------------------------------------------
+; SIGNED-BYTE accumulator helpers for king_safety. KS_S is a RAW BYTE holding
+; the two's-complement of the signed accumulator s. eval.c add8s/sub8s (384-391)
+; compute r=(s+/-v)&0xFF then re-range to [-128,127]; the BYTE REPRESENTATION of
+; that re-ranged value is exactly ((s +/- v) & 0xFF), and because mod-256 add/sub
+; only depends on the low byte of v, we add/subtract just the LOW byte of the
+; (16-bit) weight. Bit-exact. A holds v_low on entry; clobbers A (and __rc8 sub).
+; ----------------------------------------------------------------------------
+.Ls_s_add:
+	clc
+	adc	KS_S
+	sta	KS_S
+	rts
+.Ls_s_sub:
+	sta	__rc8                ; v_low
+	lda	KS_S
+	sec
+	sbc	__rc8
+	sta	KS_S
+	rts
+
+; ----------------------------------------------------------------------------
+; .Ls_byte_x10 -- byte_x10(KS_S). eval.c 392.
+;   x = (signed) KS_S sign-extended to 16-bit; result = x*10 = (x<<1)+(x<<3),
+;   16-bit two's-complement (wraps mod 2^16). Returns A=lo, X=hi.
+;   Scratch: __rc8/9 (x16 / t2), __rc10/11 (t8). Uses A/X/Y.
+; ----------------------------------------------------------------------------
+.Ls_byte_x10:
+; x16 -> __rc8 (lo) / __rc9 (hi = sign extension).
+; CRITICAL: branch on the N flag from `lda KS_S` BEFORE any flag-clobbering
+; instruction. `sta` preserves flags but `ldx #imm` sets N from the immediate,
+; so we must take the sign branch immediately after the load.
+	lda	KS_S
+	sta	__rc8
+	bpl	.Lbx_pos             ; KS_S bit7 clear -> non-negative -> hi = 0
+	lda	#0xFF
+	sta	__rc9                ; negative -> hi = 0xFF
+	jmp	.Lbx_have_hi
+.Lbx_pos:
+	lda	#0
+	sta	__rc9                ; hi = 0
+.Lbx_have_hi:
+; t8 = x16 << 3 -> __rc10/11
+	lda	__rc8
+	sta	__rc10
+	lda	__rc9
+	sta	__rc11
+	asl	__rc10
+	rol	__rc11               ; x2
+	asl	__rc10
+	rol	__rc11               ; x4
+	asl	__rc10
+	rol	__rc11               ; x8
+; t2 = x16 << 1 -> __rc8/9 (in place)
+	asl	__rc8
+	rol	__rc9                ; x2
+; result = t2 + t8 -> A(lo)/X(hi)
+	clc
+	lda	__rc8
+	adc	__rc10
+	tay                          ; lo stashed in Y
+	lda	__rc9
+	adc	__rc11
+	tax                          ; X = hi
+	tya                          ; A = lo
+	rts
+
+; ----------------------------------------------------------------------------
+; .Ls_king_safety -- king_safety(e). eval.c 1029-1035.
+;   wb = single_king_safety(e.wk); e.score += byte_x10(wb);
+;   bb = single_king_safety(e.bk); e.score -= byte_x10(bb).
+; ----------------------------------------------------------------------------
+.Ls_king_safety:
+; wb = single_king_safety(e.wk)
+	lda	E_BUF + E_WK
+	sta	KS_KSQ
+	jsr	.Ls_single_king_safety   ; KS_S = wb (signed byte)
+	jsr	.Ls_byte_x10             ; A/X = byte_x10(wb)
+	jsr	.Ls_score_addAX          ; e.score += byte_x10(wb)
+; bb = single_king_safety(e.bk)
+	lda	E_BUF + E_BK
+	sta	KS_KSQ
+	jsr	.Ls_single_king_safety   ; KS_S = bb
+	jsr	.Ls_byte_x10
+	jmp	.Ls_score_subAX          ; e.score -= byte_x10(bb) (tail rts)
+
+; ----------------------------------------------------------------------------
+; .Ls_single_king_safety -- single_king_safety(e, KS_KSQ). eval.c 957-1027.
+;   Returns the signed-byte accumulator in KS_S. is_white = (KS_KSQ == e.wk).
+;   Requires __rc2/3 = BPTR (set at entry; sub-helpers preserve / re-set it).
+; ----------------------------------------------------------------------------
+.Ls_single_king_safety:
+; __rc2/3 = BPTR for board reads.
+	lda	BPTR
+	sta	__rc2
+	lda	BPTR+1
+	sta	__rc3
+; file = ksq & 7; row = ksq >> 4; s = 0.
+	lda	KS_KSQ
+	and	#0x07
+	sta	KS_FILE
+	lda	KS_KSQ
+	lsr	a
+	lsr	a
+	lsr	a
+	lsr	a
+	sta	KS_ROW
+	lda	#0
+	sta	KS_S
+; is_white = (KS_KSQ == e.wk low byte). Kings are on-board (0..119, hi=0).
+	lda	KS_KSQ
+	cmp	E_BUF + E_WK
+	beq	.Lsks_white
+	jmp	.Lsks_black
+
+; ===== WHITE KING (eval.c 965-994) =====
+.Lsks_white:
+; castled = (row == 7 && (file == 6 || file == 2))
+	lda	KS_ROW
+	cmp	#7
+	bne	.Lsks_w_notcastled
+	lda	KS_FILE
+	cmp	#6
+	beq	.Lsks_w_castled
+	cmp	#2
+	beq	.Lsks_w_castled
+.Lsks_w_notcastled:
+; not castled: if (file==3 || file==4) s = sub8s(s, king_center)
+	lda	KS_FILE
+	cmp	#3
+	beq	.Lsks_w_center
+	cmp	#4
+	beq	.Lsks_w_center
+	jmp	.Lsks_w_march
+.Lsks_w_center:
+	lda	g_w + W_KING_CENTER
+	jsr	.Ls_s_sub
+	jmp	.Lsks_w_march
+.Lsks_w_castled:
+; s = add8s(s, castled)
+	lda	g_w + W_CASTLED
+	jsr	.Ls_s_add
+; shield idxs: file==6 -> {0x65,0x66,0x67}, else -> {0x60,0x61,0x62}
+	lda	KS_FILE
+	cmp	#6
+	bne	.Lsks_w_qshield
+; kingside f2,g2,h2
+	lda	#0x65
+	jsr	.Lsks_w_shield1
+	lda	#0x66
+	jsr	.Lsks_w_shield1
+	lda	#0x67
+	jsr	.Lsks_w_shield1
+	jmp	.Lsks_w_march
+.Lsks_w_qshield:
+; queenside a2,b2,c2
+	lda	#0x60
+	jsr	.Lsks_w_shield1
+	lda	#0x61
+	jsr	.Lsks_w_shield1
+	lda	#0x62
+	jsr	.Lsks_w_shield1
+.Lsks_w_march:
+; if (row < 6): advanced = 6-row; pen = ((advanced<<3)+king_march_base)&0xFF;
+;   s = sub8s(s, pen)
+	lda	KS_ROW
+	cmp	#6
+	bcs	.Lsks_w_filex        ; row >= 6 -> no march
+; advanced = 6 - row
+	lda	#6
+	sec
+	sbc	KS_ROW               ; A = advanced (1..6)
+	asl	a
+	asl	a
+	asl	a                    ; advanced << 3 (fits a byte: max 6<<3=48)
+	clc
+	adc	g_w + W_KING_MARCH_BASE  ; + king_march_base (low byte); & 0xFF implicit
+	jsr	.Ls_s_sub            ; s = sub8s(s, pen)
+.Lsks_w_filex:
+; s = white_file_exposure(s, file)
+	lda	#0                   ; 0 -> white exposure tables (sub on wpf/bpf)
+	jsr	.Ls_file_exposure
+; s = king_zone_pressure(s, ksq, attacker_color=0)  [black attackers]
+	lda	KS_KSQ
+	sta	KS_KZK
+	lda	#0
+	sta	KS_ACOL
+	jsr	.Ls_king_zone_pressure
+	lda	KS_S
+	rts
+
+; .Lsks_w_shield1 -- one white shield-pawn test at idx in A.
+;   if ((b[idx]&7)==PAWN_T && (b[idx]&0x80)) s = add8s(s, pawn_shield).
+;   Requires __rc2/3 = BPTR. Uses A/Y, __rc8 (via .Ls_s_add).
+.Lsks_w_shield1:
+	tay
+	lda	(__rc2),y            ; b[idx]
+	pha
+	and	#0x07
+	cmp	#PT_PAWN
+	bne	.Lsks_w_sh_no
+	pla
+	and	#WHITE_COLOR
+	beq	.Lsks_w_sh_no2       ; (b&0x80)==0 -> not white pawn
+	lda	g_w + W_PAWN_SHIELD
+	jmp	.Ls_s_add            ; s = add8s(s, pawn_shield) (tail rts)
+.Lsks_w_sh_no:
+	pla
+.Lsks_w_sh_no2:
+	rts
+
+; ===== BLACK KING (eval.c 995-1024) =====
+.Lsks_black:
+; castled = (row == 0 && (file == 6 || file == 2))
+	lda	KS_ROW
+	cmp	#0
+	bne	.Lsks_b_notcastled
+	lda	KS_FILE
+	cmp	#6
+	beq	.Lsks_b_castled
+	cmp	#2
+	beq	.Lsks_b_castled
+.Lsks_b_notcastled:
+	lda	KS_FILE
+	cmp	#3
+	beq	.Lsks_b_center
+	cmp	#4
+	beq	.Lsks_b_center
+	jmp	.Lsks_b_march
+.Lsks_b_center:
+	lda	g_w + W_KING_CENTER
+	jsr	.Ls_s_sub
+	jmp	.Lsks_b_march
+.Lsks_b_castled:
+	lda	g_w + W_CASTLED
+	jsr	.Ls_s_add
+	lda	KS_FILE
+	cmp	#6
+	bne	.Lsks_b_qshield
+; kingside f7,g7,h7 = 0x15,0x16,0x17
+	lda	#0x15
+	jsr	.Lsks_b_shield1
+	lda	#0x16
+	jsr	.Lsks_b_shield1
+	lda	#0x17
+	jsr	.Lsks_b_shield1
+	jmp	.Lsks_b_march
+.Lsks_b_qshield:
+; queenside a7,b7,c7 = 0x10,0x11,0x12
+	lda	#0x10
+	jsr	.Lsks_b_shield1
+	lda	#0x11
+	jsr	.Lsks_b_shield1
+	lda	#0x12
+	jsr	.Lsks_b_shield1
+.Lsks_b_march:
+; if (row >= 2): advanced = row-1; pen = ((advanced<<3)+king_march_base)&0xFF;
+;   s = sub8s(s, pen)
+	lda	KS_ROW
+	cmp	#2
+	bcc	.Lsks_b_filex        ; row < 2 -> no march
+	lda	KS_ROW
+	sec
+	sbc	#1                   ; advanced = row - 1 (1..6)
+	asl	a
+	asl	a
+	asl	a                    ; advanced << 3
+	clc
+	adc	g_w + W_KING_MARCH_BASE
+	jsr	.Ls_s_sub
+.Lsks_b_filex:
+; s = black_file_exposure(s, file)
+	lda	#1                   ; 1 -> black exposure tables
+	jsr	.Ls_file_exposure
+; s = king_zone_pressure(s, ksq, attacker_color=WHITE_COLOR)  [white attackers]
+	lda	KS_KSQ
+	sta	KS_KZK
+	lda	#WHITE_COLOR
+	sta	KS_ACOL
+	jsr	.Ls_king_zone_pressure
+	lda	KS_S
+	rts
+
+; .Lsks_b_shield1 -- one black shield-pawn test at idx in A.
+;   if ((b[idx]&7)==PAWN_T && !(b[idx]&0x80)) s = add8s(s, pawn_shield).
+.Lsks_b_shield1:
+	tay
+	lda	(__rc2),y
+	pha
+	and	#0x07
+	cmp	#PT_PAWN
+	bne	.Lsks_b_sh_no
+	pla
+	and	#WHITE_COLOR
+	bne	.Lsks_b_sh_no2       ; (b&0x80)!=0 -> white pawn, not black
+	lda	g_w + W_PAWN_SHIELD
+	jmp	.Ls_s_add            ; tail rts
+.Lsks_b_sh_no:
+	pla
+.Lsks_b_sh_no2:
+	rts
+
+; ----------------------------------------------------------------------------
+; .Ls_file_exposure -- white/black_file_exposure(e, s, file=KS_FILE). eval.c
+;   900-913. A on entry: 0 = white tables (penalize_white_file), nonzero = black.
+;   if (e.pawns==0) return; if file!=0 pen(file-1); pen(file); if file!=7 pen(file+1).
+;   Stores the white/black flag in __rc12 (survives the penalize calls).
+;   Operates on KS_S. Requires __rc2/3 = BPTR (not needed for reads here -- only
+;   wpf/bpf absolute -- but kept consistent). Uses A/X/Y, EXF, __rc12.
+; ----------------------------------------------------------------------------
+.Ls_file_exposure:
+	sta	__rc12               ; __rc12 = 0 (white) / !=0 (black)
+; if (e.pawns == 0) return
+	lda	E_BUF + E_PAWNS
+	ora	E_BUF + E_PAWNS + 1
+	bne	.Lfx_havepawns
+	rts
+.Lfx_havepawns:
+; if (file != 0) penalize(file-1)
+	lda	KS_FILE
+	beq	.Lfx_center
+	sec
+	sbc	#1
+	sta	EXF
+	jsr	.Ls_penalize_file
+.Lfx_center:
+; penalize(file)
+	lda	KS_FILE
+	sta	EXF
+	jsr	.Ls_penalize_file
+; if (file != 7) penalize(file+1)
+	lda	KS_FILE
+	cmp	#7
+	beq	.Lfx_done
+	clc
+	adc	#1
+	sta	EXF
+	jsr	.Ls_penalize_file
+.Lfx_done:
+	rts
+
+; .Ls_penalize_file -- penalize_white_file / penalize_black_file (eval.c 889-898)
+;   for file EXF, white/black per __rc12. Operates on KS_S.
+;   white: if wpf[f]!=0 return; if bpf[f]!=0 sub(semi); else sub(open).
+;   black: if bpf[f]!=0 return; if wpf[f]!=0 sub(semi); else sub(open).
+;   "own pawns on file -> no penalty; enemy-only -> semi-open; empty -> open."
+;   Uses A/X/Y. Reads wpf/bpf (absolute). EXF = f, __rc12 = side flag.
+.Ls_penalize_file:
+	lda	EXF
+	asl	a
+	tax                          ; X = f*2 (int array index)
+	lda	__rc12
+	bne	.Lpf_black_side
+; ---- white: own = wpf, enemy = bpf ----
+	lda	E_BUF + E_WPF, x
+	ora	E_BUF + E_WPF + 1, x
+	beq	.Lpf_w_noown         ; wpf[f] == 0 -> no own pawn -> penalize
+	rts                          ; wpf[f] != 0 -> return s unchanged
+.Lpf_w_noown:
+	lda	E_BUF + E_BPF, x
+	ora	E_BUF + E_BPF + 1, x
+	bne	.Lpf_w_semi          ; bpf[f] != 0 -> semi-open
+	lda	g_w + W_OPEN_FILE_PENALTY
+	jmp	.Ls_s_sub            ; sub8s(s, open) (tail rts)
+.Lpf_w_semi:
+	lda	g_w + W_SEMI_OPEN_FILE_PENALTY
+	jmp	.Ls_s_sub
+.Lpf_black_side:
+; ---- black: own = bpf, enemy = wpf ----
+	lda	E_BUF + E_BPF, x
+	ora	E_BUF + E_BPF + 1, x
+	beq	.Lpf_b_noown
+	rts
+.Lpf_b_noown:
+	lda	E_BUF + E_WPF, x
+	ora	E_BUF + E_WPF + 1, x
+	bne	.Lpf_b_semi
+	lda	g_w + W_OPEN_FILE_PENALTY
+	jmp	.Ls_s_sub
+.Lpf_b_semi:
+	lda	g_w + W_SEMI_OPEN_FILE_PENALTY
+	jmp	.Ls_s_sub
+
+; ----------------------------------------------------------------------------
+; .Ls_king_zone_pressure -- king_zone_pressure(e, s, KS_KZK, KS_ACOL). eval.c
+;   915-955. Operates on KS_S. Requires __rc2/3 = BPTR.
+;   8 slider rays: per ray scan; first non-empty: if (p&0x80)!=attacker_color
+;     break; t=p&7; QUEEN -> sub(zone),break; dirs {1,3,4,6}: ROOK -> sub,break;
+;     else BISHOP -> sub,break.
+;   8 knight offsets: dest on-board, non-empty, attacker color, t==KNIGHT_T ->
+;     sub(zone).  Each sub subtracts g_w.king_zone_attack (low byte).
+;   Uses A/X/Y, KS_D (dir idx), KS_RAY (ray), KS_I (knight idx), __rc8 (via sub).
+; ----------------------------------------------------------------------------
+.Ls_king_zone_pressure:
+	lda	#0
+	sta	KS_D
+.Lkzp_dir:
+; ray = king_sq
+	lda	KS_KZK
+	sta	KS_RAY
+.Lkzp_step:
+; ray = add8(ray, ALLDIR_OFFS[d])
+	ldx	KS_D
+	lda	ALLDIR_OFFS, x
+	clc
+	adc	KS_RAY
+	sta	KS_RAY
+; if (ray & 0x88) break
+	and	#OFFBOARD_MASK
+	bne	.Lkzp_dir_done
+; piece = b[ray]; if EMPTY continue
+	ldy	KS_RAY
+	lda	(__rc2),y
+	bne	.Lkzp_occ
+	jmp	.Lkzp_step
+.Lkzp_occ:
+	sta	__rc8                ; piece
+; if ((piece & 0x80) != attacker_color) break
+	and	#WHITE_COLOR
+	cmp	KS_ACOL
+	beq	.Lkzp_samecol
+	jmp	.Lkzp_dir_done       ; not attacker color -> break
+.Lkzp_samecol:
+; t = piece & 7
+	lda	__rc8
+	and	#0x07
+	tax                          ; X = t
+	cpx	#PT_QUEEN
+	bne	.Lkzp_notqueen
+; QUEEN -> sub(zone); break
+	lda	g_w + W_KING_ZONE_ATTACK
+	jsr	.Ls_s_sub
+	jmp	.Lkzp_dir_done
+.Lkzp_notqueen:
+; orthogonal directions: d == 1,3,4,6 ?
+	lda	KS_D
+	cmp	#1
+	beq	.Lkzp_ortho
+	cmp	#3
+	beq	.Lkzp_ortho
+	cmp	#4
+	beq	.Lkzp_ortho
+	cmp	#6
+	beq	.Lkzp_ortho
+; diagonal direction: if (t == BISHOP_T) sub; break
+	cpx	#PT_BISHOP
+	bne	.Lkzp_dir_done
+	lda	g_w + W_KING_ZONE_ATTACK
+	jsr	.Ls_s_sub
+	jmp	.Lkzp_dir_done
+.Lkzp_ortho:
+; if (t == ROOK_T) sub; break
+	cpx	#PT_ROOK
+	bne	.Lkzp_dir_done
+	lda	g_w + W_KING_ZONE_ATTACK
+	jsr	.Ls_s_sub
+.Lkzp_dir_done:
+	inc	KS_D
+	lda	KS_D
+	cmp	#8
+	bcs	.Lkzp_knights
+	jmp	.Lkzp_dir
+.Lkzp_knights:
+; knight attackers: for i=0..7
+	lda	#0
+	sta	KS_I
+.Lkzp_kloop:
+	ldx	KS_I
+	lda	KS_KZK
+	clc
+	adc	KNIGHT_OFFS, x       ; dest = add8(king_sq, KNIGHT_OFFSETS[i])
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lkzp_knext          ; offboard -> continue
+	lda	(__rc2),y            ; piece = b[dest]
+	beq	.Lkzp_knext          ; EMPTY -> continue
+	sta	__rc8
+	and	#WHITE_COLOR
+	cmp	KS_ACOL
+	bne	.Lkzp_knext          ; not attacker color -> continue
+	lda	__rc8
+	and	#0x07
+	cmp	#PT_KNIGHT
+	bne	.Lkzp_knext          ; not a knight -> continue
+	lda	g_w + W_KING_ZONE_ATTACK
+	jsr	.Ls_s_sub
+.Lkzp_knext:
+	inc	KS_I
+	lda	KS_I
+	cmp	#8
+	bcc	.Lkzp_kloop
 	rts
 
 .Lfunc_end_eval_full:
