@@ -266,14 +266,44 @@ class CaissaServer:
 
     # -- high-level peek/poke ----------------------------------------------
 
+    def _reconnect(self) -> None:
+        """Drop the monitor socket so the next op opens a fresh one.
+
+        VICE's monitor listener can desync after a long idle (e.g. while the
+        opponent thinks for minutes and our socket sits unused); -keepmonopen
+        keeps the listener alive, so a fresh connect recovers. The 6502 keeps
+        running the whole time, so server RAM state is intact across reconnects.
+        """
+        if self._monitor is not None:
+            try:
+                self._monitor.close()
+            except OSError:
+                pass
+            self._monitor = None
+
+    def _op(self, fn, attempts: int = 5):
+        """Run fn(mon) inside a synced monitor (bank ram), with resume after.
+
+        On any monitor failure (short read, lost prompt, dropped socket) drop
+        the connection, reconnect, and retry -- the running CPU is unaffected.
+        """
+        last: Exception | None = None
+        for i in range(attempts):
+            mon = self.monitor
+            try:
+                mon.sync_prompt()
+                mon.cmd("bank ram")
+                result = fn(mon)
+                mon.resume()
+                return result
+            except (ViceCaissaError, OSError) as exc:
+                last = exc
+                self._reconnect()
+                time.sleep(0.3 + 0.2 * i)
+        raise ViceCaissaError(f"monitor op failed after {attempts} attempts: {last}")
+
     def _peek(self, addr: int, n: int) -> list[int]:
-        mon = self.monitor
-        mon.sync_prompt()
-        try:
-            mon.cmd("bank ram")
-            return self._read(mon, addr, n)
-        finally:
-            mon.resume()
+        return self._op(lambda m: self._read(m, addr, n))
 
     def wait_ready(self, timeout: float = 60.0) -> None:
         deadline = time.monotonic() + timeout
@@ -292,16 +322,12 @@ class CaissaServer:
         if len(payload) > 100:
             raise ViceCaissaError("FEN too long for g_fen[100]")
 
-        mon = self.monitor
-        mon.sync_prompt()
-        try:
-            mon.cmd("bank ram")
-            self._write(mon, a["g_fen"], payload)
-            self._write(mon, a["g_depth"], bytes([depth & 0xFF]))
-            self._write(mon, a["g_done"], b"\x00")
-            self._write(mon, a["g_go"], b"\x01")  # LAST: triggers the search
-        finally:
-            mon.resume()  # let the 6502 run the search
+        def poke(m: _Monitor) -> None:
+            self._write(m, a["g_fen"], payload)
+            self._write(m, a["g_depth"], bytes([depth & 0xFF]))
+            self._write(m, a["g_done"], b"\x00")
+            self._write(m, a["g_go"], b"\x01")  # LAST: triggers the search
+        self._op(poke)  # resumes -> the 6502 runs the search
 
         deadline = time.monotonic() + timeout
         while True:
@@ -313,18 +339,20 @@ class CaissaServer:
             if time.monotonic() > deadline:
                 raise ViceCaissaError(f"search did not finish within {timeout}s")
 
-        mon.sync_prompt()
-        try:
-            mon.cmd("bank ram")
-            status = self._read(mon, a["g_status"], 1)[0]
-            frm = self._read(mon, a["g_from"], 1)[0]
-            to = self._read(mon, a["g_to"], 1)[0]
-            promo = self._read(mon, a["g_promo"], 1)[0]
-            score = self._u16(self._read(mon, a["g_score"], 2))
-            nodes = self._u32(self._read(mon, a["g_nodes"], 4))
-            qnodes = self._u32(self._read(mon, a["g_qnodes"], 4))
-        finally:
-            mon.resume()
+        def read_results(m: _Monitor) -> dict:
+            return {
+                "status": self._read(m, a["g_status"], 1)[0],
+                "from": self._read(m, a["g_from"], 1)[0],
+                "to": self._read(m, a["g_to"], 1)[0],
+                "promo": self._read(m, a["g_promo"], 1)[0],
+                "score": self._u16(self._read(m, a["g_score"], 2)),
+                "nodes": self._u32(self._read(m, a["g_nodes"], 4)),
+                "qnodes": self._u32(self._read(m, a["g_qnodes"], 4)),
+            }
+        r = self._op(read_results)
+        status = r["status"]
+        frm, to, promo = r["from"], r["to"], r["promo"]
+        score, nodes, qnodes = r["score"], r["nodes"], r["qnodes"]
 
         if status != 0:
             raise ViceCaissaError(f"server reported FEN parse error for: {fen}")
