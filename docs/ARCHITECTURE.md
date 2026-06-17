@@ -38,6 +38,10 @@ test: `test/test_api.c`. Cross-toolchain embedding: `apps/c64/caissa_abi.c`.
   `chess.prg` via `tools/build_c64.sh`. Same engine, depth-limited for 1MHz.
 - `apps/c64/caissa_abi.c` — fixed-address ABI blob so an external pure-asm host
   can embed and call the engine across toolchains.
+- `apps/c64/caissa_server.c` — a **persistent** headless C64 bestmove server
+  (`tools/build_caissa_server.sh` → `build/caissa_server.prg`): boots once, then
+  loops serving one move per request over a pure-RAM handshake. Driven inside
+  headless VICE by `tools/vice_caissa.py` for Caïssa-vs-Colossus matches.
 
 ## Tests + oracle (`test/`)
 - `test_perft.c` / `test_eval.c` — host unit tests (built to `build/`).
@@ -58,9 +62,12 @@ test: `test/test_api.c`. Cross-toolchain embedding: `apps/c64/caissa_abi.c`.
     (FEN→move / FEN→eval) inside the cycle-exact core.
 - `tools/fast6502_bridge/cpu6502.c` — the cycle-exact 6502 CPU core shared by all
   the host-side 6502 runners.
-- Colossus match harness — drives the real Colossus 4.0 inside a **headless VICE**
-  core (accurate by construction; built from `~/Git/vice-macos`, `--enable-headlessui`)
-  and plays it against the engine. See `docs/colossus.md`.
+- Colossus match harness — plays Caïssa vs the real Colossus 4.0, both inside
+  separate **headless VICE** x64sc cores (accurate by construction; built from
+  `~/Git/vice-macos`, `--enable-headlessui`). `tools/match_caissa_colossus.py`
+  is the game loop; `tools/vice_caissa.py` drives Caïssa's `caissa_server.prg`
+  (RAM poke/peek, monitor 6511); `tools/vice_colossus.py` drives Colossus
+  (screen-scrape, monitor 6510). See `docs/colossus.md` and `docs/HANDOFF.md`.
 - Tuning/research — `texel_tune.py`, `term_tune.py`, `run_reference_match.py`
   (python reference-engine A/B), `native_vs_stockfish.py` (host vs Stockfish Elo).
 
