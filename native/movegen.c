@@ -149,6 +149,15 @@ static void add_promotions(Move *list, int *n, int from, int to, int base_flags)
     add_move(list, n, from, to, PT_QUEEN,  base_flags | MF_PROMO);
 }
 
+#ifdef CREF_ASM_GEN_PSEUDO
+/* On the 6502 image this hot function (~13% of all cycles) is replaced by a
+ * hand-written 6502 asm version in native/gen_pseudo_6502.s, BIT-IDENTICAL to
+ * the C body below: same pseudo-move set AND same emission order (the gate
+ * proves it via PERFT EXACT + 6502 image == cref_mos). -DCREF_ASM_GEN_PSEUDO is
+ * passed only on the mos-sim / c64 builds, which also link the .s; the host
+ * (clang) build never defines it and keeps the C body. */
+int gen_pseudo(const Board *b, Move *list);
+#else
 static int gen_pseudo(const Board *b, Move *list) {
     int n = 0;
     int white = b->wtm;
@@ -299,6 +308,7 @@ static int gen_pseudo(const Board *b, Move *list) {
 
     return n;
 }
+#endif /* CREF_ASM_GEN_PSEUDO */
 
 /* ---- gen_legal ---------------------------------------------------------- */
 /* pseudo[] off the C stack (cc65 frame limit). Call-scoped: gen_legal never

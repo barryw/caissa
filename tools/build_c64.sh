@@ -20,7 +20,8 @@ OUT="${1:-$HERE/chess.prg}"
 # them better -- see the speed-campaign notes).
 ASM="-DCREF_ASM_IS_SQUARE_ATTACKED $N/is_square_attacked_6502.s \
      -DCREF_ASM_UNMAKE_MOVE        $N/unmake_move_6502.s \
-     -DCREF_ASM_MAKE_MOVE          $N/make_move_6502.s"
+     -DCREF_ASM_MAKE_MOVE          $N/make_move_6502.s \
+     -DCREF_ASM_GEN_PSEUDO         $N/gen_pseudo_6502.s"
 
 # shellcheck disable=SC2086
 "$LM/mos-c64-clang" -Os -I "$N" $ASM \
