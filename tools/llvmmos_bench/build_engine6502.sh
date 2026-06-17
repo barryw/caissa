@@ -19,7 +19,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
-NATIVE="$HERE/../../native"
+NATIVE="$HERE/../../src"
 LLVM_MOS="${LLVM_MOS:-$HOME/Git/llvm-mos/build}"
 SIMCC="$LLVM_MOS/bin/mos-sim-clang"
 DEPTH="${1:-4}"

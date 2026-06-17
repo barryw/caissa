@@ -181,12 +181,12 @@ int main(int argc, char **argv) {
 
     if (argc < 5) {
         fprintf(stderr,
-          "usage: %s engine6502.sim engine6502.map fenlist.txt depth [oracle=../../native/cref]\n",
+          "usage: %s engine6502.sim engine6502.map fenlist.txt depth [oracle=../../src/cref]\n",
           argv[0]);
         return 2;
     }
     image = argv[1]; mapf = argv[2]; fenlist = argv[3]; depth = atoi(argv[4]);
-    oracle = (argc > 5) ? argv[5] : "../../native/cref";
+    oracle = (argc > 5) ? argv[5] : "../../src/cref";
 
     if (map_addr(mapf, "g_fen",   &A_g_fen)   ||
         map_addr(mapf, "g_depth", &A_g_depth) ||

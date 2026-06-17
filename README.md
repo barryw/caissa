@@ -6,6 +6,32 @@ evaluation, plus the harnesses that build, test, and strength-measure them.
 
 ## The two engines
 
+> **Read this first — which engine is which, and which one we actually measure.**
+> The repo's confusion has always been this: the *active* engine and the *measured*
+> engine are different. Fixing that mismatch (repointing the strength harness onto
+> the active engine) is in-progress work.
+>
+> | | **`native/` (C → 6502)** | **`src/` (ca65 hand-asm)** |
+> |---|---|---|
+> | **Status** | ★ **ACTIVE** — all current eval + speed work happens here | Maintenance / legacy-leaning |
+> | **Role** | C reference + eval source-of-truth + A/B tuner (host); the C64 ship target (`chess.prg`) and the `engine6502` sim image | reusable hand-asm 6502 *library* for external hosts (Nova, `~/Git/Chess`); has its own opening book |
+> | **Eval** | the tuned eval lives here (`eval.c`, ~1798 native), bit-exact to `texel_eval.py` | same eval Texel-ported into asm (`src/ai/eval.s`) |
+> | **Host (PC) Elo** | **~1785–1874** vs Stockfish @ depth 6 | n/a (no host binary) |
+> | **On-chip *move quality*** | **~1793–1993 (≈1850)** — direct, real 6502 binary vs SF, zero forfeits | (covered by the Elo ladder below) |
+> | **On-chip at a real C64 time control** | **speed-capped** — d6 ≈ hours/move @1MHz, so reachable depth (hence strength) is lower; this is the open frontier | **~982** vs SF-1320 (`build/elo_lazy600.log`, lazy config) |
+> | **Measured by** | `speed_gate.sh` (fidelity+speed), eval corpus check, `native_vs_stockfish.py` + `engine6502_cli` (on-chip move quality) | **all the game-strength Elo tooling**: Stockfish strength/Elo ladders, Colossus match |
+> | **6502 driver** | `engine6502.sim` via the `validate` FEN→move ABI (`tools/llvmmos_bench/`) | `engine_harness.prg` via `fast6502_bridge` JSON (`tools/`) |
+>
+> ⚠️ **Consequence / the two numbers people confuse:** the **`native/`** engine's
+> *moves* are ~1800-grade on-chip (measured), but it's **speed-limited** — on a
+> real C64 it can't search deep enough fast enough, so its strength *at a real
+> time control* is unproven, and it's **never been measured vs Colossus**. The
+> **~982** number is the **`src/`** engine (lazy config) via the Stockfish Elo
+> ladder — a *different engine*. So: don't read ~982 as "our engine" and don't
+> read ~1850 as "what it'd score in a real timed game vs Colossus." The fix —
+> repoint the Colossus/Elo harness onto `native/`'s `engine6502` and play at a
+> fair per-move cycle budget — is the current focus (see `docs/colossus.md`).
+
 ### `native/` — C reference engine (the active line)
 
 Portable C (`board.c`, `movegen.c`, `eval.c`, `search.c`) that is both the
@@ -47,8 +73,10 @@ make size
 
 ## Strength harness
 
-The Stockfish strength/game/Elo harness lives in `tools/` and runs against the
-headless ca65 binary (`build/engine_harness.prg` + `build/engine_harness.sym`):
+**⚠️ This harness currently measures the `src/` engine, not `native/`** (see the
+table above). The Stockfish strength/game/Elo harness lives in `tools/` and runs
+against the headless ca65 binary (`build/engine_harness.prg` +
+`build/engine_harness.sym`):
 
 ```sh
 make stockfish-strength

@@ -11,7 +11,7 @@
 # Nova llvm-mos platform exists.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-N="$HERE/native"
+N="$HERE/src"
 LM="${LLVM_MOS:-$HOME/Git/llvm-mos/build}/bin"
 OUT="${1:-$HERE/chess.prg}"
 

@@ -19,11 +19,11 @@
 # Usage: ./build_eval_validator.sh ["EXTRA compile flags + asm files"]
 #   default EXTRA empty -> pure C eval.
 #   later, to test the hand-asm eval:
-#     ./build_eval_validator.sh "-DCREF_ASM_EVAL_FULL ../../native/eval_full_6502.s"
+#     ./build_eval_validator.sh "-DCREF_ASM_EVAL_FULL ../../src/eval_full_6502.s"
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
-NATIVE="$HERE/../../native"
+NATIVE="$HERE/../../src"
 LLVM_MOS="${LLVM_MOS:-$HOME/Git/llvm-mos/build}"
 SIMCC="$LLVM_MOS/bin/mos-sim-clang"
 EXTRA="${1:-}"

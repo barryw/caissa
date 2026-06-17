@@ -30,9 +30,9 @@
  *    every run; the host flips it only after READY, which is after bss-zeroing.
  */
 #include <stdint.h>
-#include "../../native/board.h"
-#include "../../native/search.h"
-#include "../../native/eval.h"
+#include "../../src/board.h"
+#include "../../src/search.h"
+#include "../../src/eval.h"
 
 /* ---- the ABI globals (all extern-visible; addresses dumped to the .map) ---- */
 volatile char          g_fen[100];

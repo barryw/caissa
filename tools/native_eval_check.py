@@ -15,7 +15,7 @@ import chess  # noqa: E402
 from texel_eval import eval_full  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-BIN = ROOT / "native" / "test_eval"
+BIN = ROOT / "src" / "test_eval"
 
 
 def main() -> int:

@@ -20,8 +20,8 @@ cd "$HERE"
 
 LLVM_MOS="${LLVM_MOS:-$HOME/Git/llvm-mos/build}"
 SIMCC="$LLVM_MOS/bin/mos-sim-clang"
-EVAL="../../native/eval.c"
-INC="-I../../native"
+EVAL="../../src/eval.c"
+INC="-I../../src"
 
 echo ">> building host harness (cpu6502 cycle-counting runner)"
 cc -O2 -o run_sim run_sim.c ../fast6502_bridge/cpu6502.c

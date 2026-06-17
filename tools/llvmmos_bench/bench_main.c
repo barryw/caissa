@@ -16,7 +16,7 @@
  * compile-time square table so this TU links against eval.c alone.
  */
 #include <stdint.h>
-#include "../../native/eval.h"   /* Board, eval_material_pst, eval_full, g_w */
+#include "../../src/eval.h"   /* Board, eval_material_pst, eval_full, g_w */
 
 /* Mid-game position (a real opposite-side-castled middlegame, ~26 pieces):
  *   r1bq1rk1/pp2bppp/2n1pn2/2pp4/3P1B2/2NBPN2/PPP2PPP/R2Q1RK1 w
