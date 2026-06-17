@@ -11,7 +11,8 @@
 > labels) rather than the fixed `$5600` reservation, which CODE already grows
 > past. Also discovered: the engine's 16-bit Zobrist hash has only ~10 effective
 > bits (32 distinct values/byte), so collisions dropped 21/219 entries; this is a
-> separate engine bug worth fixing (lifts coverage + helps the TT). See HANDOVER.
+> separate engine bug worth fixing (lifts coverage + helps the TT). (Fixed
+later in `29f5cd8`: the Zobrist hash now uses full 16-bit entropy.)
 
 This document is the hand-off for the **later src-touching step** that turns the
 engine-independent dataset `tools/opening_repertoire.json` into a working opening

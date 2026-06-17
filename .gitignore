@@ -19,3 +19,9 @@ tools/Sim6502HeadlessBridge/.bridge_build.lock
 chess.prg
 chess.prg.elf
 chess.map
+
+# native C build outputs (rebuilt by native/Makefile)
+native/cref
+native/cref_mos
+native/test_eval
+native/test_perft
