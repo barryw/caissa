@@ -10,17 +10,21 @@
  */
 #include "cpu6502.h"
 
-/* ----- memory helpers (flat 64K, no banking) ----- */
-static inline uint8_t  rd(cpu6502_t *c, uint16_t a)            { return c->mem[a]; }
-static inline void     wr(cpu6502_t *c, uint16_t a, uint8_t v) { c->mem[a] = v; }
-static inline uint8_t  fetch(cpu6502_t *c)                     { return c->mem[c->pc++]; }
+/* ----- memory helpers (flat 64K by default; banked via hooks when set) ----- */
+static inline uint8_t  rd(cpu6502_t *c, uint16_t a) {
+    return c->read_hook ? c->read_hook(c, a) : c->mem[a];
+}
+static inline void     wr(cpu6502_t *c, uint16_t a, uint8_t v) {
+    if (c->write_hook) c->write_hook(c, a, v); else c->mem[a] = v;
+}
+static inline uint8_t  fetch(cpu6502_t *c)                     { return rd(c, c->pc++); }
 
 static inline uint16_t rd16(cpu6502_t *c, uint16_t a) {
-    return (uint16_t)c->mem[a] | ((uint16_t)c->mem[(uint16_t)(a + 1)] << 8);
+    return (uint16_t)rd(c, a) | ((uint16_t)rd(c, (uint16_t)(a + 1)) << 8);
 }
 /* Zero-page 16-bit read wraps within page 0. */
 static inline uint16_t rd16_zp(cpu6502_t *c, uint8_t a) {
-    return (uint16_t)c->mem[a] | ((uint16_t)c->mem[(uint8_t)(a + 1)] << 8);
+    return (uint16_t)rd(c, a) | ((uint16_t)rd(c, (uint8_t)(a + 1)) << 8);
 }
 
 /* ----- stack ----- */
@@ -339,8 +343,8 @@ uint8_t cpu6502_step(cpu6502_t *c) {
     case 0x4C: c->pc = rd16(c, c->pc); c->cycles+=3; break; /* JMP abs */
     case 0x6C: { /* JMP (ind) with NMOS page-wrap bug */
         uint16_t ptr = rd16(c, c->pc);
-        uint16_t lo = c->mem[ptr];
-        uint16_t hi = c->mem[(ptr & 0xFF00) | ((ptr + 1) & 0x00FF)];
+        uint16_t lo = rd(c, ptr);
+        uint16_t hi = rd(c, (ptr & 0xFF00) | ((ptr + 1) & 0x00FF));
         c->pc = lo | (hi << 8);
         c->cycles += 5;
         break; }

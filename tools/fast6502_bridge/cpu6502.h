@@ -20,13 +20,23 @@
 
 #include <stdint.h>
 
-typedef struct {
+typedef struct cpu6502_s cpu6502_t;
+struct cpu6502_s {
     uint16_t pc;
     uint8_t  a, x, y, sp;
     uint8_t  status;     /* NV-BDIZC */
     uint8_t  mem[65536];
     uint64_t cycles;     /* running total, like sim6502's CycleCount */
-} cpu6502_t;
+
+    /* Optional banked-memory hooks. NULL (the default) = flat mem[], the fast
+     * Caissa path -- byte-identical behaviour, gate stays bit-exact. When set,
+     * every CPU memory access EXCEPT the always-RAM stack (page 1) routes here,
+     * so a full C64 environment (ROM/IO/CIA banking) can be layered for running
+     * Colossus on this core. */
+    uint8_t (*read_hook)(cpu6502_t *c, uint16_t addr);
+    void    (*write_hook)(cpu6502_t *c, uint16_t addr, uint8_t val);
+    void    *hook_ctx;
+};
 
 /* Status flag bit masks. */
 enum {
