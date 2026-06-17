@@ -7,14 +7,19 @@
 ; tapered-blend guard, the tempo term, and the final 16-bit wrap.
 ;
 ; TERM HELPER STATUS (the per-piece + advanced_pawn positional terms):
-;   INLINE asm (groups a + b, bit-exact 22157/22157):
+;   INLINE asm (groups a + b + c, bit-exact 22157/22157):
 ;     advanced_pawn, pawn_pressure, knight_outpost, queen_pressure,
 ;     minor_pressure   (+ their inlined probes: check_white/black_pawn_at,
 ;     is_pawn_attacked, is_knight_attacked, is_bishop_attacked, is_queen_attacked),
 ;     mobility (+ inlined count_knight_mobility, count_sliding_mobility),
-;     seventh_rank
+;     seventh_rank,
+;     pawn_structure  (group c: doubled, isolated, passed-pawn bonus,
+;       connected/protected/blockaded passer, rook-behind-passer, rook open/
+;       semi-open file; + inlined helpers white/black_passed, white/black_
+;       connected, white/black_protected, white/black_blockaded, white/black_
+;       rook_behind)
 ;   still jsr-to-C (the tail, later sessions):
-;     bishop_pair, pawn_structure, king_pins, king_safety, endgame,
+;     bishop_pair, king_pins, king_safety, endgame,
 ;     king_attack_escalation, pawn_storm, queen_attacks_minor
 ; The jsr'd helpers keep external linkage via EVAL_HELPER (eval.c) when
 ; CREF_ASM_EVAL_FULL is defined; the validator stays 22157/22157 the whole way
@@ -92,11 +97,27 @@
 ;     +148  int acc_egdiff
 ;     +150  int acc_phase
 ;
-;   EvalWeights g_w -- sizeof = 110:
-;     +58   int heavy_seventh_rank   (field index 29; confirmed via offsetof probe)
+;   EvalWeights g_w -- sizeof = 110 (offsets = 2*field_index, int = 16-bit;
+;   ALL confirmed via offsetof probe, mos-clang -fno-lto -Os -S):
+;     +36   int doubled_pawn         (field 18)
+;     +38   int isolated_pawn        (field 19)
+;     +44   int rook_behind_passer   (field 22)
+;     +46   int connected_passer     (field 23)
+;     +48   int protected_passer     (field 24)
+;     +50   int blockaded_passer     (field 25)
+;     +54   int rook_open_file       (field 27)
+;     +56   int rook_semi_open_file  (field 28)
+;     +58   int heavy_seventh_rank   (field 29)
 ;     +60   int endgame_nonpawn_limit
+;     +68   int passed_pawn_bonus[8] (field 34; entry = base + row*2, full 16-bit)
 ;     +100  int tempo
-;     +102  int trapped_penalty      (field index 51; confirmed via offsetof probe)
+;     +102  int trapped_penalty      (field 51)
+;
+;   ASSEMBLER QUIRK (llvm-mos integrated as): `#<(-N)` mis-assembles to `#N`
+;   (the negation is dropped: <(-0x10) -> 0x10, NOT 0xF0). Pre-existing group-(a)
+;   lines using it (is_pawn_attacked white / knight_outpost black) are harmless
+;   ONLY because those weights default to 0. Group (c) here uses EXPLICIT byte
+;   literals for negative add8 offsets (e.g. add8(sq,-0x10) -> `adc #0xF0`).
 ;
 ; ----------------------------------------------------------------------------
 ; THE C STRUCTURE THIS REPLICATES  (native/eval.c eval_full, lines ~1298-1410):
@@ -171,10 +192,19 @@ B_ACC_PHASE = 150
 ; ---- EvalWeights field offsets (g_w) -- confirmed via offsetof probe --------
 ; (mos-clang -fno-lto -Os -S; field offset = 2*field_index since int=16-bit.)
 W_KNIGHT_OUTPOST        = 24
+W_DOUBLED_PAWN          = 36      ; field 18 (confirmed via offsetof probe)
+W_ISOLATED_PAWN         = 38      ; field 19
 W_ADVANCED_PAWN         = 40
 W_DEEP_ADVANCED_PAWN    = 42
+W_ROOK_BEHIND_PASSER    = 44      ; field 22
+W_CONNECTED_PASSER      = 46      ; field 23
+W_PROTECTED_PASSER      = 48      ; field 24
+W_BLOCKADED_PASSER      = 50      ; field 25
+W_ROOK_OPEN_FILE        = 54      ; field 27
+W_ROOK_SEMI_OPEN_FILE   = 56      ; field 28
 W_HEAVY_SEVENTH_RANK    = 58
 W_ENDGAME_NONPAWN_LIMIT = 60
+W_PASSED_PAWN_BONUS     = 68      ; int[8] base (field 34); entry = base + row*2
 W_TEMPO                 = 100
 W_TRAPPED_PENALTY       = 102
 
@@ -188,6 +218,8 @@ WHITE_BISHOP  = 0x83
 BLACK_BISHOP  = 0x03
 WHITE_QUEEN   = 0x85
 BLACK_QUEEN   = 0x05
+WHITE_ROOK    = 0x84
+BLACK_ROOK    = 0x04
 PT_KNIGHT     = 2
 PT_ROOK       = 4
 SQ_BQ_HOME    = 0x03      ; black queen home (d8) for is_queen_attacked
@@ -218,6 +250,11 @@ WALKX:    .zero  1           ; 0x88 loop index x (0..127, low byte; <128 so 1 by
 CURPT:    .zero  1           ; current square's ptype  (survives helper clobbers)
 CURCOL:   .zero  1           ; current square's color  (survives helper clobbers)
 MDTMP:    .zero  2           ; scratch (mul/div blend hi-byte staging)
+; ---- pawn_structure inline scratch (term group c) --------------------------
+PSF:      .zero  1           ; doubled/isolated file loop index f (0..7)
+PSX:      .zero  1           ; pawn_structure board-walk index x (0..127)
+PSFILE:   .zero  1           ; current pawn's file (x & 7)
+PSROW:    .zero  1           ; current pawn's row  (x >> 4, 0..7)
 
 	.section	.text.eval_full,"ax",@progbits
 	.type	eval_full,@function
@@ -664,12 +701,13 @@ eval_full:
 ; bishop_pair(&e)
 	jsr	.Lset_e_ptr
 	jsr	bishop_pair
-; if (e.pawns != 0) pawn_structure(&e)
+; if (e.pawns != 0) pawn_structure(&e)   [INLINE, term group (c)]
 	lda	E_BUF + E_PAWNS
 	ora	E_BUF + E_PAWNS + 1
-	beq	.Ltail_nopawnstruct
-	jsr	.Lset_e_ptr
-	jsr	pawn_structure
+	bne	.Lps_enter
+	jmp	.Ltail_nopawnstruct
+.Lps_enter:
+	jsr	.Ls_pawn_structure
 .Ltail_nopawnstruct:
 ; if (e.endgame) endgame(&e); else { king_pins; king_safety }
 	lda	E_BUF + E_ENDGAME
@@ -838,12 +876,13 @@ eval_full:
 ; white piece: check_black_pawn_at(sq + (-0x0F)) || (sq + (-0x11))
 	lda	WALKX
 	clc
-	adc	#<(-0x0F)          ; +0xF1 == sq-0x0F (mod 256)
+	adc	#0xF1              ; +0xF1 == sq-0x0F (mod 256). NOT #<(-0x0F): the
+	                           ; llvm-mos as drops the negation (see header quirk).
 	jsr	.Ls_chk_bp
 	bne	.Ls_pa_yes
 	lda	WALKX
 	clc
-	adc	#<(-0x11)          ; +0xEF == sq-0x11
+	adc	#0xEF              ; +0xEF == sq-0x11 (literal; #<(-0x11) mis-assembles)
 	jsr	.Ls_chk_bp
 	bne	.Ls_pa_yes
 	jmp	.Ls_pa_no
@@ -1111,12 +1150,12 @@ eval_full:
 	bcs	.Lko_ret           ; row16 >= 0x60
 	lda	WALKX
 	clc
-	adc	#<(-0x0F)          ; sq - 0x0F
+	adc	#0xF1              ; sq - 0x0F (literal; #<(-0x0F) mis-assembles to #0x0F)
 	jsr	.Ls_chk_bp
 	bne	.Lko_b_sub
 	lda	WALKX
 	clc
-	adc	#<(-0x11)          ; sq - 0x11
+	adc	#0xEF              ; sq - 0x11 (literal; #<(-0x11) mis-assembles to #0x11)
 	jsr	.Ls_chk_bp
 	beq	.Lko_ret
 .Lko_b_sub:
@@ -1336,6 +1375,726 @@ eval_full:
 	cmp	__rc12             ; i < n ?
 	bcc	.Lms_dir
 	lda	__rc9              ; A = count
+	rts
+
+; ============================================================================
+; .Ls_pawn_structure -- pawn_structure(e). eval.c 718-785. TERM GROUP (c).
+;   Fully INLINE: makes NO jsr to C. Sets __rc2/3 = BPTR at entry and at the
+;   top of the main board walk (its passed/connected/protected helpers do
+;   (zp),Y board reads off __rc2/3). wpf[]/bpf[] are already populated by the
+;   main board pass. e.score is the live uint16 accumulator at E_BUF+E_SCORE.
+;   Reads g_w doubled/isolated/passed_pawn_bonus[]/connected/protected/
+;   blockaded/rook_behind/rook_open/rook_semi weights.
+; Scratch: A/X/Y, __rc8..__rc15, PSF/PSX/PSFILE/PSROW (.bss).
+; ----------------------------------------------------------------------------
+.Ls_pawn_structure:
+; __rc2/3 = BPTR (board base for (zp),Y reads throughout).
+	lda	BPTR
+	sta	__rc2
+	lda	BPTR+1
+	sta	__rc3
+
+; ---- (1) DOUBLED (eval.c 725-728) ------------------------------------------
+; for f=0..7: if wpf[f]>=2 score-=doubled; if bpf[f]>=2 score+=doubled.
+; wpf/bpf are 16-bit ints (counts 0..8, hi byte always 0). Use 16-bit unsigned
+; >=2 compare to be faithful.
+	lda	#0
+	sta	PSF
+.Lps_dbl_loop:
+	lda	PSF
+	asl	a                  ; f*2 (int array index)
+	tax
+; wpf[f] >= 2 ?  (16-bit unsigned: lo cmp #2 then hi sbc #0 -> carry set => >=)
+	lda	E_BUF + E_WPF, x
+	cmp	#2
+	lda	E_BUF + E_WPF + 1, x
+	sbc	#0
+	bcc	.Lps_dbl_w_no      ; wpf[f] < 2
+; score -= g_w.doubled_pawn
+	lda	g_w + W_DOUBLED_PAWN
+	ldx	g_w + W_DOUBLED_PAWN + 1
+	jsr	.Ls_score_subAX
+.Lps_dbl_w_no:
+	lda	PSF
+	asl	a
+	tax
+; bpf[f] >= 2 ?
+	lda	E_BUF + E_BPF, x
+	cmp	#2
+	lda	E_BUF + E_BPF + 1, x
+	sbc	#0
+	bcc	.Lps_dbl_b_no      ; bpf[f] < 2
+; score += g_w.doubled_pawn
+	lda	g_w + W_DOUBLED_PAWN
+	ldx	g_w + W_DOUBLED_PAWN + 1
+	jsr	.Ls_score_addAX
+.Lps_dbl_b_no:
+	inc	PSF
+	lda	PSF
+	cmp	#8
+	bcs	.Lps_dbl_done
+	jmp	.Lps_dbl_loop
+.Lps_dbl_done:
+
+; ---- (2) ISOLATED (eval.c 731-742) -----------------------------------------
+; for f=0..7:
+;   if wpf[f]!=0 { left=(f>0)?wpf[f-1]:0; right=(f<7)?wpf[f+1]:0;
+;                  if left==0 && right==0 score-=isolated; }
+;   same for bpf with += .
+; Implemented via a shared "isolated check on array base in __rc10/11" helper:
+;   __rc10/11 = &E_BUF+E_WPF (white) or &E_BUF+E_BPF (black); on isolated,
+;   __rc8 = 1 (add) for black, 0 (sub) for white (sign of the score delta).
+	lda	#0
+	sta	PSF
+.Lps_iso_loop:
+; white: base = E_BUF+E_WPF, sign = subtract
+	lda	#<(E_BUF + E_WPF)
+	sta	__rc10
+	lda	#>(E_BUF + E_WPF)
+	sta	__rc11
+	lda	#0                 ; sign flag: 0 -> subtract isolated
+	sta	__rc8
+	jsr	.Lps_iso_one
+; black: base = E_BUF+E_BPF, sign = add
+	lda	#<(E_BUF + E_BPF)
+	sta	__rc10
+	lda	#>(E_BUF + E_BPF)
+	sta	__rc11
+	lda	#1                 ; sign flag: !=0 -> add isolated
+	sta	__rc8
+	jsr	.Lps_iso_one
+	inc	PSF
+	lda	PSF
+	cmp	#8
+	bcs	.Lps_iso_done
+	jmp	.Lps_iso_loop
+.Lps_iso_done:
+	jmp	.Lps_walk_init
+
+; .Lps_iso_one -- one isolated test for file PSF over the int[8] array at
+;   __rc10/11. __rc8 sign flag (0=sub, else=add). Uses A/X/Y, __rc9 (scratch).
+;   pf[f] != 0 ? (16-bit OR) ; if so, left/right neighbours both 0 -> apply.
+.Lps_iso_one:
+	lda	PSF
+	asl	a
+	tay                       ; Y = f*2
+	lda	(__rc10),y         ; pf[f] lo
+	iny
+	ora	(__rc10),y         ; | pf[f] hi
+	bne	.Lps_iso_present
+	rts                       ; pf[f] == 0 -> nothing
+.Lps_iso_present:
+; left = (f>0)?pf[f-1]:0  -> if f==0 left is 0 (treated as absent).
+	lda	PSF
+	beq	.Lps_iso_left0     ; f==0 -> left=0
+; pf[f-1] != 0 ?  index = (f-1)*2
+	sec
+	sbc	#1
+	asl	a
+	tay
+	lda	(__rc10),y
+	iny
+	ora	(__rc10),y
+	beq	.Lps_iso_left0     ; left == 0
+	rts                       ; left != 0 -> not isolated
+.Lps_iso_left0:
+; right = (f<7)?pf[f+1]:0 -> if f==7 right is 0.
+	lda	PSF
+	cmp	#7
+	beq	.Lps_iso_apply     ; f==7 -> right=0 -> isolated
+; pf[f+1] != 0 ?  index = (f+1)*2
+	clc
+	adc	#1
+	asl	a
+	tay
+	lda	(__rc10),y
+	iny
+	ora	(__rc10),y
+	beq	.Lps_iso_apply     ; right == 0 -> isolated
+	rts                       ; right != 0 -> not isolated
+.Lps_iso_apply:
+; left==0 && right==0 -> apply g_w.isolated_pawn by sign flag __rc8.
+	lda	g_w + W_ISOLATED_PAWN
+	ldx	g_w + W_ISOLATED_PAWN + 1
+	ldy	__rc8
+	beq	.Lps_iso_sub       ; sign flag 0 -> subtract (white)
+	jmp	.Ls_score_addAX    ; black -> add (tail-call rts)
+.Lps_iso_sub:
+	jmp	.Ls_score_subAX    ; white -> subtract (tail-call rts)
+
+; ---- (3) MAIN 0x88 WALK (eval.c 749-784) -----------------------------------
+; for x=0; x<128; x++, (x&8)?x+=8:0 : process rook-file & passed-pawn terms.
+.Lps_walk_init:
+	lda	#0
+	sta	PSX
+.Lps_walk:
+; ensure __rc2/3 = BPTR (sub-helpers below may have left it; they always keep
+; it, but the score helpers don't touch it -- keep this defensive reload cheap
+; by doing it once per piece only when needed; here BPTR is intact, so we read
+; b[x] directly).
+	ldy	PSX
+	lda	(__rc2),y          ; p = b[x]
+	sta	__rc9              ; __rc9 = p (piece byte; survives until needed)
+; if ((p & 0x07) != PAWN_T) -> rook-file branch + continue.
+	and	#0x07
+	cmp	#PT_PAWN
+	beq	.Lps_is_pawn
+	jmp	.Lps_not_pawn
+.Lps_is_pawn:
+
+; --- it's a pawn: file = x&7; row = x>>4 ---
+	lda	PSX
+	and	#0x07
+	sta	PSFILE
+	lda	PSX
+	lsr	a
+	lsr	a
+	lsr	a
+	lsr	a                  ; row = x >> 4 (0..7)
+	sta	PSROW
+; if (p & WHITE_COLOR) white-pawn branch else black-pawn branch.
+	lda	__rc9
+	and	#WHITE_COLOR
+	bne	.Lps_white_pawn
+	jmp	.Lps_black_pawn
+
+; ===== WHITE PAWN (eval.c 767-774) =====
+.Lps_white_pawn:
+	jsr	.Ls_white_passed   ; A=1 if passed
+	bne	.Lps_wp_passed
+	jmp	.Lps_walk_next     ; not passed -> continue
+.Lps_wp_passed:
+; score += g_w.passed_pawn_bonus[row]   (16-bit int at base + row*2)
+	lda	PSROW
+	asl	a
+	tax
+	lda	g_w + W_PASSED_PAWN_BONUS, x
+	pha
+	lda	g_w + W_PASSED_PAWN_BONUS + 1, x
+	tax
+	pla                       ; A=lo, X=hi
+	jsr	.Ls_score_addAX
+; if (white_connected(x,file)) score += g_w.connected_passer
+	jsr	.Ls_white_connected
+	beq	.Lps_wp_noconn
+	lda	g_w + W_CONNECTED_PASSER
+	ldx	g_w + W_CONNECTED_PASSER + 1
+	jsr	.Ls_score_addAX
+.Lps_wp_noconn:
+; if (white_protected(x)) score += g_w.protected_passer
+	jsr	.Ls_white_protected
+	beq	.Lps_wp_noprot
+	lda	g_w + W_PROTECTED_PASSER
+	ldx	g_w + W_PROTECTED_PASSER + 1
+	jsr	.Ls_score_addAX
+.Lps_wp_noprot:
+; if (white_blockaded(x)) score -= g_w.blockaded_passer
+	jsr	.Ls_white_blockaded
+	beq	.Lps_wp_noblk
+	lda	g_w + W_BLOCKADED_PASSER
+	ldx	g_w + W_BLOCKADED_PASSER + 1
+	jsr	.Ls_score_subAX
+.Lps_wp_noblk:
+; if (e.endgame && white_rook_behind(file,row)) score += g_w.rook_behind_passer
+	lda	E_BUF + E_ENDGAME
+	ora	E_BUF + E_ENDGAME + 1
+	beq	.Lps_wp_norb
+	jsr	.Ls_white_rook_behind
+	beq	.Lps_wp_norb
+	lda	g_w + W_ROOK_BEHIND_PASSER
+	ldx	g_w + W_ROOK_BEHIND_PASSER + 1
+	jsr	.Ls_score_addAX
+.Lps_wp_norb:
+	jmp	.Lps_walk_next
+
+; ===== BLACK PAWN (eval.c 775-783) =====
+.Lps_black_pawn:
+	jsr	.Ls_black_passed   ; A=1 if passed
+	bne	.Lps_bp_passed
+	jmp	.Lps_walk_next     ; not passed -> continue
+.Lps_bp_passed:
+; score -= g_w.passed_pawn_bonus[7 - row]
+	lda	#7
+	sec
+	sbc	PSROW              ; 7 - row
+	asl	a
+	tax
+	lda	g_w + W_PASSED_PAWN_BONUS, x
+	pha
+	lda	g_w + W_PASSED_PAWN_BONUS + 1, x
+	tax
+	pla                       ; A=lo, X=hi
+	jsr	.Ls_score_subAX
+; if (black_connected(x,file)) score -= g_w.connected_passer
+	jsr	.Ls_black_connected
+	beq	.Lps_bp_noconn
+	lda	g_w + W_CONNECTED_PASSER
+	ldx	g_w + W_CONNECTED_PASSER + 1
+	jsr	.Ls_score_subAX
+.Lps_bp_noconn:
+; if (black_protected(x)) score -= g_w.protected_passer
+	jsr	.Ls_black_protected
+	beq	.Lps_bp_noprot
+	lda	g_w + W_PROTECTED_PASSER
+	ldx	g_w + W_PROTECTED_PASSER + 1
+	jsr	.Ls_score_subAX
+.Lps_bp_noprot:
+; if (black_blockaded(x)) score += g_w.blockaded_passer
+	jsr	.Ls_black_blockaded
+	beq	.Lps_bp_noblk
+	lda	g_w + W_BLOCKADED_PASSER
+	ldx	g_w + W_BLOCKADED_PASSER + 1
+	jsr	.Ls_score_addAX
+.Lps_bp_noblk:
+; if (e.endgame && black_rook_behind(file,row)) score -= g_w.rook_behind_passer
+	lda	E_BUF + E_ENDGAME
+	ora	E_BUF + E_ENDGAME + 1
+	beq	.Lps_bp_norb
+	jsr	.Ls_black_rook_behind
+	beq	.Lps_bp_norb
+	lda	g_w + W_ROOK_BEHIND_PASSER
+	ldx	g_w + W_ROOK_BEHIND_PASSER + 1
+	jsr	.Ls_score_subAX
+.Lps_bp_norb:
+	jmp	.Lps_walk_next
+
+; ===== NON-PAWN: rook open/semi-open file (eval.c 752-763) =====
+.Lps_not_pawn:
+; if (!e.endgame) { ... }  -- middlegame only.
+	lda	E_BUF + E_ENDGAME
+	ora	E_BUF + E_ENDGAME + 1
+	beq	.Lps_np_mid
+	jmp	.Lps_walk_next     ; endgame -> skip; continue
+.Lps_np_mid:
+; rf = x & 7
+	lda	PSX
+	and	#0x07
+	sta	PSFILE             ; rf (reuse PSFILE for the file index)
+; if (p == WHITE_ROOK && wpf[rf]==0) score += (bpf[rf] ? semi : open)
+	lda	__rc9
+	cmp	#WHITE_ROOK
+	bne	.Lps_np_chk_black
+; wpf[rf] == 0 ?
+	lda	PSFILE
+	asl	a
+	tax
+	lda	E_BUF + E_WPF, x
+	ora	E_BUF + E_WPF + 1, x
+	beq	.Lps_np_w_open     ; wpf[rf]==0 -> apply
+	jmp	.Lps_walk_next     ; wpf[rf]!=0 -> nothing; continue
+.Lps_np_w_open:
+; weight = bpf[rf] ? rook_semi_open_file : rook_open_file
+	lda	PSFILE
+	asl	a
+	tax
+	lda	E_BUF + E_BPF, x
+	ora	E_BUF + E_BPF + 1, x
+	bne	.Lps_np_w_semi     ; bpf[rf]!=0 -> semi-open
+	lda	g_w + W_ROOK_OPEN_FILE
+	ldx	g_w + W_ROOK_OPEN_FILE + 1
+	jsr	.Ls_score_addAX
+	jmp	.Lps_walk_next
+.Lps_np_w_semi:
+	lda	g_w + W_ROOK_SEMI_OPEN_FILE
+	ldx	g_w + W_ROOK_SEMI_OPEN_FILE + 1
+	jsr	.Ls_score_addAX
+	jmp	.Lps_walk_next
+.Lps_np_chk_black:
+; else if (p == BLACK_ROOK && bpf[rf]==0) score -= (wpf[rf] ? semi : open)
+	lda	__rc9
+	cmp	#BLACK_ROOK
+	beq	.Lps_np_is_brook
+	jmp	.Lps_walk_next     ; neither rook -> continue
+.Lps_np_is_brook:
+; bpf[rf] == 0 ?
+	lda	PSFILE
+	asl	a
+	tax
+	lda	E_BUF + E_BPF, x
+	ora	E_BUF + E_BPF + 1, x
+	beq	.Lps_np_b_open     ; bpf[rf]==0 -> apply
+	jmp	.Lps_walk_next     ; bpf[rf]!=0 -> nothing
+.Lps_np_b_open:
+; weight = wpf[rf] ? rook_semi_open_file : rook_open_file
+	lda	PSFILE
+	asl	a
+	tax
+	lda	E_BUF + E_WPF, x
+	ora	E_BUF + E_WPF + 1, x
+	bne	.Lps_np_b_semi     ; wpf[rf]!=0 -> semi-open
+	lda	g_w + W_ROOK_OPEN_FILE
+	ldx	g_w + W_ROOK_OPEN_FILE + 1
+	jsr	.Ls_score_subAX
+	jmp	.Lps_walk_next
+.Lps_np_b_semi:
+	lda	g_w + W_ROOK_SEMI_OPEN_FILE
+	ldx	g_w + W_ROOK_SEMI_OPEN_FILE + 1
+	jsr	.Ls_score_subAX
+	; fall through to walk_next
+
+; ---- loop increment: x++; if (x & 8) x += 8; while (x < 128) --------------
+.Lps_walk_next:
+	inc	PSX
+	lda	PSX
+	and	#0x08
+	beq	.Lps_walk_test
+	lda	PSX
+	clc
+	adc	#8
+	sta	PSX
+.Lps_walk_test:
+	lda	PSX
+	cmp	#BOARD_SIZE
+	bcs	.Lps_walk_done
+	jmp	.Lps_walk
+.Lps_walk_done:
+	rts
+
+; ============================================================================
+; pawn_structure helper subroutines (eval.c 614-716). All take state from
+; .bss (PSX/PSFILE/PSROW); require __rc2/3 = BPTR. Return A=1/0 (Z set when 0).
+; They make NO jsr to C and PRESERVE __rc2/3.
+; ============================================================================
+
+; .Ls_white_passed -- white_passed(e, PSFILE, PSROW). eval.c 614-632.
+;   r=row; loop{ r--; if r<0 return 1; y=(r<<4)|file;
+;     if (b[y]&7)==PAWN_T && !(b[y]&0x80) return 0;   (enemy=black pawn)
+;     if file!=0 { yl=y-1; if (b[yl]&7)==PAWN_T && !(b[yl]&0x80) return 0; }
+;     if file!=7 { yr=y+1; if (b[yr]&7)==PAWN_T && !(b[yr]&0x80) return 0; } }
+;   Scratch: A/X/Y, __rc12 (r as signed-ish 0..7 then below 0), __rc13 (y).
+.Ls_white_passed:
+	lda	PSROW
+	sta	__rc12             ; r = row
+.Lwp_loop:
+	dec	__rc12             ; r--
+	lda	__rc12
+	bmi	.Lwp_yes           ; r < 0 -> return 1 (passed)
+; y = (r<<4)|file
+	asl	a
+	asl	a
+	asl	a
+	asl	a                  ; r<<4
+	ora	PSFILE
+	sta	__rc13             ; y
+; centre file: enemy black pawn at y ?
+	tay
+	jsr	.Lps_is_black_pawn_y
+	bne	.Lwp_no            ; black pawn -> not passed
+; if file!=0: yl = y-1
+	lda	PSFILE
+	beq	.Lwp_skip_left
+	ldy	__rc13
+	dey                       ; y-1
+	jsr	.Lps_is_black_pawn_y
+	bne	.Lwp_no
+.Lwp_skip_left:
+; if file!=7: yr = y+1
+	lda	PSFILE
+	cmp	#7
+	beq	.Lwp_loop          ; file==7 -> skip right, next r
+	ldy	__rc13
+	iny                       ; y+1
+	jsr	.Lps_is_black_pawn_y
+	bne	.Lwp_no
+	jmp	.Lwp_loop
+.Lwp_yes:
+	lda	#1
+	rts
+.Lwp_no:
+	lda	#0
+	rts
+
+; .Ls_black_passed -- black_passed(e, PSFILE, PSROW). eval.c 634-652.
+;   r=row; loop{ r++; if r==8 return 1; y=(r<<4)|file;
+;     if (b[y]&7)==PAWN_T && (b[y]&0x80) return 0;   (enemy=white pawn)
+;     ... y-1 / y+1 white-pawn neighbours ... }
+.Ls_black_passed:
+	lda	PSROW
+	sta	__rc12             ; r = row
+.Lbp_loop:
+	inc	__rc12             ; r++
+	lda	__rc12
+	cmp	#8
+	beq	.Lbp_yes           ; r == 8 -> return 1
+; y = (r<<4)|file
+	asl	a
+	asl	a
+	asl	a
+	asl	a
+	ora	PSFILE
+	sta	__rc13             ; y
+	tay
+	jsr	.Lps_is_white_pawn_y
+	bne	.Lbp_no
+	lda	PSFILE
+	beq	.Lbp_skip_left
+	ldy	__rc13
+	dey
+	jsr	.Lps_is_white_pawn_y
+	bne	.Lbp_no
+.Lbp_skip_left:
+	lda	PSFILE
+	cmp	#7
+	beq	.Lbp_loop
+	ldy	__rc13
+	iny
+	jsr	.Lps_is_white_pawn_y
+	bne	.Lbp_no
+	jmp	.Lbp_loop
+.Lbp_yes:
+	lda	#1
+	rts
+.Lbp_no:
+	lda	#0
+	rts
+
+; .Lps_is_black_pawn_y -- given Y = index, return A=1 (Z clear) if
+;   (b[Y]&7)==PAWN_T && !(b[Y]&0x80), i.e. a BLACK pawn; else A=0 (Z set).
+;   NB: the C tests ptype+color separately (NOT ==BLACK_PAWN), so a black pawn
+;   byte is exactly 0x01 here, but a value like (PAWN_T without color, any high
+;   bits) -> only 0x01 qualifies in practice; replicate the EXACT C test.
+;   Requires __rc2/3 = BPTR. Preserves __rc12/13. Uses A.
+.Lps_is_black_pawn_y:
+	lda	(__rc2),y          ; b[Y]
+	pha
+	and	#0x07
+	cmp	#PT_PAWN
+	bne	.Lpbp_no_pull      ; (b&7)!=PAWN_T
+	pla                       ; b[Y]
+	and	#WHITE_COLOR
+	bne	.Lpbp_no           ; (b&0x80)!=0 -> white pawn, not black
+	lda	#1
+	rts
+.Lpbp_no_pull:
+	pla
+.Lpbp_no:
+	lda	#0
+	rts
+
+; .Lps_is_white_pawn_y -- A=1 if (b[Y]&7)==PAWN_T && (b[Y]&0x80) (WHITE pawn).
+.Lps_is_white_pawn_y:
+	lda	(__rc2),y
+	pha
+	and	#0x07
+	cmp	#PT_PAWN
+	bne	.Lpwp_no_pull
+	pla
+	and	#WHITE_COLOR
+	beq	.Lpwp_no           ; (b&0x80)==0 -> black pawn, not white
+	lda	#1
+	rts
+.Lpwp_no_pull:
+	pla
+.Lpwp_no:
+	lda	#0
+	rts
+
+; .Ls_white_connected -- white_connected(e, sq=PSX, file=PSFILE). eval.c 654-658.
+;   if file!=0 && b[sq-1]==WHITE_PAWN return 1;
+;   if file!=7 && b[sq+1]==WHITE_PAWN return 1; return 0.
+;   sq-1 / sq+1 are raw +-1 on the index, guarded by file. Requires __rc2/3=BPTR.
+.Ls_white_connected:
+	lda	PSFILE
+	beq	.Lwc_skip_left     ; file==0 -> skip left
+	ldy	PSX
+	dey                       ; sq-1
+	lda	(__rc2),y
+	cmp	#WHITE_PAWN
+	beq	.Lwc_yes
+.Lwc_skip_left:
+	lda	PSFILE
+	cmp	#7
+	beq	.Lwc_no            ; file==7 -> skip right
+	ldy	PSX
+	iny                       ; sq+1
+	lda	(__rc2),y
+	cmp	#WHITE_PAWN
+	beq	.Lwc_yes
+.Lwc_no:
+	lda	#0
+	rts
+.Lwc_yes:
+	lda	#1
+	rts
+
+; .Ls_black_connected -- black_connected. eval.c 660-665. Same shape, BLACK_PAWN.
+.Ls_black_connected:
+	lda	PSFILE
+	beq	.Lbc_skip_left
+	ldy	PSX
+	dey
+	lda	(__rc2),y
+	cmp	#BLACK_PAWN
+	beq	.Lbc_yes
+.Lbc_skip_left:
+	lda	PSFILE
+	cmp	#7
+	beq	.Lbc_no
+	ldy	PSX
+	iny
+	lda	(__rc2),y
+	cmp	#BLACK_PAWN
+	beq	.Lbc_yes
+.Lbc_no:
+	lda	#0
+	rts
+.Lbc_yes:
+	lda	#1
+	rts
+
+; .Ls_white_protected -- white_protected(e, sq=PSX). eval.c 667-674.
+;   a=add8(sq,0x0F); if !(a&0x88) && b[a]==WHITE_PAWN return 1;
+;   a=add8(sq,0x11); if !(a&0x88) && b[a]==WHITE_PAWN return 1; return 0.
+;   Requires __rc2/3 = BPTR.
+.Ls_white_protected:
+	lda	PSX
+	clc
+	adc	#0x0F
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lwpr_try11        ; offboard -> try second
+	lda	(__rc2),y
+	cmp	#WHITE_PAWN
+	beq	.Lwpr_yes
+.Lwpr_try11:
+	lda	PSX
+	clc
+	adc	#0x11
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lwpr_no
+	lda	(__rc2),y
+	cmp	#WHITE_PAWN
+	beq	.Lwpr_yes
+.Lwpr_no:
+	lda	#0
+	rts
+.Lwpr_yes:
+	lda	#1
+	rts
+
+; .Ls_black_protected -- black_protected(e, sq=PSX). eval.c 675-682.
+;   a=add8(sq,-0x0F)=add8(sq,0xF1); ... ; a=add8(sq,-0x11)=add8(sq,0xEF); BLACK_PAWN.
+.Ls_black_protected:
+	lda	PSX
+	clc
+	adc	#0xF1              ; add8(sq,-0x0F): sq+0xF1 (mod 256)
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lbpr_try11
+	lda	(__rc2),y
+	cmp	#BLACK_PAWN
+	beq	.Lbpr_yes
+.Lbpr_try11:
+	lda	PSX
+	clc
+	adc	#0xEF              ; add8(sq,-0x11): sq+0xEF (mod 256)
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lbpr_no
+	lda	(__rc2),y
+	cmp	#BLACK_PAWN
+	beq	.Lbpr_yes
+.Lbpr_no:
+	lda	#0
+	rts
+.Lbpr_yes:
+	lda	#1
+	rts
+
+; .Ls_white_blockaded -- white_blockaded(e, sq=PSX). eval.c 684-688.
+;   a=add8(sq,-0x10)=add8(sq,0xF0); if a&0x88 return 0; return b[a]!=EMPTY.
+;   Requires __rc2/3 = BPTR.
+.Ls_white_blockaded:
+	lda	PSX
+	clc
+	adc	#0xF0              ; add8(sq,-0x10): sq+0xF0 (mod 256)
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lwbl_no           ; offboard -> 0
+	lda	(__rc2),y          ; b[a]
+	bne	.Lwbl_yes          ; != EMPTY -> 1
+	lda	#0
+	rts
+.Lwbl_yes:
+	lda	#1
+	rts
+.Lwbl_no:
+	lda	#0
+	rts
+
+; .Ls_black_blockaded -- black_blockaded(e, sq=PSX). eval.c 689-693.
+;   a=add8(sq,0x10); if a&0x88 return 0; return b[a]!=EMPTY.
+.Ls_black_blockaded:
+	lda	PSX
+	clc
+	adc	#0x10
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lbbl_no
+	lda	(__rc2),y
+	bne	.Lbbl_yes
+	lda	#0
+	rts
+.Lbbl_yes:
+	lda	#1
+	rts
+.Lbbl_no:
+	lda	#0
+	rts
+
+; .Ls_white_rook_behind -- white_rook_behind(e, PSFILE, PSROW). eval.c 695-705.
+;   r=row; loop{ r++; if r==8 return 0; y=(r<<4)|file; if b[y]==WHITE_ROOK ret 1; }
+;   Requires __rc2/3 = BPTR. Scratch __rc12 (r).
+.Ls_white_rook_behind:
+	lda	PSROW
+	sta	__rc12
+.Lwrb_loop:
+	inc	__rc12
+	lda	__rc12
+	cmp	#8
+	beq	.Lwrb_no           ; r==8 -> 0
+	asl	a
+	asl	a
+	asl	a
+	asl	a                  ; r<<4
+	ora	PSFILE
+	tay
+	lda	(__rc2),y
+	cmp	#WHITE_ROOK
+	beq	.Lwrb_yes
+	jmp	.Lwrb_loop
+.Lwrb_yes:
+	lda	#1
+	rts
+.Lwrb_no:
+	lda	#0
+	rts
+
+; .Ls_black_rook_behind -- black_rook_behind(e, PSFILE, PSROW). eval.c 706-716.
+;   r=row; loop{ r--; if r<0 return 0; y=(r<<4)|file; if b[y]==BLACK_ROOK ret 1; }
+.Ls_black_rook_behind:
+	lda	PSROW
+	sta	__rc12
+.Lbrb_loop:
+	dec	__rc12
+	lda	__rc12
+	bmi	.Lbrb_no           ; r<0 -> 0
+	asl	a
+	asl	a
+	asl	a
+	asl	a
+	ora	PSFILE
+	tay
+	lda	(__rc2),y
+	cmp	#BLACK_ROOK
+	beq	.Lbrb_yes
+	jmp	.Lbrb_loop
+.Lbrb_yes:
+	lda	#1
+	rts
+.Lbrb_no:
+	lda	#0
 	rts
 
 .Lfunc_end_eval_full:
