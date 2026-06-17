@@ -22,6 +22,22 @@
  */
 #include "eval.h"
 
+/* Wholesale eval_full hand-asm bring-up (docs/eval-asm-scope.md, phase 2).
+ * The asm eval_full (eval_full_6502.s, built with -DCREF_ASM_EVAL_FULL) replaces
+ * the C eval_full body below but, DURING BRING-UP, still jsr's to the individual
+ * C term helpers it has not yet inlined -- so the validator stays 22157/22157 the
+ * whole way and any divergence bisects to exactly the one term just converted.
+ * EVAL_HELPER gives those helpers external linkage in the asm build (so the .s
+ * can call them) while keeping them `static` in the host oracle build (no symbol
+ * leak, no behavior change). The SHIP build inlines every term -> no jsr-to-C
+ * remains (the scope doc's no-extern-boundary requirement) and EVAL_HELPER goes
+ * back to a no-op. */
+#ifdef CREF_ASM_EVAL_FULL
+#define EVAL_HELPER /* external linkage: callable from eval_full_6502.s */
+#else
+#define EVAL_HELPER static
+#endif
+
 /* ------------------------------------------------------------------------- */
 /* Tunable weights (override target). Baselines set by eval_reset_weights().  */
 /* ------------------------------------------------------------------------- */
@@ -460,21 +476,21 @@ static int is_queen_attacked(const Eval *e, int sq, int color, int ptype) {
 /* ------------------------------------------------------------------------- */
 /* Per-piece full-eval terms (main board pass)                               */
 /* ------------------------------------------------------------------------- */
-static void pawn_pressure(Eval *e, int sq, int color, int ptype) {
+EVAL_HELPER void pawn_pressure(Eval *e, int sq, int color, int ptype) {
     int pen;
     if (!is_pawn_attacked(e, sq, color, ptype)) return;
     pen = ET_PAWN_ATTACK[ptype];
     if (color) e->score -= pen; else e->score += pen;
 }
 
-static void queen_pressure(Eval *e, int sq, int color, int ptype) {
+EVAL_HELPER void queen_pressure(Eval *e, int sq, int color, int ptype) {
     int pen;
     if (!is_queen_attacked(e, sq, color, ptype)) return;
     pen = ET_QUEEN_ATTACK[ptype];
     if (color) e->score -= pen; else e->score += pen;
 }
 
-static void minor_pressure(Eval *e, int sq, int color, int ptype) {
+EVAL_HELPER void minor_pressure(Eval *e, int sq, int color, int ptype) {
     int attacked, pen;
     if (ptype < ROOK_T || ptype >= KING_T) return; /* only rook(4), queen(5) */
     attacked = is_knight_attacked(e, sq, color);
@@ -485,7 +501,7 @@ static void minor_pressure(Eval *e, int sq, int color, int ptype) {
     if (color) e->score -= pen; else e->score += pen;
 }
 
-static void knight_outpost(Eval *e, int sq, int color, int ptype) {
+EVAL_HELPER void knight_outpost(Eval *e, int sq, int color, int ptype) {
     int file, row16;
     if (ptype != KNIGHT_T) return;
     file = sq & 0x07;
@@ -537,7 +553,7 @@ static int count_sliding_mobility(const Eval *e, int sq, int color,
     return count;
 }
 
-static void mobility(Eval *e, int sq, int color, int ptype) {
+EVAL_HELPER void mobility(Eval *e, int sq, int color, int ptype) {
     int raw;
     int half, contrib;
     if (ptype == KNIGHT_T)      raw = count_knight_mobility(e, sq, color);
@@ -557,7 +573,7 @@ static void mobility(Eval *e, int sq, int color, int ptype) {
     if (color) e->score += contrib; else e->score -= contrib;
 }
 
-static void seventh_rank(Eval *e, int sq, int color, int ptype) {
+EVAL_HELPER void seventh_rank(Eval *e, int sq, int color, int ptype) {
     int row16;
     if (ptype != ROOK_T && ptype != QUEEN_T) return;
     row16 = sq & 0x70;
@@ -568,7 +584,7 @@ static void seventh_rank(Eval *e, int sq, int color, int ptype) {
     }
 }
 
-static void advanced_pawn(Eval *e, int sq, int color, int ptype) {
+EVAL_HELPER void advanced_pawn(Eval *e, int sq, int color, int ptype) {
     int row16;
     if (ptype != PAWN_T) return;
     row16 = sq & 0x70;
@@ -588,7 +604,7 @@ static void advanced_pawn(Eval *e, int sq, int color, int ptype) {
 /* ------------------------------------------------------------------------- */
 /* Tail terms                                                                */
 /* ------------------------------------------------------------------------- */
-static void bishop_pair(Eval *e) {
+EVAL_HELPER void bishop_pair(Eval *e) {
     if (e->wbishops >= 2) e->score += g_w.bishop_pair;
     if (e->bbishops >= 2) e->score -= g_w.bishop_pair;
 }
@@ -697,7 +713,7 @@ static int black_rook_behind(const Eval *e, int file, int row) {
     }
 }
 
-static void pawn_structure(Eval *e) {
+EVAL_HELPER void pawn_structure(Eval *e) {
     const uint8_t *b = e->b;
     int x, f;
     /* wpf[]/bpf[] are already populated by eval_full's main board pass (and
@@ -818,7 +834,7 @@ static void pins_from_king(Eval *e, int king_sq, int king_color) {
     }
 }
 
-static void king_pins(Eval *e) {
+EVAL_HELPER void king_pins(Eval *e) {
     pins_from_king(e, e->wk, WHITE_COLOR);
     pins_from_king(e, e->bk, 0);
 }
@@ -859,7 +875,7 @@ static void endgame_rook_activity(Eval *e) {
     }
 }
 
-static void endgame(Eval *e) {
+EVAL_HELPER void endgame(Eval *e) {
     e->score += endgame_king_activity(e->wk);
     e->score -= endgame_king_activity(e->bk);
     if (e->pawns != 0 && e->nonpawn != 0) endgame_rook_activity(e);
@@ -1008,7 +1024,7 @@ static int single_king_safety(const Eval *e, int king_sq) {
     return s;
 }
 
-static void king_safety(Eval *e) {
+EVAL_HELPER void king_safety(Eval *e) {
     int wb = single_king_safety(e, e->wk);
     int bb;
     e->score += byte_x10(wb);
@@ -1063,7 +1079,7 @@ static int count_king_zone_attackers(const Eval *e, int king_sq, int attacker_co
     return c;
 }
 
-static void king_attack_escalation(Eval *e) {
+EVAL_HELPER void king_attack_escalation(Eval *e) {
     int cw, cb;
     if (g_w.king_attack_escalation == 0) return;
     /* white king attacked by black pieces: more attackers -> worse for white. */
@@ -1080,7 +1096,7 @@ static void king_attack_escalation(Eval *e) {
  *     bonus = pawn_storm * (rank-3) = pawn_storm * (4 - row)  [rank = 8 - row]
  *   black pawn near white king: file diff <=1, row 3..6 (chess rank 5..2),
  *     bonus = pawn_storm * (6 - rank) = pawn_storm * (row - 2) */
-static void pawn_storm(Eval *e) {
+EVAL_HELPER void pawn_storm(Eval *e) {
     const uint8_t *b;
     int bk_file, wk_file, x;
     if (g_w.pawn_storm == 0) return;
@@ -1113,7 +1129,7 @@ static void pawn_storm(Eval *e) {
 
 /* queen_attacks_minor: for each queen, slide all 8 directions; if the first
  * piece hit is an ENEMY knight or bishop, penalize that minor's owner. */
-static void queen_attacks_minor(Eval *e) {
+EVAL_HELPER void queen_attacks_minor(Eval *e) {
     const uint8_t *b;
     int x;
     if (g_w.queen_attacks_minor == 0) return;
@@ -1278,6 +1294,7 @@ int eval_material_pst(const Board *b) {
 /* ------------------------------------------------------------------------- */
 /* Main eval entry                                                           */
 /* ------------------------------------------------------------------------- */
+#ifndef CREF_ASM_EVAL_FULL
 int eval_full(const Board *board) {
     Eval e;
     const uint8_t *b;
@@ -1391,3 +1408,4 @@ int eval_full(const Board *board) {
     if (s >= 0x8000) s -= 0x10000;
     return s;
 }
+#endif /* !CREF_ASM_EVAL_FULL -- the asm body (eval_full_6502.s) replaces this */
