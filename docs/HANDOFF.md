@@ -8,7 +8,7 @@ Colossus headlessly** and read both sides' moves — so the next phase is to
 **scale it up and tune Caïssa's eval/search against Colossus** (Colossus is the
 bar, not Stockfish).
 
-## Where we are (branch `colossus-match-build`, all commits green)
+## Where we are (merged to `main`, all commits green, not yet pushed)
 The whole Caïssa-vs-Colossus match harness is **BUILT and PROVEN end-to-end**.
 A real game was played headlessly: `1. d4 d5  2. Bf4 Nf6  3. Nc3 e6` (legal,
 sensible, PGN emitted). The four pieces:
