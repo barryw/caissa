@@ -342,6 +342,13 @@ static const int PIN_RAY[8] = { -16, 16, -1, 1, -17, -15, 15, 17 };
  * make_move -> king-safety probe -> unmake_move verification, which is known
  * correct. This preserves the EXACT legal move set and order (we iterate the
  * same pseudo-moves in the same order; only the per-move test changes). */
+#ifdef CREF_ASM_GEN_LEGAL
+/* 6502 image: this function is replaced by a hand-written 6502 asm version in
+ * native/gen_legal_6502.s, BIT-IDENTICAL to the C body below (same legal-move
+ * set AND emission order; gate-proven via PERFT EXACT + 6502 image == cref_mos +
+ * golden moves). -DCREF_ASM_GEN_LEGAL is passed only on the mos-sim / c64 builds,
+ * which also link the .s; the host (clang) build keeps the C body. */
+#else
 int gen_legal(const Board *b, Move *list) {
     Move *pseudo = g_pseudo;
     int np = gen_pseudo(b, pseudo);
@@ -424,6 +431,7 @@ int gen_legal(const Board *b, Move *list) {
     }
     return n;
 }
+#endif /* CREF_ASM_GEN_LEGAL */
 
 /* perft lives in the host-only test_perft.c (verification, not the engine): it
  * needs a per-depth stack of move lists, which we keep off the cc65 engine. */
