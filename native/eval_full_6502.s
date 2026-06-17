@@ -7,12 +7,12 @@
 ; tapered-blend guard, the tempo term, and the final 16-bit wrap.
 ;
 ; TERM HELPER STATUS (the per-piece + advanced_pawn positional terms):
-;   INLINE asm (group a, bit-exact 22157/22157):
+;   INLINE asm (groups a + b, bit-exact 22157/22157):
 ;     advanced_pawn, pawn_pressure, knight_outpost, queen_pressure,
 ;     minor_pressure   (+ their inlined probes: check_white/black_pawn_at,
-;     is_pawn_attacked, is_knight_attacked, is_bishop_attacked, is_queen_attacked)
-;   still jsr-to-C (group b, later session):
-;     mobility, seventh_rank
+;     is_pawn_attacked, is_knight_attacked, is_bishop_attacked, is_queen_attacked),
+;     mobility (+ inlined count_knight_mobility, count_sliding_mobility),
+;     seventh_rank
 ;   still jsr-to-C (the tail, later sessions):
 ;     bishop_pair, pawn_structure, king_pins, king_safety, endgame,
 ;     king_attack_escalation, pawn_storm, queen_attacks_minor
@@ -93,8 +93,10 @@
 ;     +150  int acc_phase
 ;
 ;   EvalWeights g_w -- sizeof = 110:
+;     +58   int heavy_seventh_rank   (field index 29; confirmed via offsetof probe)
 ;     +60   int endgame_nonpawn_limit
 ;     +100  int tempo
+;     +102  int trapped_penalty      (field index 51; confirmed via offsetof probe)
 ;
 ; ----------------------------------------------------------------------------
 ; THE C STRUCTURE THIS REPLICATES  (native/eval.c eval_full, lines ~1298-1410):
@@ -116,6 +118,10 @@
 	.zeropage	__rc9
 	.zeropage	__rc10
 	.zeropage	__rc11
+	.zeropage	__rc12
+	.zeropage	__rc13
+	.zeropage	__rc14
+	.zeropage	__rc15
 
 	.globl	eval_full
 	.globl	g_w
@@ -167,8 +173,10 @@ B_ACC_PHASE = 150
 W_KNIGHT_OUTPOST        = 24
 W_ADVANCED_PAWN         = 40
 W_DEEP_ADVANCED_PAWN    = 42
+W_HEAVY_SEVENTH_RANK    = 58
 W_ENDGAME_NONPAWN_LIMIT = 60
 W_TEMPO                 = 100
+W_TRAPPED_PENALTY       = 102
 
 ; ---- extra C constants used by the inlined group-(a) terms ------------------
 OFFBOARD_MASK = 0x88
@@ -192,6 +200,7 @@ SQ_WQ_HOME    = 0x73      ; white queen home (d1) for is_queen_attacked
 	.section	.rodata.eval_full_6502,"a",@progbits
 KNIGHT_OFFS:   .byte 0xDF,0xE1,0xEE,0xF2,0x0E,0x12,0x1F,0x21   ; KNIGHT_OFFSETS[8]
 DIAG_OFFS:     .byte 0xEF,0xF1,0x0F,0x11                       ; DIAGONAL_OFFSETS[4]
+ORTHO_OFFS:    .byte 0xF0,0x10,0xFF,0x01                       ; ORTHOGONAL_OFFSETS[4]
 ALLDIR_OFFS:   .byte 0xEF,0xF0,0xF1,0xFF,0x01,0x0F,0x10,0x11   ; ALL_DIRECTION_OFFSETS[8]
 
 ; ============================================================================
@@ -505,11 +514,16 @@ eval_full:
 ; (__rc2/3 still = BPTR; the inlined terms above never jsr to C.)
 	jsr	.Ls_knight_outpost
 
-; ---- mobility, seventh_rank still jsr-to-C (group b) ------------------------
-	jsr	.Lcall_term_args
-	jsr	mobility
-	jsr	.Lcall_term_args
-	jsr	seventh_rank
+; ---- mobility (INLINE, eval.c 558-576) -------------------------------------
+; (__rc2/3 still = BPTR from the .Lpt_do reload; the inline group-(a) terms
+;  above never jsr to C, so it survives. .Ls_mobility needs it for board reads.)
+	jsr	.Ls_mobility
+
+; ---- seventh_rank (INLINE, eval.c 578-587) ---------------------------------
+; (the C helper takes no board reads -- pure sq/color/ptype -- so __rc2/3 need
+;  not be BPTR here. It reads all state fresh from .bss, so .Ls_mobility's
+;  scratch clobbers are harmless.)
+	jsr	.Ls_seventh_rank
 	; fall through to walk_next
 
 ; ---- loop increment: x++; if (x & 8) x += 8; while (x < 128) --------------
@@ -727,32 +741,10 @@ eval_full:
 	rts
 
 ; ============================================================================
-; .Lcall_term_args -- set up the 4-arg helper ABI from the current loop state:
-;   __rc2/3 = &E_BUF      (arg1 e)
-;   A / X   = sq (=WALKX) / 0   (arg2 sq)
-;   __rc4/5 = color / 0   (arg3 color, from CURCOL)
-;   __rc6/7 = ptype / 0   (arg4 ptype, from CURPT)
-; color/ptype come from .bss (CURCOL/CURPT) so they are reconstructed fresh
-; before EACH helper call -- the previous helper clobbered the caller-saved regs,
-; but .bss is untouched. Returns with A/X = sq ready; caller immediately jsr's
-; the helper.
+; (.Lcall_term_args removed: with mobility + seventh_rank now inlined, no
+;  per-piece 4-arg jsr-to-C helper remains. The surviving jsr-to-C tail terms
+;  are all 1-arg (&e) and use .Lset_e_ptr.)
 ; ============================================================================
-.Lcall_term_args:
-	lda	EVADDR
-	sta	__rc2
-	lda	EVADDR+1
-	sta	__rc3
-	lda	CURCOL             ; color
-	sta	__rc4
-	lda	#0
-	sta	__rc5
-	lda	CURPT              ; ptype
-	sta	__rc6
-	lda	#0
-	sta	__rc7
-	ldx	#0                 ; sq hi = 0
-	lda	WALKX              ; sq lo = x
-	rts
 
 ; ============================================================================
 ; .Lset_e_ptr -- set __rc2/3 = &E_BUF (arg1 for the 1-arg tail helpers).
@@ -1132,6 +1124,218 @@ eval_full:
 	ldx	g_w + W_KNIGHT_OUTPOST + 1
 	jmp	.Ls_score_subAX    ; e.score -= g_w.knight_outpost; (tail-call, rts)
 .Lko_ret:
+	rts
+
+; .Ls_seventh_rank -- seventh_rank(e, sq, color, ptype). eval.c 578-587.
+;   if (ptype != ROOK_T && ptype != QUEEN_T) return;
+;   row16 = sq & 0x70;
+;   white(color!=0): if (row16 == 0x10) e.score += g_w.heavy_seventh_rank;
+;   black(color==0): if (row16 == 0x60) e.score -= g_w.heavy_seventh_rank;
+;   Reads WALKX/CURPT/CURCOL. No board reads (no __rc2/3 dependency).
+.Ls_seventh_rank:
+	lda	CURPT
+	cmp	#PT_ROOK
+	beq	.Lsr_ok            ; ptype == ROOK_T
+	cmp	#PT_QUEEN
+	beq	.Lsr_ok            ; ptype == QUEEN_T
+	rts                       ; neither rook nor queen
+.Lsr_ok:
+	lda	WALKX
+	and	#0x70              ; row16
+	ldy	CURCOL
+	beq	.Lsr_black
+; --- white: row16 == 0x10 -> e.score += heavy_seventh_rank ---
+	cmp	#0x10
+	beq	.Lsr_w_add
+	rts
+.Lsr_w_add:
+	lda	g_w + W_HEAVY_SEVENTH_RANK
+	ldx	g_w + W_HEAVY_SEVENTH_RANK + 1
+	jmp	.Ls_score_addAX    ; tail-call (rts)
+.Lsr_black:
+; --- black: row16 == 0x60 -> e.score -= heavy_seventh_rank ---
+	cmp	#0x60
+	beq	.Lsr_b_sub
+	rts
+.Lsr_b_sub:
+	lda	g_w + W_HEAVY_SEVENTH_RANK
+	ldx	g_w + W_HEAVY_SEVENTH_RANK + 1
+	jmp	.Ls_score_subAX    ; tail-call (rts)
+
+; ============================================================================
+; .Ls_mobility -- mobility(e, sq, color, ptype). eval.c 558-576.
+;   dispatch raw count by ptype (knight = single-step 8 offsets; bishop/rook/
+;   queen = sliding ray scan over DIAG(4)/ORTHO(4)/ALLDIR(8)); pawn/king return.
+;   then:  if (raw==0) { color ? score-=trapped : score+=trapped; }
+;          half = raw>>1; if (half==0) return;
+;          contrib = half*10 = (half<<1)+(half<<3);
+;          color ? score+=contrib : score-=contrib.
+;   ORDER matters: trapped check (raw==0) BEFORE the half computation; raw==0
+;   implies half==0 so they are mutually exclusive (faithful to the C).
+;   Requires __rc2/3 = BPTR. Reads WALKX/CURPT/CURCOL. Scratch: A/X/Y,
+;   __rc8 (color cache), __rc9 (count), __rc10/11 (offset table), __rc12 (n).
+; ----------------------------------------------------------------------------
+; NB the mobility "count" test is (piece & 0x80) != color -- counts EMPTY OR
+; ENEMY squares -- which is DIFFERENT from group (a)'s exact-enemy-byte attack
+; probes. Implemented via:  (b[idx] & 0x80) eor color  -> nonzero iff enemy.
+.Ls_mobility:
+	lda	CURPT
+	cmp	#PT_KNIGHT
+	bne	.Lmob_chk_bishop
+	jsr	.Ls_mob_knight     ; A = raw
+	jmp	.Lmob_apply
+.Lmob_chk_bishop:
+	cmp	#PT_BISHOP
+	bne	.Lmob_chk_rook
+	lda	#<DIAG_OFFS
+	sta	__rc10
+	lda	#>DIAG_OFFS
+	sta	__rc11
+	lda	#4
+	sta	__rc12
+	jsr	.Ls_mob_slide      ; A = raw
+	jmp	.Lmob_apply
+.Lmob_chk_rook:
+	cmp	#PT_ROOK
+	bne	.Lmob_chk_queen
+	lda	#<ORTHO_OFFS
+	sta	__rc10
+	lda	#>ORTHO_OFFS
+	sta	__rc11
+	lda	#4
+	sta	__rc12
+	jsr	.Ls_mob_slide      ; A = raw
+	jmp	.Lmob_apply
+.Lmob_chk_queen:
+	cmp	#PT_QUEEN
+	beq	.Lmob_queen
+	rts                       ; not a mobile piece type -> return
+.Lmob_queen:
+	lda	#<ALLDIR_OFFS
+	sta	__rc10
+	lda	#>ALLDIR_OFFS
+	sta	__rc11
+	lda	#8
+	sta	__rc12
+	jsr	.Ls_mob_slide      ; A = raw
+	; fall through to apply
+
+; ---- apply: raw count in A (eval.c 567-575) --------------------------------
+.Lmob_apply:
+	tay                       ; Y = raw (preserve while testing raw==0)
+	bne	.Lmob_not_trapped
+; raw == 0 -> trapped: color ? score-=trapped : score+=trapped
+	lda	g_w + W_TRAPPED_PENALTY
+	ldx	g_w + W_TRAPPED_PENALTY + 1
+	ldy	CURCOL
+	beq	.Lmob_trap_white   ; color==0 (black piece) -> += trapped
+	jmp	.Ls_score_subAX    ; color!=0 (white piece) -> -= trapped (tail rts)
+.Lmob_trap_white:
+	jmp	.Ls_score_addAX    ; black piece -> += trapped (tail rts)
+.Lmob_not_trapped:
+; half = raw >> 1; if (half==0) return
+	tya                       ; A = raw
+	lsr	a                  ; A = raw >> 1 = half
+	bne	.Lmob_have_half
+	rts                       ; half == 0 -> no contribution
+.Lmob_have_half:
+; contrib = half*10 = (half<<1) + (half<<3). half <= ~13 so contrib <= ~130:
+;   fits a byte, but score add/sub is 16-bit -> compute 16-bit contrib in A/X.
+;   half<<1 (call it h2) + half<<3 (h8). All single-byte intermediates here;
+;   high byte = 0 (max 130 < 256), so X (contrib hi) = 0.
+	sta	__rc9              ; __rc9 = half
+	asl	a                  ; A = half*2
+	sta	__rc8              ; __rc8 = half*2  (= h2)
+	lda	__rc9
+	asl	a
+	asl	a
+	asl	a                  ; A = half*8  (= h8)
+	clc
+	adc	__rc8              ; A = half*8 + half*2 = half*10  (contrib lo)
+	ldx	#0                 ; contrib hi = 0
+	ldy	CURCOL
+	beq	.Lmob_ctb_black    ; color==0 (black piece) -> score -= contrib
+	jmp	.Ls_score_addAX    ; color!=0 (white piece) -> score += contrib (tail)
+.Lmob_ctb_black:
+	jmp	.Ls_score_subAX    ; black piece -> score -= contrib (tail)
+
+; ----------------------------------------------------------------------------
+; .Ls_mob_knight -- count_knight_mobility(e, sq, color). eval.c 524-536.
+;   for 8 KNIGHT_OFFSETS: dest=add8(sq,off); if(dest&0x88)continue;
+;     p=b[dest]; if(p==EMPTY)count++; else if((p&0x80)!=color)count++.
+;   Returns A = count. Requires __rc2/3 = BPTR. Reads WALKX/CURCOL.
+;   Scratch: A/X/Y, __rc8 (color), __rc9 (count).
+.Ls_mob_knight:
+	lda	CURCOL
+	sta	__rc8              ; color (0 or 0x80)
+	lda	#0
+	sta	__rc9              ; count = 0
+	ldx	#0                 ; X = offset index 0..7
+.Lmk_loop:
+	lda	WALKX
+	clc
+	adc	KNIGHT_OFFS, x     ; dest = add8(sq, off)
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lmk_next          ; dest & 0x88 -> continue
+	lda	(__rc2),y          ; p = b[dest]
+	beq	.Lmk_count         ; p == EMPTY -> count++
+	and	#WHITE_COLOR       ; p & 0x80
+	eor	__rc8              ; (p & 0x80) ^ color -> nonzero iff enemy
+	beq	.Lmk_next          ; equal color (friendly) -> skip
+.Lmk_count:
+	inc	__rc9
+.Lmk_next:
+	inx
+	cpx	#8
+	bcc	.Lmk_loop
+	lda	__rc9              ; A = count
+	rts
+
+; ----------------------------------------------------------------------------
+; .Ls_mob_slide -- count_sliding_mobility(e, sq, color, offsets, n). eval.c 538-556.
+;   for each of n offsets: ray=sq; loop{ ray=add8(ray,off); if(ray&0x88)break;
+;     p=b[ray]; if(p==EMPTY){count++;continue;} if((p&0x80)!=color)count++; break; }
+;   Returns A = count. Requires __rc2/3 = BPTR. Reads WALKX/CURCOL.
+;   Inputs: __rc10/11 = offset table base, __rc12 = n.
+;   Scratch: A/X/Y, __rc8 (color), __rc9 (count), __rc13 (current offset),
+;            __rc14 (offset index), __rc15 (ray).
+.Ls_mob_slide:
+	lda	CURCOL
+	sta	__rc8              ; color
+	lda	#0
+	sta	__rc9              ; count = 0
+	sta	__rc14             ; offset index = 0
+.Lms_dir:
+	ldy	__rc14
+	lda	(__rc10),y         ; off = offsets[i]
+	sta	__rc13             ; __rc13 = off
+	lda	WALKX
+	sta	__rc15             ; ray = sq
+.Lms_step:
+	lda	__rc15
+	clc
+	adc	__rc13             ; ray = add8(ray, off)
+	sta	__rc15
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lms_dir_done      ; ray & 0x88 -> break this ray
+	lda	(__rc2),y          ; p = b[ray]
+	beq	.Lms_empty         ; p == EMPTY -> count++, continue ray
+	and	#WHITE_COLOR       ; p & 0x80
+	eor	__rc8              ; (p & 0x80) ^ color
+	beq	.Lms_dir_done      ; friendly -> break (no count)
+	inc	__rc9              ; enemy -> count++
+	jmp	.Lms_dir_done      ; then break
+.Lms_empty:
+	inc	__rc9              ; empty -> count++
+	jmp	.Lms_step          ; continue this ray
+.Lms_dir_done:
+	inc	__rc14             ; next offset
+	lda	__rc14
+	cmp	__rc12             ; i < n ?
+	bcc	.Lms_dir
+	lda	__rc9              ; A = count
 	rts
 
 .Lfunc_end_eval_full:
