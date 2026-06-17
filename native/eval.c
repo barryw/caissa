@@ -697,37 +697,11 @@ static int black_rook_behind(const Eval *e, int file, int row) {
     }
 }
 
-static void rook_file_activity(Eval *e) {
-    const uint8_t *b = e->b;
-    int x;
-    for (x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
-        int p = b[x];
-        int f;
-        if (p == WHITE_ROOK) {
-            f = x & 0x07;
-            if (e->wpf[f] != 0) continue;
-            if (e->bpf[f] != 0) e->score += g_w.rook_semi_open_file;
-            else                e->score += g_w.rook_open_file;
-        } else if (p == BLACK_ROOK) {
-            f = x & 0x07;
-            if (e->bpf[f] != 0) continue;
-            if (e->wpf[f] != 0) e->score -= g_w.rook_semi_open_file;
-            else                e->score -= g_w.rook_open_file;
-        }
-    }
-}
-
 static void pawn_structure(Eval *e) {
     const uint8_t *b = e->b;
-    int i, x, f;
-    for (i = 0; i < 8; i++) { e->wpf[i] = 0; e->bpf[i] = 0; }
-    for (x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
-        int file;
-        if ((b[x] & 0x07) != PAWN_T) continue;
-        file = x & 0x07;
-        if (b[x] & WHITE_COLOR) e->wpf[file]++;
-        else                    e->bpf[file]++;
-    }
+    int x, f;
+    /* wpf[]/bpf[] are already populated by eval_full's main board pass (and
+     * pre-zeroed at its top), so the old dedicated count walk is gone. */
 
     /* doubled */
     for (f = 0; f < 8; f++) {
@@ -749,13 +723,30 @@ static void pawn_structure(Eval *e) {
         }
     }
 
-    /* passed pawns + connected/protected/blockaded/rook-behind */
+    /* passed pawns (+connected/protected/blockaded/rook-behind), with rook
+     * open/semi-open-file activity folded into the SAME board walk (was a
+     * separate rook_file_activity pass). Score adds are order-independent
+     * (uint16 modular), and pawn vs rook squares are disjoint, so interleaving
+     * them in one pass is byte-identical to the two old passes. */
     for (x = 0; x < BOARD_SIZE; x++, (x & 0x08) ? x += 8 : 0) {
+        int p = b[x];
         int file, row;
-        if ((b[x] & 0x07) != PAWN_T) continue;
+        if ((p & 0x07) != PAWN_T) {
+            /* rook open/semi-open file (middlegame only) -- folded from
+             * rook_file_activity. Acts only when the rook's own file has no
+             * friendly pawn. */
+            if (!e->endgame) {
+                int rf = x & 0x07;
+                if (p == WHITE_ROOK && e->wpf[rf] == 0)
+                    e->score += e->bpf[rf] ? g_w.rook_semi_open_file : g_w.rook_open_file;
+                else if (p == BLACK_ROOK && e->bpf[rf] == 0)
+                    e->score -= e->wpf[rf] ? g_w.rook_semi_open_file : g_w.rook_open_file;
+            }
+            continue;
+        }
         file = x & 0x07;
         row = x >> 4;
-        if (b[x] & WHITE_COLOR) {
+        if (p & WHITE_COLOR) {
             if (!white_passed(e, file, row)) continue;
             e->score += g_w.passed_pawn_bonus[row];
             if (white_connected(e, x, file)) e->score += g_w.connected_passer;
@@ -773,8 +764,6 @@ static void pawn_structure(Eval *e) {
                 e->score -= g_w.rook_behind_passer;
         }
     }
-
-    if (!e->endgame) rook_file_activity(e);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1332,6 +1321,11 @@ int eval_full(const Board *board) {
          * pre-seeded from the accumulators, so they are NOT accumulated here). */
         if (ptype == PAWN_T) {
             e.pawns++;
+            /* per-file pawn counts, built here in the pass that already visits
+             * every square. wpf/bpf are read only in the tail (pawn_structure,
+             * endgame, king_safety), so populating them mid-pass is byte-identical
+             * to pawn_structure's old dedicated walk -- which is now removed. */
+            if (color) e.wpf[x & 0x07]++; else e.bpf[x & 0x07]++;
             advanced_pawn(&e, x, color, ptype);
         } else if (ptype != KING_T) {
             e.nonpawn++;
