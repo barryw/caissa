@@ -13,7 +13,7 @@ from pathlib import Path
 import chess
 
 ROOT = Path(__file__).resolve().parent.parent
-BIN = ROOT / "src" / "test_perft"
+BIN = ROOT / "build" / "test_perft"
 
 # (fen, max_depth) -- standard perft suite.
 SUITE = [

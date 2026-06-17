@@ -10,7 +10,7 @@
 #   /tmp/eval6502.map    -- linker map (ABI symbol addresses; read by eval_validate)
 #   /tmp/eval_validate   -- host runner (cpu6502 cycle-exact core + stdin/stdout)
 #
-# Then run:  python3 tools/eval_corpus_check.py
+# Then run:  python3 test/eval_corpus_check.py
 #   -> "[6502 eval] 22157/22157 bit-exact vs texel_eval"
 #
 # Prereqs: the one-time llvm-mos toolchain setup in NOTES.md (compiler at
@@ -45,6 +45,6 @@ cc -O2 -o /tmp/eval_validate eval_validate.c ../fast6502_bridge/cpu6502.c
 echo "   built /tmp/eval_validate"
 
 echo
-echo "DONE. Now run:  python3 tools/eval_corpus_check.py"
-echo "  (or a quick subset:  python3 tools/eval_corpus_check.py 500)"
+echo "DONE. Now run:  python3 test/eval_corpus_check.py"
+echo "  (or a quick subset:  python3 test/eval_corpus_check.py 500)"
 echo "Harness: /tmp/eval_validate /tmp/eval6502.sim /tmp/eval6502.map < fenlist"

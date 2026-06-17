@@ -46,7 +46,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--native-depth", type=int, default=0,
                    help="native search depth; 0 = match the 6502's self-reported depth per position")
     p.add_argument("--timeout-cycles", type=int, default=400_000_000)
-    p.add_argument("--positions", type=Path, default=ROOT / "tools" / "openings_big.txt")
+    p.add_argument("--positions", type=Path, default=ROOT / "data" / "openings_big.txt")
     args = p.parse_args(argv)
 
     fens = [ln.strip() for ln in args.positions.read_text().splitlines()

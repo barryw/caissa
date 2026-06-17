@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile tools/opening_repertoire.json into the engine's linked opening book.
+"""Compile data/opening_repertoire.json into the engine's linked opening book.
 
 This is the OFFLINE producer for src/ai/opening_book_data.s. For every repertoire
 entry it:
@@ -146,7 +146,7 @@ def main(argv: list[str]) -> int:
     repo_root = repo_root_from_script()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--repo-root", type=Path, default=repo_root)
-    parser.add_argument("--input", type=Path, default=repo_root / "tools" / "opening_repertoire.json")
+    parser.add_argument("--input", type=Path, default=repo_root / "data" / "opening_repertoire.json")
     parser.add_argument("--output", type=Path, default=repo_root / "src" / "ai" / "opening_book_data.s")
     args = parser.parse_args(argv)
 

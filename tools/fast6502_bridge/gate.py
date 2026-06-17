@@ -83,7 +83,7 @@ def load_fens(n: int) -> list[tuple[str, str]]:
     dataset so we always have >=50 distinct, legal positions."""
     fens: list[tuple[str, str]] = []
     seen: set[str] = set()
-    corpus = json.loads((REPO / "tools" / "stockfish_strength_corpus.json").read_text())
+    corpus = json.loads((REPO / "data" / "stockfish_strength_corpus.json").read_text())
     for p in corpus["positions"]:
         if p["fen"] not in seen:
             fens.append((p["name"], p["fen"]))

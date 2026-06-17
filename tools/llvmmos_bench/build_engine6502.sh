@@ -27,13 +27,14 @@ FENLIST="${2:-/tmp/fenlist.txt}"
 
 CORE="$NATIVE/board.c $NATIVE/movegen.c $NATIVE/eval.c $NATIVE/search.c"
 
+REPO="$HERE/../.."
 echo ">> [1/5] host gates (perft + eval bit-exact) must stay green"
-( cd "$NATIVE" && make -s verify >/dev/null && echo "   host gates: PASS" )
+( cd "$REPO" && make -s verify >/dev/null && echo "   host gates: PASS" )
 
-echo ">> [2/5] build canonical host engine (native/cref) + matched-config oracle (/tmp/cref_mos)"
-( cd "$NATIVE" && make -s cref )
-cc -O3 -w -D__mos__ -I"$NATIVE" $CORE "$NATIVE/cref.c" -o /tmp/cref_mos -lm
-echo "   built native/cref and /tmp/cref_mos"
+echo ">> [2/5] build canonical host engine (build/cref) + matched-config oracle (/tmp/cref_mos)"
+( cd "$REPO" && make -s cli )
+cc -O3 -w -D__mos__ -I"$NATIVE" $CORE "$REPO/apps/cli/cref.c" -o /tmp/cref_mos -lm
+echo "   built build/cref and /tmp/cref_mos"
 
 echo ">> [3/5] compile + link the 6502 image (mos-sim, full native engine + ABI driver)"
 # HAND-ASM OVERRIDE: is_square_attacked (~15% of 6502 cycles) is replaced by a
@@ -58,7 +59,7 @@ if [ ! -f "$FENLIST" ]; then
     python3 - "$FENLIST" <<'PY'
 import json, sys
 out = sys.argv[1]
-fens = [p["fen"] for p in json.load(open("../stockfish_strength_corpus.json"))["positions"]]
+fens = [p["fen"] for p in json.load(open("../../data/stockfish_strength_corpus.json"))["positions"]]
 try:
     lines = open("../../build/texel_big.tsv").read().splitlines()
     for i in range(0, len(lines), 1500):

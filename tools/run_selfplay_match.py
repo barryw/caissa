@@ -222,7 +222,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--adjudicate-win-cp", type=int, default=300)
     p.add_argument("--adjudicate-streak", type=int, default=6,
                    help="adjudicate a win after this many consecutive plies of a >= win-cp material lead (0 disables); cuts decided games short, key for depth-6 wall time")
-    p.add_argument("--start-fen-file", type=Path, default=repo_root / "tools" / "stockfish_opening_fens.txt")
+    p.add_argument("--start-fen-file", type=Path, default=repo_root / "data" / "stockfish_opening_fens.txt")
     p.add_argument("--jobs", type=int, default=6)
     p.add_argument("--sprt", action="store_true",
                    help="stop early when the result is decisive (GSPRT, H0: elo=0 vs H1: elo=sprt-elo1)")

@@ -175,7 +175,7 @@ def main(argv: list[str]) -> int:
 
     g = sub.add_parser("gen", help="generate shards")
     g.add_argument("--sf-path", default=None)
-    g.add_argument("--openings", type=Path, default=REPO / "tools" / "openings_big.txt")
+    g.add_argument("--openings", type=Path, default=REPO / "data" / "openings_big.txt")
     g.add_argument("--games", type=int, default=8000)
     g.add_argument("--jobs", type=int, default=9)
     g.add_argument("--gen-depth", type=int, default=6)

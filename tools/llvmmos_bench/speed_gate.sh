@@ -42,8 +42,8 @@ fi
 # 1: movegen  2: eval -- run the host checks directly (test_perft/test_eval were
 # just built by build_engine6502.sh's `make verify`).
 echo ">> movegen (PERFT) + eval (bit-exact)"
-python3 tools/native_perft_check.py 2>&1 | grep -q "PERFT EXACT" && pass "movegen PERFT EXACT" || fail "PERFT"
-python3 tools/native_eval_check.py 2>&1 | grep -q "22157/22157" && pass "eval 22157/22157 bit-exact" || fail "eval bit-exact"
+python3 test/native_perft_check.py 2>&1 | grep -q "PERFT EXACT" && pass "movegen PERFT EXACT" || fail "PERFT"
+python3 test/native_eval_check.py 2>&1 | grep -q "22157/22157" && pass "eval 22157/22157 bit-exact" || fail "eval bit-exact"
 
 # 3: GOLDEN search regression -- cref_mos d4 + d6 over the corpus must match golden
 echo ">> search golden moves (cref_mos d4 + d6 == golden)"
@@ -57,7 +57,7 @@ for ln in open(golden):
     f, d4, d6 = ln.split("\t")
     g[f] = (d4, d6)
 def mv(fen, d):
-    out = subprocess.run(["native/cref_mos","bestmove",fen,str(d)],capture_output=True,text=True).stdout
+    out = subprocess.run(["/tmp/cref_mos","bestmove",fen,str(d)],capture_output=True,text=True).stdout
     return out.split()[1] if out.startswith("bestmove") else "ERR"
 bad = 0; n = 0
 for ln in open(corpus):

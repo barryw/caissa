@@ -109,7 +109,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--sf-time", type=float, default=0.1, help="Stockfish seconds/move")
     p.add_argument("--games", type=int, default=60)
     p.add_argument("--jobs", type=int, default=8)
-    p.add_argument("--openings", type=Path, default=ROOT / "tools" / "openings_big.txt")
+    p.add_argument("--openings", type=Path, default=ROOT / "data" / "openings_big.txt")
     args = p.parse_args(argv)
     if args.sf_elo is None and args.sf_skill is None:
         args.sf_elo = 1500

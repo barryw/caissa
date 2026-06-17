@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "test"))  # texel_eval lives in test/
 
 import chess  # noqa: E402
 import chess.polyglot  # noqa: E402

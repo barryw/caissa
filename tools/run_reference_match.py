@@ -34,6 +34,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "test"))  # texel_eval lives in test/
 
 import chess  # noqa: E402
 
@@ -147,7 +148,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--max-plies", type=int, default=160)
     p.add_argument("--adjudicate-win-cp", type=int, default=300)
     p.add_argument("--adjudicate-streak", type=int, default=6)
-    p.add_argument("--start-fen-file", type=Path, default=repo_root / "tools" / "selfplay_openings.txt")
+    p.add_argument("--start-fen-file", type=Path, default=repo_root / "data" / "selfplay_openings.txt")
     p.add_argument("--jobs", type=int, default=6)
     p.add_argument("--sprt", action="store_true", help="GSPRT early-stop (H0: elo=0 vs H1: elo=sprt-elo1)")
     p.add_argument("--sprt-elo1", type=float, default=30.0)

@@ -13,7 +13,7 @@ oracle (|eval| < THRESH), not in check, and not already seen. Random but
 balance-filtered = diverse structures without lopsided starts that would bias the
 A/B. Seeded for reproducibility.
 
-  python3 tools/gen_openings.py --count 2000 --out tools/openings_big.txt
+  python3 tools/gen_openings.py --count 2000 --out data/openings_big.txt
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "test"))  # texel_eval lives in test/
 import chess  # noqa: E402
 from texel_eval import eval_full  # noqa: E402
 
@@ -34,7 +35,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--max-plies", type=int, default=12)
     p.add_argument("--eval-thresh", type=int, default=150, help="|white-POV eval| cp ceiling (balance)")
     p.add_argument("--seed", type=int, default=20260614)
-    p.add_argument("--out", type=Path, default=Path(__file__).resolve().parent / "openings_big.txt")
+    p.add_argument("--out", type=Path, default=Path(__file__).resolve().parents[1] / "data" / "openings_big.txt")
     args = p.parse_args(argv)
 
     rng = random.Random(args.seed)
