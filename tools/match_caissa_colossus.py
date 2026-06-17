@@ -64,11 +64,10 @@ def play(args: argparse.Namespace) -> int:
         print(msg, flush=True)
 
     board = chess.Board()
-    game = chess.pgn.Game()
-    game.headers["Event"] = "Caissa vs Colossus 4.0 (headless VICE)"
-    game.headers["White"] = f"Caissa (d{args.depth})"
-    game.headers["Black"] = "Colossus 4.0"
-    node = game
+    # Per-ply Caissa instrumentation (ply number -> PGN comment). The PGN is
+    # rebuilt from board.move_stack at the end so BOTH sides' moves are present
+    # (Colossus replies are pushed in reconcile_screen, not here).
+    caissa_comments: dict[int, str] = {}
 
     caissa = CaissaServer(prg=args.prg, port=args.caissa_port, x64sc=args.x64sc)
     colossus = ViceColossus(d64=args.d64, x64sc=args.x64sc,
@@ -105,9 +104,8 @@ def play(args: argparse.Namespace) -> int:
                         f"Caissa returned illegal move {res['uci']} for {fen}")
                 board.push(move)
                 plies += 1
-                node = node.add_variation(move)
-                node.comment = (f"d{res['depth']} score {res['score']} "
-                                f"nodes {res['nodes']}")
+                caissa_comments[plies] = (f"d{res['depth']} score {res['score']} "
+                                          f"nodes {res['nodes']}")
                 log(f"  ply {plies:02d}  caissa(white)    {move.uci()}  "
                     f"score {res['score']} nodes {res['nodes']}")
 
@@ -132,9 +130,19 @@ def play(args: argparse.Namespace) -> int:
                 screen = colossus.wait_for_ply(plies + 1, args.colossus_timeout,
                                                poll_seconds=args.poll)
 
-        # Record the PGN result.
+        # Build the PGN from the move stack so both sides' moves are present,
+        # attaching Caissa's per-ply instrumentation as comments.
         board_result = board.result(claim_draw=True)
+        game = chess.pgn.Game()
+        game.headers["Event"] = "Caissa vs Colossus 4.0 (headless VICE)"
+        game.headers["White"] = f"Caissa (d{args.depth})"
+        game.headers["Black"] = "Colossus 4.0"
         game.headers["Result"] = board_result
+        node = game
+        for i, mv in enumerate(board.move_stack, start=1):
+            node = node.add_variation(mv)
+            if i in caissa_comments:
+                node.comment = caissa_comments[i]
         log(f"\n[done] {plies} plies, result {board_result} "
             f"({time.monotonic() - t0:.0f}s)")
         log(f"[done] reason: {game_over_reason(board)}")
