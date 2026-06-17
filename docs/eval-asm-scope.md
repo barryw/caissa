@@ -1,5 +1,20 @@
 # Wholesale `eval_full` Hand-Asm — Scope
 
+> **STATUS: DONE + SHIPPED (2026-06-17).** The monolith is complete and wired into
+> the engine build. Measured payoff: **cyc/move 596.37M → 522.97M (−12.3% of total
+> engine cycles)** AND **engine image −4,761 B (−16.9%)** — faster *and* smaller, the
+> low end of the prediction below, exactly as expected. speed_gate.sh full PASS
+> (PERFT EXACT, eval 22157/22157, golden 50/50, 6502==cref_mos 50/50 → strength
+> identical). `native/eval_full_6502.s` ≈ 3500 lines, every term inlined, zero
+> jsr-to-eval.c-subterm. Bring-up was the always-green hybrid (asm structure +
+> jsr-to-C terms), converted term-group by term-group (a→f), each validated
+> 22157/22157 against the oracle. Commits d8da536 / 2207747 / 58f6e79 / 6754077 /
+> 18ff298 / 6450e99. Follow-ups: wire the asm into build_c64.sh; re-profile for the
+> next hot function. The rest of this doc is the original scoping (kept for record).
+
+---
+
+
 Scoping doc (2026-06-16) for hand-asm'ing the full positional eval. The last big
 6502 speed lever: `eval_full` is **~34%** of cycles and resists every incremental
 approach (see below). This is the only remaining way to cut it.
