@@ -34,8 +34,10 @@
  * back to a no-op. */
 #ifdef CREF_ASM_EVAL_FULL
 #define EVAL_HELPER /* external linkage: callable from eval_full_6502.s */
+#define EVAL_DATA   /* external linkage: g_w-derived tables read by the asm */
 #else
 #define EVAL_HELPER static
+#define EVAL_DATA   static
 #endif
 
 /* ------------------------------------------------------------------------- */
@@ -314,11 +316,11 @@ typedef struct {
  * per eval call. This removes the ~70-store table setup that eval_full and
  * eval_material_pst used to redo on every node. Values are bit-identical to
  * the old per-call build, so the eval-bit-exact gate stays green. */
-static int ET_PIECE_VALUE[7];
-static int ET_PAWN_ATTACK[7];
-static int ET_QUEEN_ATTACK[7];
-static int ET_MINOR_ATTACK[7];
-static int ET_PINNED[7];
+EVAL_DATA int ET_PIECE_VALUE[7];
+EVAL_DATA int ET_PAWN_ATTACK[7];
+EVAL_DATA int ET_QUEEN_ATTACK[7];
+EVAL_DATA int ET_MINOR_ATTACK[7];
+EVAL_DATA int ET_PINNED[7];
 
 /* 1 if any EG PST value differs from its MG counterpart -- i.e. the tapered
  * EG-minus-MG blend can be nonzero. When 0 (the shipped config, where the EG

@@ -1,15 +1,24 @@
 ; ============================================================================
 ; eval_full_6502.s  --  hand-written 6502 (llvm-mos / mos-sim) eval_full().
 ;
-; BRING-UP SKELETON for the wholesale eval_full hand-asm project
-; (docs/eval-asm-scope.md, phase 2). This file implements the eval_full
-; STRUCTURE in asm -- the 0x88 board walk, every per-piece COUNTER, the endgame
-; flag, the tapered-blend guard, the tempo term, and the final 16-bit wrap --
-; but for the 15 positional TERM helpers it does NOT inline them yet: it `jsr`s
-; to the existing C functions in native/eval.c (which expose external linkage via
-; the EVAL_HELPER macro when CREF_ASM_EVAL_FULL is defined). Later phase-2
-; sessions replace those jsr-to-C calls one at a time with inline asm,
-; re-validating 22157/22157 each step. DO NOT inline the term math here.
+; PHASE-2 PARTIAL for the wholesale eval_full hand-asm project
+; (docs/eval-asm-scope.md). This file implements the eval_full STRUCTURE in asm
+; -- the 0x88 board walk, every per-piece COUNTER, the endgame flag, the
+; tapered-blend guard, the tempo term, and the final 16-bit wrap.
+;
+; TERM HELPER STATUS (the per-piece + advanced_pawn positional terms):
+;   INLINE asm (group a, bit-exact 22157/22157):
+;     advanced_pawn, pawn_pressure, knight_outpost, queen_pressure,
+;     minor_pressure   (+ their inlined probes: check_white/black_pawn_at,
+;     is_pawn_attacked, is_knight_attacked, is_bishop_attacked, is_queen_attacked)
+;   still jsr-to-C (group b, later session):
+;     mobility, seventh_rank
+;   still jsr-to-C (the tail, later sessions):
+;     bishop_pair, pawn_structure, king_pins, king_safety, endgame,
+;     king_attack_escalation, pawn_storm, queen_attacks_minor
+; The jsr'd helpers keep external linkage via EVAL_HELPER (eval.c) when
+; CREF_ASM_EVAL_FULL is defined; the validator stays 22157/22157 the whole way
+; and any divergence bisects to exactly the one term just converted.
 ;
 ; This .s is built ONLY for the mos-sim 6502 image, linked INSTEAD of the C body:
 ; eval.c #ifdef's out `int eval_full(const Board*)` when CREF_ASM_EVAL_FULL is
@@ -103,9 +112,20 @@
 	.zeropage	__rc5
 	.zeropage	__rc6
 	.zeropage	__rc7
+	.zeropage	__rc8
+	.zeropage	__rc9
+	.zeropage	__rc10
+	.zeropage	__rc11
 
 	.globl	eval_full
 	.globl	g_w
+; ET_* tables are g_w-derived int[7] arrays (externalized via EVAL_DATA in
+; eval.c when CREF_ASM_EVAL_FULL is defined). The inlined pressure terms index
+; them at runtime as ET_x + ptype*2 (2 bytes/entry) -- they MUST be read live,
+; not baked, because eval overrides mutate g_w (and thus these tables).
+	.globl	ET_PAWN_ATTACK
+	.globl	ET_QUEEN_ATTACK
+	.globl	ET_MINOR_ATTACK
 
 ; ---- C constants (board.h / eval.c) ----------------------------------------
 EMPTY       = 0
@@ -142,9 +162,37 @@ B_ACC_MAT   = 146
 B_ACC_EGDIFF= 148
 B_ACC_PHASE = 150
 
-; ---- EvalWeights field offsets (g_w) --------------------------------------
+; ---- EvalWeights field offsets (g_w) -- confirmed via offsetof probe --------
+; (mos-clang -fno-lto -Os -S; field offset = 2*field_index since int=16-bit.)
+W_KNIGHT_OUTPOST        = 24
+W_ADVANCED_PAWN         = 40
+W_DEEP_ADVANCED_PAWN    = 42
 W_ENDGAME_NONPAWN_LIMIT = 60
 W_TEMPO                 = 100
+
+; ---- extra C constants used by the inlined group-(a) terms ------------------
+OFFBOARD_MASK = 0x88
+WHITE_PAWN    = 0x81
+BLACK_PAWN    = 0x01
+WHITE_KNIGHT  = 0x82
+BLACK_KNIGHT  = 0x02
+WHITE_BISHOP  = 0x83
+BLACK_BISHOP  = 0x03
+WHITE_QUEEN   = 0x85
+BLACK_QUEEN   = 0x05
+PT_KNIGHT     = 2
+PT_ROOK       = 4
+SQ_BQ_HOME    = 0x03      ; black queen home (d8) for is_queen_attacked
+SQ_WQ_HOME    = 0x73      ; white queen home (d1) for is_queen_attacked
+
+; ============================================================================
+; OFFSET TABLES (compile-time constant; embedded here, NOT externalized).
+; Only the LOW byte matters (add8 = (sq+off)&0xFF). Values from eval.c 142-145.
+; ============================================================================
+	.section	.rodata.eval_full_6502,"a",@progbits
+KNIGHT_OFFS:   .byte 0xDF,0xE1,0xEE,0xF2,0x0E,0x12,0x1F,0x21   ; KNIGHT_OFFSETS[8]
+DIAG_OFFS:     .byte 0xEF,0xF1,0x0F,0x11                       ; DIAGONAL_OFFSETS[4]
+ALLDIR_OFFS:   .byte 0xEF,0xF0,0xF1,0xFF,0x01,0x0F,0x10,0x11   ; ALL_DIRECTION_OFFSETS[8]
 
 ; ============================================================================
 ; .bss  --  persistent eval state (eval_full is non-recursive: static buffers).
@@ -310,9 +358,60 @@ eval_full:
 	bne	.Lpf_done
 	inc	E_BUF + E_BPF + 1, x
 .Lpf_done:
-; advanced_pawn(&e, x, color, ptype)
-	jsr	.Lcall_term_args   ; sets up __rc2/3=e, A/X=sq, __rc4/5=color, __rc6/7=ptype
-	jsr	advanced_pawn
+; ---- advanced_pawn (INLINE, eval.c 589-604) --------------------------------
+; void advanced_pawn(e, sq, color, ptype): ptype guaranteed PAWN_T here.
+;   row16 = sq & 0x70;
+;   white(color!=0): ==0x30 -> +adv; >0x30 -> ret; ==0x00 -> ret; else +deep.
+;   black(color==0): ==0x40 -> -adv; <0x50 -> ret; ==0x70 -> ret; else -deep.
+; reload state from .bss (prior loop iteration / counters clobbered regs).
+	lda	WALKX
+	and	#0x70              ; A = row16
+	ldy	CURCOL
+	beq	.Lap_black
+; --- white ---
+	cmp	#0x30
+	bne	.Lap_w_not30
+; row16 == 0x30 -> e.score += g_w.advanced_pawn
+	lda	g_w + W_ADVANCED_PAWN
+	ldx	g_w + W_ADVANCED_PAWN + 1
+	jsr	.Ls_score_addAX
+	jmp	.Lpiece_terms
+.Lap_w_not30:
+	cmp	#0x30
+	bcc	.Lap_w_lt30        ; row16 < 0x30
+	jmp	.Lpiece_terms      ; row16 > 0x30 -> return
+.Lap_w_lt30:
+	cmp	#0x00
+	bne	.Lap_w_deep
+	jmp	.Lpiece_terms      ; row16 == 0x00 -> return
+.Lap_w_deep:
+; else (row16 in {0x10,0x20}) -> e.score += g_w.deep_advanced_pawn
+	lda	g_w + W_DEEP_ADVANCED_PAWN
+	ldx	g_w + W_DEEP_ADVANCED_PAWN + 1
+	jsr	.Ls_score_addAX
+	jmp	.Lpiece_terms
+.Lap_black:
+; --- black ---
+	cmp	#0x40
+	bne	.Lap_b_not40
+; row16 == 0x40 -> e.score -= g_w.advanced_pawn
+	lda	g_w + W_ADVANCED_PAWN
+	ldx	g_w + W_ADVANCED_PAWN + 1
+	jsr	.Ls_score_subAX
+	jmp	.Lpiece_terms
+.Lap_b_not40:
+	cmp	#0x50
+	bcs	.Lap_b_ge50        ; row16 >= 0x50
+	jmp	.Lpiece_terms      ; row16 < 0x50 -> return
+.Lap_b_ge50:
+	cmp	#0x70
+	bne	.Lap_b_deep
+	jmp	.Lpiece_terms      ; row16 == 0x70 -> return
+.Lap_b_deep:
+; else (row16 in {0x50,0x60}) -> e.score -= g_w.deep_advanced_pawn
+	lda	g_w + W_DEEP_ADVANCED_PAWN
+	ldx	g_w + W_DEEP_ADVANCED_PAWN + 1
+	jsr	.Ls_score_subAX
 	jmp	.Lpiece_terms      ; pawns skip the nonpawn-counter block; go to term guard
 
 .Lnot_pawn_counter:
@@ -365,14 +464,48 @@ eval_full:
 ; The six calls, in this EXACT order (must match eval.c / eval.s):
 ;   pawn_pressure, queen_pressure, minor_pressure, knight_outpost,
 ;   mobility, seventh_rank -- each (&e, x, color, ptype).
-	jsr	.Lcall_term_args
-	jsr	pawn_pressure
-	jsr	.Lcall_term_args
-	jsr	queen_pressure
-	jsr	.Lcall_term_args
-	jsr	minor_pressure
-	jsr	.Lcall_term_args
-	jsr	knight_outpost
+; Group (a) terms are INLINE; mobility/seventh_rank remain jsr-to-C.
+; Set __rc2/3 = BPTR so the inlined probes can do (zp),Y board reads. The
+; inline terms never jsr to C, so __rc2/3 survives until the first jsr (mobility).
+	lda	BPTR
+	sta	__rc2
+	lda	BPTR+1
+	sta	__rc3
+
+; ---- pawn_pressure (INLINE, eval.c 481-486) --------------------------------
+;   if (!is_pawn_attacked(e,sq,color,ptype)) return;
+;   pen = ET_PAWN_ATTACK[ptype]; if (color) score-=pen else score+=pen.
+	jsr	.Ls_pawn_attacked
+	beq	.Lpp_done          ; not attacked -> skip
+	lda	#<ET_PAWN_ATTACK
+	sta	__rc10
+	lda	#>ET_PAWN_ATTACK
+	sta	__rc11
+	jsr	.Ls_pressure_apply
+.Lpp_done:
+
+; ---- queen_pressure (INLINE, eval.c 488-493) -------------------------------
+;   if (!is_queen_attacked(e,sq,color,ptype)) return;
+;   pen = ET_QUEEN_ATTACK[ptype]; if (color) score-=pen else score+=pen.
+; (__rc2/3 still = BPTR from above; no jsr-to-C since.)
+	jsr	.Ls_queen_attacked
+	beq	.Lqp_done
+	lda	#<ET_QUEEN_ATTACK
+	sta	__rc10
+	lda	#>ET_QUEEN_ATTACK
+	sta	__rc11
+	jsr	.Ls_pressure_apply
+.Lqp_done:
+
+; ---- minor_pressure (INLINE, eval.c 495-504) -------------------------------
+; (__rc2/3 still = BPTR from above; no jsr-to-C since.)
+	jsr	.Ls_minor_pressure
+
+; ---- knight_outpost (INLINE, eval.c 506-522) -------------------------------
+; (__rc2/3 still = BPTR; the inlined terms above never jsr to C.)
+	jsr	.Ls_knight_outpost
+
+; ---- mobility, seventh_rank still jsr-to-C (group b) ------------------------
 	jsr	.Lcall_term_args
 	jsr	mobility
 	jsr	.Lcall_term_args
@@ -629,6 +762,376 @@ eval_full:
 	sta	__rc2
 	lda	EVADDR+1
 	sta	__rc3
+	rts
+
+; ============================================================================
+; INLINE-TERM SUPPORT SUBROUTINES (group a). These are LOCAL to this asm and
+; make NO jsr to C, so they may freely use A/X/Y and the caller-saved ZP
+; scratch __rc8..__rc11. They never touch __rc2/3 (left holding the BPTR
+; indirect by the callers that need (zp),Y board reads). E_SCORE is the live
+; 16-bit uint16 accumulator at E_BUF+E_SCORE.
+; ============================================================================
+
+; .Ls_score_addAX -- e.score += (A=lo, X=hi), 16-bit modular add. Clobbers A.
+.Ls_score_addAX:
+	clc
+	adc	E_BUF + E_SCORE
+	sta	E_BUF + E_SCORE
+	txa
+	adc	E_BUF + E_SCORE + 1
+	sta	E_BUF + E_SCORE + 1
+	rts
+
+; .Ls_score_subAX -- e.score -= (A=lo, X=hi), 16-bit modular sub. Clobbers A.
+.Ls_score_subAX:
+	sta	__rc8              ; stash subtrahend lo (we need score in A first)
+	lda	E_BUF + E_SCORE
+	sec
+	sbc	__rc8
+	sta	E_BUF + E_SCORE
+	txa
+	sta	__rc8              ; subtrahend hi
+	lda	E_BUF + E_SCORE + 1
+	sbc	__rc8
+	sta	E_BUF + E_SCORE + 1
+	rts
+
+; .Ls_chk_wp -- check_white_pawn_at(e, idx): idx in A (8-bit; only low byte
+;   matters since add8 already wrapped). Returns A=1 if b[idx]==WHITE_PAWN
+;   else A=0 (Z set when not a white pawn). Requires __rc2/3 = BPTR.
+;   eval.c 397-400: if (idx & 0x88) return 0; return b[idx]==0x81.
+.Ls_chk_wp:
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Ls_chk_wp_no      ; offboard -> 0
+	lda	(__rc2),y          ; b[idx]
+	cmp	#WHITE_PAWN
+	bne	.Ls_chk_wp_no
+	lda	#1
+	rts
+.Ls_chk_wp_no:
+	lda	#0
+	rts
+
+; .Ls_chk_bp -- check_black_pawn_at(e, idx). Same shape, BLACK_PAWN.
+;   eval.c 401-404.
+.Ls_chk_bp:
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Ls_chk_bp_no
+	lda	(__rc2),y          ; b[idx]
+	cmp	#BLACK_PAWN
+	bne	.Ls_chk_bp_no
+	lda	#1
+	rts
+.Ls_chk_bp_no:
+	lda	#0
+	rts
+
+; .Ls_pawn_attacked -- is_pawn_attacked(e, sq=WALKX, color=CURCOL, ptype=CURPT).
+;   eval.c 407-418. Returns A=1 if attacked else A=0 (Z set when not).
+;   Caller MUST have ptype in 2..5 OR rely on this routine's guard.
+;   Requires __rc2/3 = BPTR.
+;   color!=0 (white piece): black pawns from sq-0x0F, sq-0x11.
+;   color==0 (black piece): white pawns from sq+0x0F, sq+0x11.
+.Ls_pawn_attacked:
+; guard: if (ptype < KNIGHT_T || ptype >= KING_T) return 0
+	lda	CURPT
+	cmp	#PT_KNIGHT
+	bcc	.Ls_pa_no          ; ptype < 2
+	cmp	#PT_KING
+	bcs	.Ls_pa_no          ; ptype >= 6
+	lda	CURCOL
+	beq	.Ls_pa_black
+; white piece: check_black_pawn_at(sq + (-0x0F)) || (sq + (-0x11))
+	lda	WALKX
+	clc
+	adc	#<(-0x0F)          ; +0xF1 == sq-0x0F (mod 256)
+	jsr	.Ls_chk_bp
+	bne	.Ls_pa_yes
+	lda	WALKX
+	clc
+	adc	#<(-0x11)          ; +0xEF == sq-0x11
+	jsr	.Ls_chk_bp
+	bne	.Ls_pa_yes
+	jmp	.Ls_pa_no
+.Ls_pa_black:
+; black piece: check_white_pawn_at(sq + 0x0F) || (sq + 0x11)
+	lda	WALKX
+	clc
+	adc	#0x0F
+	jsr	.Ls_chk_wp
+	bne	.Ls_pa_yes
+	lda	WALKX
+	clc
+	adc	#0x11
+	jsr	.Ls_chk_wp
+	bne	.Ls_pa_yes
+	; fall through to no
+.Ls_pa_no:
+	lda	#0
+	rts
+.Ls_pa_yes:
+	lda	#1
+	rts
+
+; .Ls_pressure_apply -- shared tail for pawn_pressure / queen_pressure:
+;   pen lives at (table base in __rc10/11) indexed by ptype*2; apply signed by
+;   CURCOL. Inputs: __rc10/11 = ET table base. Reads CURPT, CURCOL.
+;     pen = table[ptype]; if (color) e.score -= pen; else e.score += pen.
+; (16-bit read of the int[7] entry; pen may be 0 -> add/sub of 0 is a no-op,
+;  matching the C which does the +/- unconditionally for pawn/queen pressure.)
+.Ls_pressure_apply:
+	lda	CURPT
+	asl	a                  ; ptype*2
+	tay
+	lda	(__rc10),y         ; pen lo
+	pha
+	iny
+	lda	(__rc10),y         ; pen hi
+	tax
+	pla                       ; A = pen lo, X = pen hi
+	ldy	CURCOL
+	beq	.Lpa_white_add
+	jmp	.Ls_score_subAX    ; color!=0 -> e.score -= pen
+.Lpa_white_add:
+	jmp	.Ls_score_addAX    ; color==0 -> e.score += pen
+
+; .Ls_dir_scan -- scan ONE sliding ray from WALKX in direction __rc8 (offset
+;   byte), looking for enemy piece __rc9. eval.c ray loop shape (451-475 inner /
+;   431-447 inner): ray=sq; for(;;){ ray=add8(ray,off); if(ray&0x88)break;
+;     p=b[ray]; if(p==0)continue; if(p==enemy)return 1; break; } return 0.
+;   Returns A=1 if found else A=0. Uses A/Y; PRESERVES X, __rc8/9, __rc2/3.
+;   Requires __rc2/3 = BPTR.
+.Ls_dir_scan:
+	lda	WALKX              ; ray = sq
+.Lds_loop:
+	clc
+	adc	__rc8              ; ray = add8(ray, off)
+	tay                       ; Y = ray (index for b[ray])
+	and	#OFFBOARD_MASK
+	bne	.Lds_no            ; ray & 0x88 -> break -> not found
+	lda	(__rc2),y          ; p = b[ray]
+	beq	.Lds_cont          ; p == EMPTY -> continue
+	cmp	__rc9
+	beq	.Lds_yes           ; p == enemy -> found
+	bne	.Lds_no            ; else -> break (blocked)
+.Lds_cont:
+	tya                       ; A = ray; loop re-adds off
+	jmp	.Lds_loop
+.Lds_yes:
+	lda	#1
+	rts
+.Lds_no:
+	lda	#0
+	rts
+
+; .Ls_queen_attacked -- is_queen_attacked(e, sq, color, ptype). eval.c 451-476.
+;   guard: ptype in [KNIGHT_T, ROOK_T) i.e. 2..3 (minors only).
+;   white(color!=0): if b[0x03]!=BLACK_QUEEN return 0; enemy=BLACK_QUEEN.
+;   black(color==0): if b[0x73]!=WHITE_QUEEN return 0; enemy=WHITE_QUEEN.
+;   then 8-direction ray scan over ALL_DIRECTION_OFFSETS for enemy queen.
+;   Returns A=1/0. Requires __rc2/3 = BPTR. Reads WALKX/CURPT/CURCOL.
+.Ls_queen_attacked:
+	lda	CURPT
+	cmp	#PT_KNIGHT
+	bcc	.Lqa_no            ; ptype < 2
+	cmp	#PT_ROOK
+	bcs	.Lqa_no            ; ptype >= 4
+	ldy	CURCOL
+	beq	.Lqa_black
+; white piece: enemy black queen must sit on d8 ($03)
+	ldy	#SQ_BQ_HOME
+	lda	(__rc2),y
+	cmp	#BLACK_QUEEN
+	bne	.Lqa_no
+	lda	#BLACK_QUEEN
+	sta	__rc9
+	jmp	.Lqa_scan
+.Lqa_black:
+; black piece: enemy white queen must sit on d1 ($73)
+	ldy	#SQ_WQ_HOME
+	lda	(__rc2),y
+	cmp	#WHITE_QUEEN
+	bne	.Lqa_no
+	lda	#WHITE_QUEEN
+	sta	__rc9
+.Lqa_scan:
+	ldx	#0                 ; X = direction index 0..7
+.Lqa_dirloop:
+	lda	ALLDIR_OFFS, x
+	sta	__rc8
+	jsr	.Ls_dir_scan       ; preserves X; A=1 if enemy queen on this ray
+	cmp	#0
+	bne	.Lqa_yes
+	inx
+	cpx	#8
+	bcc	.Lqa_dirloop
+.Lqa_no:
+	lda	#0
+	rts
+.Lqa_yes:
+	lda	#1
+	rts
+
+; .Ls_knight_attacked -- is_knight_attacked(e, sq, color). eval.c 420-429.
+;   enemy = color ? BLACK_KNIGHT : WHITE_KNIGHT;
+;   for 8 KNIGHT_OFFSETS: dest=add8(sq,off); if(dest&0x88)continue;
+;     if(b[dest]==enemy)return 1; return 0.
+;   Returns A=1/0. Requires __rc2/3 = BPTR. Reads WALKX/CURCOL. Uses A/X/Y.
+.Ls_knight_attacked:
+	lda	CURCOL
+	beq	.Lka_white_enemy   ; color==0 -> enemy = WHITE_KNIGHT
+	lda	#BLACK_KNIGHT
+	bne	.Lka_setenemy      ; (always taken; BLACK_KNIGHT != 0)
+.Lka_white_enemy:
+	lda	#WHITE_KNIGHT
+.Lka_setenemy:
+	sta	__rc9              ; enemy
+	ldx	#0
+.Lka_loop:
+	lda	WALKX
+	clc
+	adc	KNIGHT_OFFS, x     ; dest = add8(sq, off)
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lka_next          ; dest & 0x88 -> continue
+	lda	(__rc2),y          ; b[dest]
+	cmp	__rc9
+	beq	.Lka_yes
+.Lka_next:
+	inx
+	cpx	#8
+	bcc	.Lka_loop
+	lda	#0
+	rts
+.Lka_yes:
+	lda	#1
+	rts
+
+; .Ls_bishop_attacked -- is_bishop_attacked(e, sq, color). eval.c 431-447.
+;   enemy = color ? BLACK_BISHOP : WHITE_BISHOP;
+;   4-direction ray scan over DIAGONAL_OFFSETS for enemy bishop.
+;   Returns A=1/0. Requires __rc2/3 = BPTR. Reads WALKX/CURCOL.
+.Ls_bishop_attacked:
+	lda	CURCOL
+	beq	.Lba_white_enemy
+	lda	#BLACK_BISHOP
+	bne	.Lba_setenemy
+.Lba_white_enemy:
+	lda	#WHITE_BISHOP
+.Lba_setenemy:
+	sta	__rc9              ; enemy
+	ldx	#0
+.Lba_dirloop:
+	lda	DIAG_OFFS, x
+	sta	__rc8
+	jsr	.Ls_dir_scan       ; preserves X; A=1 if enemy bishop on this ray
+	cmp	#0
+	bne	.Lba_yes
+	inx
+	cpx	#4
+	bcc	.Lba_dirloop
+	lda	#0
+	rts
+.Lba_yes:
+	lda	#1
+	rts
+
+; .Ls_minor_pressure -- minor_pressure(e, sq, color, ptype). eval.c 495-504.
+;   if (ptype < ROOK_T || ptype >= KING_T) return;   (rook=4, queen=5 only)
+;   attacked = is_knight_attacked; if(!attacked) attacked = is_bishop_attacked;
+;   if(!attacked) return;
+;   pen = ET_MINOR_ATTACK[ptype]; if(pen==0)return; +/- pen by color.
+;   (pen==0 short-circuit is numerically a no-op vs add/sub 0, so we reuse
+;    .Ls_pressure_apply: bit-exact.)  Requires __rc2/3 = BPTR.
+.Ls_minor_pressure:
+	lda	CURPT
+	cmp	#PT_ROOK
+	bcc	.Lmp_ret           ; ptype < 4
+	cmp	#PT_KING
+	bcs	.Lmp_ret           ; ptype >= 6
+	jsr	.Ls_knight_attacked
+	bne	.Lmp_attacked
+	jsr	.Ls_bishop_attacked
+	beq	.Lmp_ret           ; neither -> return
+.Lmp_attacked:
+	lda	#<ET_MINOR_ATTACK
+	sta	__rc10
+	lda	#>ET_MINOR_ATTACK
+	sta	__rc11
+	jmp	.Ls_pressure_apply ; tail-call (rts)
+.Lmp_ret:
+	rts
+
+; .Ls_knight_outpost -- knight_outpost(e, sq, color, ptype). eval.c 506-522.
+;   if (ptype != KNIGHT_T) return;
+;   file = sq & 7; if (file<2 || file>=6) return;
+;   if (is_pawn_attacked(...)) return;
+;   row16 = sq & 0x70;
+;   white(color!=0): if(row16<0x20||row16>=0x50)ret;
+;       if(chk_wp(sq+0x0F)||chk_wp(sq+0x11)) score += g_w.knight_outpost;
+;   black(color==0): if(row16<0x30||row16>=0x60)ret;
+;       if(chk_bp(sq-0x0F)||chk_bp(sq-0x11)) score -= g_w.knight_outpost.
+;   Requires __rc2/3 = BPTR. Reads WALKX/CURPT/CURCOL.
+.Ls_knight_outpost:
+	lda	CURPT
+	cmp	#PT_KNIGHT
+	beq	.Lko_isknight
+	rts                       ; ptype != KNIGHT_T
+.Lko_isknight:
+	lda	WALKX
+	and	#0x07              ; file
+	cmp	#2
+	bcc	.Lko_ret           ; file < 2
+	cmp	#6
+	bcs	.Lko_ret           ; file >= 6
+	jsr	.Ls_pawn_attacked
+	bne	.Lko_ret           ; attacked -> return
+	lda	WALKX
+	and	#0x70              ; row16
+	ldy	CURCOL
+	beq	.Lko_black
+; --- white: row16 in [0x20, 0x50) ---
+	cmp	#0x20
+	bcc	.Lko_ret           ; row16 < 0x20
+	cmp	#0x50
+	bcs	.Lko_ret           ; row16 >= 0x50
+	lda	WALKX
+	clc
+	adc	#0x0F
+	jsr	.Ls_chk_wp
+	bne	.Lko_w_add
+	lda	WALKX
+	clc
+	adc	#0x11
+	jsr	.Ls_chk_wp
+	beq	.Lko_ret           ; neither -> no bonus
+.Lko_w_add:
+	lda	g_w + W_KNIGHT_OUTPOST
+	ldx	g_w + W_KNIGHT_OUTPOST + 1
+	jmp	.Ls_score_addAX    ; e.score += g_w.knight_outpost; (tail-call, rts)
+.Lko_black:
+; --- black: row16 in [0x30, 0x60) ---
+	cmp	#0x30
+	bcc	.Lko_ret           ; row16 < 0x30
+	cmp	#0x60
+	bcs	.Lko_ret           ; row16 >= 0x60
+	lda	WALKX
+	clc
+	adc	#<(-0x0F)          ; sq - 0x0F
+	jsr	.Ls_chk_bp
+	bne	.Lko_b_sub
+	lda	WALKX
+	clc
+	adc	#<(-0x11)          ; sq - 0x11
+	jsr	.Ls_chk_bp
+	beq	.Lko_ret
+.Lko_b_sub:
+	lda	g_w + W_KNIGHT_OUTPOST
+	ldx	g_w + W_KNIGHT_OUTPOST + 1
+	jmp	.Ls_score_subAX    ; e.score -= g_w.knight_outpost; (tail-call, rts)
+.Lko_ret:
 	rts
 
 .Lfunc_end_eval_full:
