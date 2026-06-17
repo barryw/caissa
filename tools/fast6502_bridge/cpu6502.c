@@ -77,16 +77,49 @@ static inline uint16_t am_indy(cpu6502_t *c, int add_cycle) { /* (zp),Y */
 
 /* ----- ALU core ops ----- */
 static inline void op_adc(cpu6502_t *c, uint8_t m) {
-    uint16_t sum = (uint16_t)c->a + m + (c->status & FLAG_C ? 1 : 0);
-    uint8_t res = (uint8_t)sum;
-    set_flag(c, FLAG_C, sum > 0xFF);
-    set_flag(c, FLAG_V, (~(c->a ^ m) & (c->a ^ res) & 0x80) != 0);
-    c->a = res;
-    set_zn(c, c->a);
+    uint8_t carry = (c->status & FLAG_C) ? 1 : 0;
+    uint8_t a = c->a;
+    if (c->status & FLAG_D) {
+        /* NMOS 6502 decimal ADC (Bruce Clark's algorithm). Z from the binary
+         * result; N/V from the pre-correction intermediate; C from the final.
+         * Caissa never sets D, so this path is exercised only by Colossus. */
+        int al = (a & 0x0F) + (m & 0x0F) + carry;
+        if (al >= 0x0A) al = ((al + 0x06) & 0x0F) + 0x10;
+        int a_ = (a & 0xF0) + (m & 0xF0) + al;
+        set_flag(c, FLAG_Z, (uint8_t)(a + m + carry) == 0);
+        set_flag(c, FLAG_N, (a_ & 0x80) != 0);
+        set_flag(c, FLAG_V, (((a_ ^ a) & 0x80) && !((a ^ m) & 0x80)) != 0);
+        if (a_ >= 0xA0) a_ += 0x60;
+        set_flag(c, FLAG_C, a_ >= 0x100);
+        c->a = (uint8_t)(a_ & 0xFF);
+    } else {
+        uint16_t sum = (uint16_t)a + m + carry;
+        uint8_t res = (uint8_t)sum;
+        set_flag(c, FLAG_C, sum > 0xFF);
+        set_flag(c, FLAG_V, (~(a ^ m) & (a ^ res) & 0x80) != 0);
+        c->a = res;
+        set_zn(c, c->a);
+    }
 }
 static inline void op_sbc(cpu6502_t *c, uint8_t m) {
-    /* A - M - (1-C) == A + ~M + C */
-    op_adc(c, (uint8_t)~m);
+    uint8_t carry = (c->status & FLAG_C) ? 1 : 0;
+    uint8_t a = c->a;
+    /* Flags (N,V,Z,C) come from the BINARY subtraction in BOTH modes on NMOS;
+     * decimal mode only adjusts the A register value. A - M - (1-C) = A + ~M + C. */
+    uint16_t bin = (uint16_t)a + (uint8_t)~m + carry;
+    uint8_t res = (uint8_t)bin;
+    set_flag(c, FLAG_C, bin > 0xFF);
+    set_flag(c, FLAG_V, ((a ^ m) & (a ^ res) & 0x80) != 0);
+    set_zn(c, res);
+    if (c->status & FLAG_D) {
+        int al = (a & 0x0F) - (m & 0x0F) + carry - 1;
+        if (al < 0) al = ((al - 0x06) & 0x0F) - 0x10;
+        int a_ = (a & 0xF0) - (m & 0xF0) + al;
+        if (a_ < 0) a_ -= 0x60;
+        c->a = (uint8_t)(a_ & 0xFF);
+    } else {
+        c->a = res;
+    }
 }
 static inline void op_cmp_reg(cpu6502_t *c, uint8_t reg, uint8_t m) {
     uint16_t diff = (uint16_t)reg - m;
