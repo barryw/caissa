@@ -42,9 +42,9 @@ echo ">> [3/5] compile + link the 6502 image (mos-sim, full native engine + ABI 
 # native/is_square_attacked_6502.s supplies the override symbol. The asm is
 # BIT-IDENTICAL to the C (proven by the gate: PERFT EXACT + image == cref_mos).
 # This affects ONLY the mos-sim image; the host cref/cref_mos builds keep the C.
-ASM_OVERRIDE="$NATIVE/is_square_attacked_6502.s $NATIVE/unmake_move_6502.s $NATIVE/make_move_6502.s $NATIVE/gen_pseudo_6502.s $NATIVE/gen_legal_6502.s"
+ASM_OVERRIDE="$NATIVE/is_square_attacked_6502.s $NATIVE/unmake_move_6502.s $NATIVE/make_move_6502.s $NATIVE/gen_pseudo_6502.s $NATIVE/gen_legal_6502.s $NATIVE/eval_full_6502.s"
 # shellcheck disable=SC2086
-"$SIMCC" -Os -DCREF_ASM_IS_SQUARE_ATTACKED -DCREF_ASM_UNMAKE_MOVE -DCREF_ASM_MAKE_MOVE -DCREF_ASM_GEN_PSEUDO -DCREF_ASM_GEN_LEGAL -I"$NATIVE" engine6502.c $CORE $ASM_OVERRIDE \
+"$SIMCC" -Os -DCREF_ASM_IS_SQUARE_ATTACKED -DCREF_ASM_UNMAKE_MOVE -DCREF_ASM_MAKE_MOVE -DCREF_ASM_GEN_PSEUDO -DCREF_ASM_GEN_LEGAL -DCREF_ASM_EVAL_FULL -I"$NATIVE" engine6502.c $CORE $ASM_OVERRIDE \
     -o /tmp/engine6502.sim -Wl,-Map=/tmp/engine6502.map
 ls -l /tmp/engine6502.sim | awk '{print "   image:", $5, "bytes ->", $NF}'
 
