@@ -239,8 +239,7 @@ class CaissaServer:
             chunk = data[off:off + 8]
             mon.cmd(f"> {addr + off:04x} " + " ".join(f"{b:02x}" for b in chunk))
 
-    def _read(self, mon: _Monitor, addr: int, n: int) -> list[int]:
-        out = mon.cmd(f"m {addr:04x} {addr + n - 1:04x}")
+    def _parse_mem(self, out: str) -> list[int]:
         vals: list[int] = []
         for line in out.splitlines():
             idx = line.find("C:")
@@ -253,9 +252,21 @@ class CaissaServer:
             if len(parts) < 2:
                 continue
             vals.extend(int(h, 16) for h in _HEX_BYTE.findall(parts[1])[:16])
-        if len(vals) < n:
-            raise ViceCaissaError(f"short read at {addr:04x}: got {len(vals)}/{n}")
-        return vals[:n]
+        return vals
+
+    def _read(self, mon: _Monitor, addr: int, n: int) -> list[int]:
+        # The monitor occasionally returns a partial/empty response (the `m`
+        # reply races the prompt under warp). Re-drain and re-issue the SAME
+        # command on the SAME socket -- NEVER reconnect for this (closing the
+        # socket mid-burst wedges VICE's monitor listener; see vice_colossus).
+        cmd = f"m {addr:04x} {addr + n - 1:04x}"
+        for attempt in range(5):
+            out = mon.cmd(cmd)
+            vals = self._parse_mem(out)
+            if len(vals) >= n:
+                return vals[:n]
+            mon._drain()
+        raise ViceCaissaError(f"short read at {addr:04x}: got {len(vals)}/{n}")
 
     def _u16(self, lo_hi: list[int]) -> int:
         v = lo_hi[0] | (lo_hi[1] << 8)
@@ -266,41 +277,49 @@ class CaissaServer:
 
     # -- high-level peek/poke ----------------------------------------------
 
-    def _reconnect(self) -> None:
-        """Drop the monitor socket so the next op opens a fresh one.
+    def _drop_monitor(self) -> None:
+        """Discard the held connection with a BARE socket close.
 
-        VICE's monitor listener can desync after a long idle (e.g. while the
-        opponent thinks for minutes and our socket sits unused); -keepmonopen
-        keeps the listener alive, so a fresh connect recovers. The 6502 keeps
-        running the whole time, so server RAM state is intact across reconnects.
+        Mirrors vice_colossus._drop_monitor: do NOT send `x` (a write to a
+        wedged/half-dead socket is what tips VICE's listener over). The 6502
+        keeps running, so server RAM is intact for the fresh connection.
         """
-        if self._monitor is not None:
+        mon, self._monitor = self._monitor, None
+        if mon is not None:
             try:
-                self._monitor.close()
+                mon.sock.close()
             except OSError:
                 pass
-            self._monitor = None
 
-    def _op(self, fn, attempts: int = 5):
-        """Run fn(mon) inside a synced monitor (bank ram), with resume after.
+    def _run_once(self, fn):
+        mon = self.monitor
+        try:
+            mon.sync_prompt()      # re-enter cleanly on the held socket
+            mon.cmd("bank ram")
+            result = fn(mon)
+        except Exception:
+            self._drop_monitor()   # leave a known state for the retry path
+            raise
+        # Defensively re-assert warp on every resume (mirrors vice_colossus;
+        # the -warp launch flag already holds here, so this is belt-and-braces).
+        mon.cmd("warp on")
+        mon.resume()               # keep the socket open for the next op
+        return result
 
-        On any monitor failure (short read, lost prompt, dropped socket) drop
-        the connection, reconnect, and retry -- the running CPU is unaffected.
+    def _op(self, fn):
+        """Run fn(mon) on the held monitor; ONE bare-close reconnect on error.
+
+        Held-socket-with-single-reconnect is the only pattern VICE's monitor
+        tolerates (rapid close/reopen wedges the listener). Short reads are
+        already retried inside _read on the same socket, so reaching the
+        reconnect here means a genuinely sick socket.
         """
-        last: Exception | None = None
-        for i in range(attempts):
-            mon = self.monitor
-            try:
-                mon.sync_prompt()
-                mon.cmd("bank ram")
-                result = fn(mon)
-                mon.resume()
-                return result
-            except (ViceCaissaError, OSError) as exc:
-                last = exc
-                self._reconnect()
-                time.sleep(0.3 + 0.2 * i)
-        raise ViceCaissaError(f"monitor op failed after {attempts} attempts: {last}")
+        try:
+            return self._run_once(fn)
+        except (ViceCaissaError, OSError):
+            self._drop_monitor()
+            time.sleep(0.5)
+            return self._run_once(fn)
 
     def _peek(self, addr: int, n: int) -> list[int]:
         return self._op(lambda m: self._read(m, addr, n))
@@ -316,7 +335,7 @@ class CaissaServer:
         raise ViceCaissaError("caissa server never set g_ready (boot/handshake failed)")
 
     def bestmove(self, fen: str, depth: int = 4, timeout: float = 180.0,
-                 poll: float = 0.3) -> dict:
+                 poll: float = 1.0) -> dict:
         a = self.addrs
         payload = fen.encode("ascii") + b"\x00"
         if len(payload) > 100:
