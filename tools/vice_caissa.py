@@ -205,6 +205,12 @@ class CaissaServer:
             "-keepmonopen",
             "-jamaction", "1",
             "-warp",
+            # Run flat out: -speed 0 lifts the 100% speed limit (the throttle
+            # -warp alone doesn't override in the headless build); +sound /
+            # -soundwarpmode 0 stop the SID from pacing emulation to audio rate.
+            "-speed", "0",
+            "+sound",
+            "-soundwarpmode", "0",
             "-console",
             "-autostart", str(self.prg),
         ]
