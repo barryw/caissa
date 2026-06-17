@@ -5,13 +5,13 @@
 #   ./tools/build_c64.sh          -> chess.prg
 #   x64sc chess.prg               -> play in VICE (type moves like e2e4)
 #
-# The same native/ engine the speed campaign optimized; nothing here is the old
-# ca65 src/ engine. The UI (native/c64chess.c) is platform-portable C -- only its
-# stdio (KERNAL CHROUT/CHRIN) is c64-specific; the same source targets Nova once a
-# Nova llvm-mos platform exists.
+# The src/ engine the speed campaign optimized. The UI (apps/c64/c64chess.c) is
+# platform-portable C -- only its stdio (KERNAL CHROUT/CHRIN) is c64-specific; the
+# same source targets Nova once a Nova llvm-mos platform exists.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 N="$HERE/src"
+UI="$HERE/apps/c64"
 LM="${LLVM_MOS:-$HOME/Git/llvm-mos/build}/bin"
 OUT="${1:-$HERE/chess.prg}"
 
@@ -26,7 +26,7 @@ ASM="-DCREF_ASM_IS_SQUARE_ATTACKED $N/is_square_attacked_6502.s \
 
 # shellcheck disable=SC2086
 "$LM/mos-c64-clang" -Os -I "$N" $ASM \
-    "$N/board.c" "$N/movegen.c" "$N/eval.c" "$N/search.c" "$N/c64chess.c" \
+    "$N/board.c" "$N/movegen.c" "$N/eval.c" "$N/search.c" "$UI/c64chess.c" \
     -o "$OUT" -Wl,-Map="${OUT%.prg}.map"
 
 size=$(wc -c < "$OUT")
