@@ -193,16 +193,13 @@ def runner_local_path(repo_root: Path, runner_target: str, key: str) -> Path:
 
 
 def create_sim6502_runner(repo_root: Path, runner_target: str):
-    if runner_target != "headless":
-        raise RunnerError("Persistent sim6502 backend currently supports --runner-target headless only.")
-    from sim6502_headless_runner import Sim6502HeadlessRunner
-
-    target = RUNNER_TARGETS[runner_target]
-    return Sim6502HeadlessRunner(
-        repo_root=repo_root,
-        program_path=runner_local_path(repo_root, runner_target, "program"),
-        symbols_path=runner_local_path(repo_root, runner_target, "symbols"),
-        find_best_move=str(target["find_best_move"]),
+    # The persistent sim6502 headless backend (sim6502_headless_runner +
+    # tools/Sim6502HeadlessBridge) was retired with the old ca65 engine. This
+    # module is kept only for its Stockfish-side helpers, imported by the Elo
+    # ladder tools; the --c64-backend sim6502 path no longer has a runner.
+    raise RunnerError(
+        "sim6502 headless backend retired with the ca65 engine -- measure the "
+        "Caissa 6502 image via the headless-VICE Colossus harness instead."
     )
 
 

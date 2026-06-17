@@ -31,6 +31,7 @@ import json
 import math
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -40,10 +41,81 @@ import chess  # noqa: E402
 
 import texel_eval as te  # noqa: E402
 from reference_engine import best_move  # noqa: E402
-# Reuse the proven A/B statistics + adjudication from the 6502 harness verbatim.
-from run_selfplay_match import (  # noqa: E402
-    GameOutcome, material_cp, wilson, elo_diff, sprt_llr, _outcome,
-)
+
+
+# A/B match statistics + adjudication helpers. Inlined from the retired
+# run_selfplay_match.py (the old 6502 sim harness), which used to own them.
+_MATERIAL = {chess.PAWN: 100, chess.KNIGHT: 320, chess.BISHOP: 330, chess.ROOK: 500, chess.QUEEN: 900}
+
+
+@dataclass
+class GameOutcome:
+    index: int
+    a_color: str          # "white" or "black" -- which color engine A played
+    result: str           # "1-0", "0-1", "1/2-1/2"
+    a_score: float        # from A's perspective: 1.0 win, 0.5 draw, 0.0 loss
+    plies: int
+    termination: str
+
+
+def material_cp(board: chess.Board) -> int:
+    """White-POV material balance in centipawns."""
+    total = 0
+    for piece_type, value in _MATERIAL.items():
+        total += value * len(board.pieces(piece_type, chess.WHITE))
+        total -= value * len(board.pieces(piece_type, chess.BLACK))
+    return total
+
+
+def _outcome(idx: int, a_color: str, result: str, plies: int, termination: str) -> GameOutcome:
+    if result == "1/2-1/2":
+        a_score = 0.5
+    elif (result == "1-0") == (a_color == "white"):
+        a_score = 1.0
+    else:
+        a_score = 0.0
+    return GameOutcome(idx, a_color, result, a_score, plies, termination)
+
+
+def wilson(score_sum: float, n: int, z: float = 1.96) -> tuple[float, float]:
+    if n == 0:
+        return (0.0, 1.0)
+    p = score_sum / n
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    margin = (z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / denom
+    return (max(0.0, center - margin), min(1.0, center + margin))
+
+
+def elo_diff(rate: float) -> float | None:
+    if rate <= 0.0 or rate >= 1.0:
+        return None
+    return -400.0 * math.log10(1.0 / rate - 1.0)
+
+
+def _expected_score(elo: float) -> float:
+    return 1.0 / (1.0 + 10.0 ** (-elo / 400.0))
+
+
+def sprt_llr(scores: list[float], elo1: float) -> float:
+    """Generalized SPRT log-likelihood ratio for H0: elo=0 vs H1: elo=elo1.
+
+    Normal-approximation GSPRT on the per-game score (0/0.5/1), with the
+    variance estimated from the sample. >0 favours H1 (A is better), <0 favours
+    H0. Used to stop a match the moment the evidence is decisive either way.
+    """
+    n = len(scores)
+    if n < 2:
+        return 0.0
+    mu0, mu1 = 0.5, _expected_score(elo1)
+    mean = sum(scores) / n
+    var = sum((s - mean) ** 2 for s in scores) / n
+    # Floor the variance well above zero: an all-draws (zero-variance) start
+    # must not blow the LLR up to +/-millions. 0.05 is a realistic minimum for a
+    # game-score distribution and keeps the test stable on drawish samples.
+    var = max(var, 0.05)
+    total = sum(scores)
+    return (mu1 - mu0) / var * (total - n * (mu0 + mu1) / 2.0)
 
 
 # Pristine snapshot of every weight global, captured at import (before any
