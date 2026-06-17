@@ -39,9 +39,14 @@ $(BUILD)/test_perft: $(SRC)/board.c $(SRC)/movegen.c $(SRC)/eval.c test/test_per
 $(BUILD)/test_eval: $(SRC)/board.c $(SRC)/eval.c test/test_eval.c $(HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) $(INC) $(SRC)/board.c $(SRC)/eval.c test/test_eval.c -o $@
 
-verify test: $(BUILD)/test_perft $(BUILD)/test_eval
+# public engine<->UI API (src/caissa.c) + its test
+$(BUILD)/test_api: $(ENGINE) $(SRC)/caissa.c test/test_api.c $(HDRS) | $(BUILD)
+	$(CC) $(CFLAGS) $(INC) $(ENGINE) $(SRC)/caissa.c test/test_api.c -o $@ -lm
+
+verify test: $(BUILD)/test_perft $(BUILD)/test_eval $(BUILD)/test_api
 	$(PYTHON) test/native_perft_check.py
 	$(PYTHON) test/native_eval_check.py
+	./$(BUILD)/test_api
 
 c64:
 	./tools/build_c64.sh

@@ -22,6 +22,14 @@ hand-written ca65 engine in `src/`; it was removed and the C engine — formerly
   `#ifdef` out the C, and link the asm. The asm is proven **bit-identical** to the
   C by the gate (move-for-move == host, eval 22157/22157).
 
+## Public engine↔UI API (`src/caissa.h` / `src/caissa.c`)
+The single header a UI uses to run a whole game: `caissa_new_game`, `caissa_state`
+(mate/stalemate/draw classification), `caissa_legal_moves`, `caissa_bestmove`,
+`caissa_commit`/`caissa_undo` (committed-game flow with 50-move/threefold/
+insufficient-material + take-back), and `caissa_ponder`/`caissa_ponder_hit`. A thin
+facade over the engine — the UI never touches internals. Full reference: `docs/API.md`;
+test: `test/test_api.c`. Cross-toolchain embedding: `apps/c64/caissa_abi.c`.
+
 ## Front-ends (`apps/`)
 - `apps/cli/cref.c` — host CLI: `cref bestmove "FEN" [depth]`, `cref selfplay`
   (reference-vs-reference A/B with per-side eval-weight overrides). The dev driver,

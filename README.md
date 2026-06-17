@@ -39,6 +39,14 @@ Quick play: `build/cref bestmove "FEN" [depth]`.
   asm replacements (`src/*_6502.s`), gated by `-DCREF_ASM_*` and proven **bit-identical**
   to the C by the gate (move-for-move == the host engine).
 
+## Engine ↔ UI API
+A chess UI drives the engine through one header, **`src/caissa.h`** — set up a
+position, query state + legal moves, ask for a move, commit real moves (with
+50-move / threefold / insufficient-material rules tracked), take back, and ponder.
+Full reference + examples in **`docs/API.md`**; working example in `test/test_api.c`
+(`make verify` runs it). A cross-toolchain / non-C UI can embed the fixed-address
+blob in `apps/c64/caissa_abi.c`.
+
 ## Strength — what is and isn't measured
 - **Host (PC):** ~1785–1874 vs Stockfish at depth 6.
 - **On-chip move quality:** ~1850 (direct, the real 6502 binary vs Stockfish, zero
