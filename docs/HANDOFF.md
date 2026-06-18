@@ -1,6 +1,6 @@
 # Handoff — resume here
 
-_Last updated: 2026-06-17 (fastcolossus diff grind). Read this first, then `docs/ARCHITECTURE.md`._
+_Last updated: 2026-06-17 (fastcolossus PLAYS e7e5 — diff grind done). Read this first, then `docs/ARCHITECTURE.md`._
 
 ## The goal
 Get **Caïssa to beat Colossus 4.0 on a real C64**, and tune against Colossus in a
@@ -18,30 +18,43 @@ work is **`tools/fastcolossus/`** — run Colossus on that core too (a C port of
 old C# raw runner). Once it plays `1.e4 → e7e5`, drop it into the match loop
 (Caïssa via `caissa_cli`) and games run in **seconds**.
 
-## ★★ RESUME HERE — fastcolossus differential-trace grind
-**THE active task.** Colossus boots + renders on the fast core but stalls (it reads
-move input fine, then hangs in a board-redraw loop). We hunt the emulation bugs by
-**differential trace vs VICE** — and it WORKS, grinding through bugs one at a time.
+## ★★ RESUME HERE — fastcolossus PLAYS `1.e4 → e7e5`; wire it into the match loop
+**The differential-trace grind is DONE.** Colossus runs faithfully on the fast core:
+`./tools/fastcolossus/fastcolossus 80000000` injects `1.e4` and Colossus replies
+**`e7-e5`** (correct) in **5.0s at 16 M cyc/s**. The clean-room `cpu6502.c` core does
+NOT reproduce the deleted C# runner's `1.e4 → f7f6` bug. The diff is **bit-exact to
+VICE for ≥6000 instructions**.
 
-**The loop:** `tools/fastcolossus/vice_diff.py [N]` boots VICE (`/tmp/x64sc_stable`),
-`bload`s the SAME `ready.ram.bin` both into VICE and the fast core, identical setup
-(`$01=$36`, regs, pre-poke `'2'`, `r fl=23`, FCBASECYCLE phase-align), single-steps
-both, and prints the **FIRST instruction where PC/regs diverge** (VICE = truth).
-→ read the divergent instruction → fix the fast core's I/O/CPU → re-run → repeat
-until no divergence, then `1.e4 → e7e5`.
+**NEXT (the actual remaining work):** turn `fastcolossus` into a drop-in for the
+VICE-Colossus driver so a full Caïssa-vs-Colossus game runs in seconds:
+1. Make `fastcolossus` accept a move (or a move list) as input instead of the
+   hardcoded `e2e4`, and emit Colossus's reply move in a parseable form (it already
+   prints the board + "Best line: e7e5"; `screen_move_entries` in `vice_colossus.py`
+   shows the scrape shape). A persistent stdin/arg protocol (one move in → one move
+   out) mirrors `caissa_server`.
+2. Write a `fastcolossus`-backed Colossus driver with the same surface
+   `match_caissa_colossus.py` expects from `vice_colossus.py` (`inject_move`,
+   `wait_for_ply`, `screen_move_entries`), and swap it in. Caïssa stays on
+   `caissa_cli`. Result: seconds-per-game tuning, the whole point of the pivot.
+3. Bound Colossus think-time / set a level if needed (see harness-gaps below).
 
-**Bugs found+fixed so far (each via the diff):**
+**Grind history (each bug found via the diff, all fixed):**
 1. **Static TOD** — `$DC08` (CIA Time-of-Day, tenths) returned a frozen value;
-   Colossus polls it for its clock → THE stall. Now advances from cycles.
-2. **Banking** — was `$01=$37` (BASIC ROM in); Colossus runs **BASIC OUT**
-   (`$01=$36`: `$A000–$BFFF` = its RAM variables, it `STA $B491`). Fixed both sides.
-3. **Cycle align** — VICE's chip state isn't reset by `bload`; `vice_diff` reads
-   VICE's cycle count and passes `FCBASECYCLE` so TOD/timers share phase.
+   Colossus polls it for its clock → the stall. Now advances from cycles.
+2. **Banking** — Colossus runs **BASIC OUT** (`$01=$36`: `$A000–$BFFF` = its RAM
+   variables, it `STA $B491`). Fast core fixed.
+3. **Cycle align** — `vice_diff` reads VICE's cycle count and passes `FCBASECYCLE`
+   so TOD/timers share phase.
+4. **(harness, last)** — the `$4C08 INC $B43B` "divergence" was a `vice_diff` BUG,
+   not a core bug: poking `> 0001 36` under `bank ram` writes only the hidden RAM
+   shadow and leaves VICE's live port at `$37` (BASIC IN), so VICE read BASIC ROM at
+   `$B43B` (`$68`) while the fast core correctly read game RAM (`$d1`). Fix: write
+   `$00/$01` under `bank cpu`. After that, 0 divergences in 6000 instrs.
 
-**NEXT divergence to chase:** `$4C08 INC $B43B` (N flag). My core's result
-(`0xd1→0xd2`, N=1) looks correct → VICE's `$B43B` differs, so one more banking/load
-nuance. Peek VICE's `$B43B` at that step (`m b43b b43b` after stepping there) vs the
-snapshot (`ready.ram.bin[$B43B]=0xd1`) to see which is off.
+**The diff loop (kept as the fidelity oracle):** `tools/fastcolossus/vice_diff.py [N]`
+boots VICE (`/tmp/x64sc_stable`), `bload`s the SAME `ready.ram.bin` both into VICE and
+the fast core, identical setup, single-steps both, prints the FIRST divergent
+instruction (VICE = truth). Now reports "No divergence" up to N tested.
 
 **Commands:**
 - Diff: `python3 tools/fastcolossus/vice_diff.py 600` (N = instructions to trace).

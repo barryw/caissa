@@ -10,7 +10,26 @@ This is a C port of the (deleted, C#) ColossusRawRunner onto `cpu6502.c` — a
 different, clean-room core, so the open question is whether it reproduces the C#
 runner's never-root-caused fidelity bug (1.e4 → f7f6 instead of e7e5).
 
-## Status (2026-06-17)
+## ★ STATUS (2026-06-17): WORKS — `1.e4 → e7e5` correct on the fast core
+`./fastcolossus 80000000` boots Colossus, injects `1.e4`, and Colossus replies
+**`e7-e5`** (screen + "Best line: e7e5", Lookahead=1 Positions=26) in **5.0s at
+16 M cyc/s**. So the clean-room `cpu6502.c` core does NOT reproduce the deleted C#
+runner's `1.e4 → f7f6` fidelity bug — the SHIP condition in the file header is met.
+
+**Differential trace is bit-exact to VICE for ≥6000 instructions.** The last
+divergence the diff found was a **harness false-positive**, not a core bug: VICE was
+running `$01=$37` (BASIC IN) because `vice_diff.py` poked `> 0001 36` under
+`bank ram`, which only writes the hidden RAM shadow and leaves the live 6510 port at
+the post-reset default. VICE then read BASIC ROM at `$B43B` (`$68`) while the fast
+core correctly read game RAM (`$d1`) → a phantom N-flag diff. Fix: do the `$00/$01`
+writes under `bank cpu` so the port store actually reconfigures banking. The fast
+core was right all along (`$01=$36`, BASIC OUT, per the CPU-view snapshot).
+
+**NEXT:** wire move-in + screen-scrape (the `dump_screen`/`screen_move_entries`
+shape from `vice_colossus.py`) into a drop-in replacement for VICE-Colossus in
+`match_caissa_colossus.py` (Caïssa via `caissa_cli`) → games in seconds.
+
+### Earlier status (input bring-up — now resolved)
 **Speed proven, boot proven, input bring-up in progress.**
 - Loads the VICE ready-state snapshot (`build/colossus_extract/runtime/ready.ram.bin`
   + `ready_cpu.ram.bin` for ROM/IO), banks via `$01`, runs from PC=$F155.

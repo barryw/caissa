@@ -104,6 +104,12 @@ def vice_trace(n: int) -> list[tuple]:
         m = Mon(PORT)
         m.cmd("bank ram")
         m.cmd(f'bload "{SNAP}" 0 0000')
+        # Port writes MUST go through the CPU bank: writing $00/$01 under
+        # `bank ram` only pokes the hidden RAM shadow and leaves the live 6510
+        # port at the post-reset default ($37, BASIC IN) -- which made VICE read
+        # BASIC ROM ($B43B=$68) instead of the game's RAM, a false divergence.
+        # `bank cpu` triggers the real port store so banking actually changes.
+        m.cmd("bank cpu")
         m.cmd("> 0000 2f")        # DDR
         m.cmd("> 0001 36")        # banking: KERNAL+IO, BASIC OUT (game banking)
         m.cmd("> 0277 32")        # keyboard buffer: '2'
