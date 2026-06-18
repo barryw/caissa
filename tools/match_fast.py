@@ -389,7 +389,7 @@ def analyze(rows: list[dict], results: list[dict]) -> None:
         by_game.setdefault(x["game"], []).append(x)
     swings = []
     for g, mv in by_game.items():
-        mv.sort(key=lambda z: z["ply"])
+        mv.sort(key=lambda z: int(z["ply"]))   # ply may be a CSV string
         for a, b in zip(mv, mv[1:]):
             drop = int(a["score"]) - int(b["score"])   # eval fell on Caissa's turn
             swings.append((drop, g, b["fullmove"], b["san"], int(a["score"]),
@@ -461,9 +461,16 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--pgn", type=Path, default=REPO / "build" / "match_games.pgn")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--analyze", type=Path, help="re-run analysis on an existing telemetry CSV")
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
+    if args.analyze:
+        import csv
+        with open(args.analyze) as f:
+            rows = list(csv.DictReader(f))
+        analyze(rows, [])
+        return 0
     return batch(args.depth, args.games, args.max_plies, args.csv, args.pgn, args.quiet)
 
 
