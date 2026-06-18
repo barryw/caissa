@@ -84,6 +84,7 @@ static int set_search(SearchConfig *s, const char *key, int val) {
         {"killers", &s->killers}, {"history", &s->history}, {"nullmove", &s->nullmove},
         {"null_r", &s->null_r}, {"pvs", &s->pvs}, {"aspiration", &s->aspiration},
         {"asp_delta", &s->asp_delta}, {"check_ext", &s->check_ext}, {"lmr", &s->lmr},
+        {"delta", &s->delta}, {"delta_margin", &s->delta_margin},
         {NULL, NULL}
     };
     for (int i = 0; map[i].k; i++)

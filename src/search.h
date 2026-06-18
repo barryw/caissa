@@ -35,6 +35,8 @@ typedef struct {
     int asp_delta;   /* aspiration half-window (default 50) */
     int check_ext;   /* extend search by 1 ply when in check */
     int lmr;         /* late-move reductions */
+    int delta;       /* quiescence delta pruning (futile-capture cutoff) */
+    int delta_margin;/* delta-pruning safety margin in cp (default 100) */
 } SearchConfig;
 
 extern SearchConfig g_sc;

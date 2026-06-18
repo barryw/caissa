@@ -115,6 +115,8 @@ void search_reset_config(void) {
     g_sc.check_ext = 0;    /* tested -69: unconditional extension wastes the budget */
     g_sc.aspiration = 0;
     g_sc.asp_delta = 50;
+    g_sc.delta = 0;          /* candidate: quiescence delta pruning (measure first) */
+    g_sc.delta_margin = 100;
 }
 
 void search_set_budget(long nodes) { g_node_budget = nodes; }
@@ -266,6 +268,15 @@ static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
     for (i = 0; i < fn; i++) {
         Undo u;
         int score;
+        /* Delta pruning: out of check, skip a capture whose best-case material
+         * gain (victim value + safety margin) still cannot lift the stand-pat to
+         * alpha -- it is futile. Promotions are never pruned (huge swing). This
+         * is what reins in the qsearch explosion (qnodes were ~81% of effort). */
+        if (g_sc.delta && !check && !(list[i].flags & MF_PROMO)) {
+            int victim = (list[i].flags & MF_EP) ? PT_PAWN : PT(b->sq[list[i].to]);
+            if (best + MVV[victim] + g_sc.delta_margin <= alpha)
+                continue;
+        }
         make_move(b, list[i], &u);
         score = -quiesce(b, -beta, -alpha, ply + 1, qd + 1);
         unmake_move(b, list[i], &u);
