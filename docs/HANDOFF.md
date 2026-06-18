@@ -3,10 +3,23 @@
 _Last updated: 2026-06-17. Read this first, then `docs/ARCHITECTURE.md`._
 
 ## The goal
-Get **Caïssa to beat Colossus 4.0 on a real C64**. We can now **play Caïssa vs
-Colossus headlessly** and read both sides' moves — so the next phase is to
-**scale it up and tune Caïssa's eval/search against Colossus** (Colossus is the
-bar, not Stockfish).
+Get **Caïssa to beat Colossus 4.0 on a real C64**, and tune against Colossus in a
+**rapid cycle — games in seconds/under a minute, not overnight**.
+
+## ★ SPEED PIVOT (2026-06-17) — read this first
+The VICE match harness below WORKS but is **unusably slow for tuning**: headless
+VICE warp does **not** accelerate — it runs ~realtime (~1 MHz): a Caïssa depth-6
+move is **225s**, depth-4 is 16s, so a full game is many minutes-to-hours. No flag
+(`-warp`/`-speed 0`/`+sound`/`-soundwarpmode 0`) fixes it. **VICE is out for speed.**
+
+The same 6502 binary on the **fast functional core (`cpu6502.c`)** runs **75–660×
+faster**: Caïssa depth-6 = **3.25s** (`caissa_cli`), depth-4 = 0.22s. So the live
+work is **`tools/fastcolossus/`** — run Colossus on that core too (a C port of the
+old C# raw runner). **Colossus BOOTS and renders on the fast core at 32 M cyc/s**
+(32× VICE); blocked on an input-handling emulation divergence (spins on $D900 I/O
+reads). See `tools/fastcolossus/NOTES.md` — that bring-up (differential trace vs a
+one-shot VICE oracle) is THE active task. Once `1.e4 → e7e5`, drop it into the
+match loop (Caïssa via `caissa_cli`) and games run in seconds.
 
 ## Where we are (merged to `main`, all commits green, not yet pushed)
 The whole Caïssa-vs-Colossus match harness is **BUILT and PROVEN end-to-end**.
