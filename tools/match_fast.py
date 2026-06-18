@@ -414,7 +414,7 @@ def analyze(rows: list[dict], results: list[dict]) -> None:
         print(f"\nSearch load over {len(nodes)} Caissa moves (depth-fixed):")
         print(f"  avg nodes={avg_n:,.0f}  avg qnodes={avg_q:,.0f}  "
               f"qsearch share={qshare:.0f}%  avg tt_hits={avg_tt:,.0f}")
-        qn.sort(reverse=True)
+        qn.sort(key=lambda t: t[0], reverse=True)   # sort by count; dicts aren't orderable
         print("  heaviest quiescence positions (tactical hotspots):")
         for v, x in qn[:5]:
             print(f"    qnodes={v:>7,} nodes={x['nodes']:>6} score={x['score']:>5}cp "
