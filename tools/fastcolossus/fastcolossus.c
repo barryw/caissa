@@ -168,12 +168,88 @@ static void deliver_irq(cpu6502_t *c) {
     c->cycles += 7;
 }
 
+/* ---- persistent match-server mode ----------------------------------------
+ * Drives one Colossus process across a whole game over stdin/stdout, so Python
+ * (match_fast.py) can mirror vice_colossus.py: feed a move, run, scrape the
+ * board screen, repeat -- WITHOUT rebooting Colossus per move (its internal
+ * board state stays live). Line protocol (all hex, ASCII):
+ *   K b0 b1 ...   enqueue keystrokes (fed one byte at a time as $C6 drains,
+ *                 mirroring the proven one-key-at-a-time path)        -> OK
+ *   R n           run n CPU cycles (jiffy IRQ + kb-drain feeding live) -> OK
+ *   M addr len    dump len RAM bytes from addr                  -> M <hexbytes>
+ *   Q             quit
+ */
+static uint8_t kb_q[256];
+static int kb_qh = 0, kb_qt = 0;   /* head (next to feed), tail (next free) */
+
+static int run_server(cpu6502_t *c, uint64_t base_cycle) {
+    uint64_t next_irq = base_cycle + 16421;
+    int irq_pending = 0;
+    uint64_t kb_next = 0;
+    const uint64_t KB_GAP = 20000;
+    char line[1024];
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    fprintf(stdout, "READY\n"); fflush(stdout);
+    while (fgets(line, sizeof line, stdin)) {
+        char *cmd = strtok(line, " \t\r\n");
+        if (!cmd) continue;
+        if (cmd[0] == 'Q') { return 0; }
+        else if (cmd[0] == 'K') {
+            char *tok;
+            while ((tok = strtok(NULL, " \t\r\n"))) {
+                int b = (int)strtol(tok, NULL, 16);
+                kb_q[kb_qt++ & 0xFF] = (uint8_t)b;
+            }
+            fprintf(stdout, "OK\n");
+        }
+        else if (cmd[0] == 'R') {
+            char *tok = strtok(NULL, " \t\r\n");
+            long n = tok ? atol(tok) : 0;
+            uint64_t target = c->cycles + (uint64_t)n;
+            while (c->cycles < target) {
+                if (c->cycles >= next_irq) { next_irq += 16421; irq_pending = 1; }
+                if (irq_pending && !(c->status & FLAG_I)) { deliver_irq(c); irq_pending = 0; }
+                /* feed next queued keystroke once the KERNAL buffer drains */
+                if (kb_qh != kb_qt && c->mem[0x00C6] == 0 && c->cycles >= kb_next) {
+                    c->mem[0x0277] = kb_q[kb_qh++ & 0xFF];
+                    c->mem[0x00C6] = 1;
+                    kb_next = c->cycles + KB_GAP;
+                }
+                cpu6502_step(c);
+            }
+            fprintf(stdout, "OK\n");
+        }
+        else if (cmd[0] == 'P') {           /* P addr b0 b1 ...  poke RAM */
+            char *ta = strtok(NULL, " \t\r\n");
+            unsigned addr = ta ? (unsigned)strtol(ta, NULL, 16) : 0;
+            char *tok;
+            while ((tok = strtok(NULL, " \t\r\n")))
+                c->mem[(addr++) & 0xFFFF] = (uint8_t)strtol(tok, NULL, 16);
+            fprintf(stdout, "OK\n");
+        }
+        else if (cmd[0] == 'M') {
+            char *ta = strtok(NULL, " \t\r\n");
+            char *tl = strtok(NULL, " \t\r\n");
+            unsigned addr = ta ? (unsigned)strtol(ta, NULL, 16) : 0;
+            unsigned len  = tl ? (unsigned)strtol(tl, NULL, 16) : 0;
+            fputs("M", stdout);
+            for (unsigned i = 0; i < len; i++)
+                fprintf(stdout, " %02x", c->mem[(addr + i) & 0xFFFF]);
+            fputc('\n', stdout);
+        }
+        else { fprintf(stdout, "ERR\n"); }
+        fflush(stdout);
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *ram_path = RUNTIME "ready.ram.bin";
     const char *cpu_path = RUNTIME "ready_cpu.ram.bin";
+    int server_mode = (argc > 1 && strcmp(argv[1], "server") == 0);
     /* e2e4 keyboard input: <rank><FILE>RET per square (from analysis.json). */
     static const uint8_t move_in[] = { 0x32, 0x45, 0x0D, 0x34, 0x45, 0x0D };
-    long max_cycles = (argc > 1) ? atol(argv[1]) : 80000000L;  /* ~ a few s on fast core */
+    long max_cycles = (argc > 1 && !server_mode) ? atol(argv[1]) : 80000000L;  /* ~ a few s on fast core */
 
     cpu6502_t *c = calloc(1, sizeof *c);
     c64_t *m = calloc(1, sizeof *m);
@@ -220,6 +296,9 @@ int main(int argc, char **argv) {
      * cycle count and passes it here so TOD/timers start at VICE's phase). */
     if (getenv("FCBASECYCLE")) g_base_cycle = (uint64_t)strtoull(getenv("FCBASECYCLE"), NULL, 10);
     c->cycles = g_base_cycle;
+
+    /* Persistent match server: hand control to the stdin/stdout loop. */
+    if (server_mode) return run_server(c, g_base_cycle);
 
     /* Keyboard input is fed ONE byte at a time as the buffer drains (mirroring
      * the C# runner's QueuedKeyboardInput) -- Colossus reads a char, processes,
