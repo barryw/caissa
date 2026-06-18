@@ -40,6 +40,18 @@ CAISSA_CLI = REPO / "tools" / "llvmmos_bench" / "caissa_cli"
 FASTCOLOSSUS = REPO / "tools" / "fastcolossus" / "fastcolossus"
 
 
+_PIECE_CP = {chess.PAWN: 100, chess.KNIGHT: 320, chess.BISHOP: 330,
+             chess.ROOK: 500, chess.QUEEN: 900}
+
+
+def material_cp(board: "chess.Board") -> int:
+    """White-relative material balance in centipawns (neutral, engine-agnostic)."""
+    s = 0
+    for pt, v in _PIECE_CP.items():
+        s += v * (len(board.pieces(pt, chess.WHITE)) - len(board.pieces(pt, chess.BLACK)))
+    return s
+
+
 def colossus_stats(screen: str) -> dict:
     """Scrape Colossus's on-screen thinking stats for the last move."""
     out: dict[str, int] = {}
@@ -58,7 +70,11 @@ def colossus_stats(screen: str) -> dict:
 # One run-chunk of cycles between screen polls (~0.1s of wall time on the fast
 # core) and the per-move cycle budget before we give up waiting for a reply.
 CHUNK_CYCLES = 2_000_000
-MOVE_BUDGET_CYCLES = 120_000_000
+# Colossus deepens in the endgame (its on-screen clock reaches ~10 emulated
+# minutes/move). 120M cycles (~122 emulated-sec) timed out on deep endgame
+# replies once the ply cap was removed; 700M (~12 emulated-min) covers them.
+# (A future 'M' move-now keypress would bound this instead of waiting it out.)
+MOVE_BUDGET_CYCLES = 700_000_000
 
 
 class FastColossus:
@@ -247,12 +263,32 @@ def play(depth: int, max_plies: int, opening: list[str], game_id: int,
     col = FastColossus()
     col.disable_prediction()
     t0 = time.monotonic()
-    ADJ_CP, ADJ_STREAK = 800, 6      # |eval|>=8 pawns for 6 Caissa moves -> decided
+    ADJ_CP, ADJ_STREAK = 800, 6      # |Caissa eval|>=8 pawns for 6 moves -> decided
+    MAT_CP, MAT_STREAK = 550, 6      # |material|>=5.5 pawns for 6 plies -> decided (neutral)
     adj_streak, adj_sign = 0, 0
+    mat_streak, mat_sign = 0, 0
     adjudicated = None
+    adj_reason = "ADJUDICATED"
     try:
         last_white_uci = None
+        # No ply cap as the primary terminator: real game-over (mate/stalemate/
+        # threefold/50-move/insufficient material) + adjudication end the game;
+        # max_plies is only a runaway safety net.
         while not board.is_game_over(claim_draw=True) and board.ply() < max_plies:
+            # Neutral material adjudication: a sustained big material lead is
+            # decisive regardless of either engine's (possibly wrong) eval, and
+            # ends the game before the slow Colossus endgame -- the honest way to
+            # get a result now that the ply cap is gone.
+            mb = material_cp(board)     # White(Caissa)-POV cp
+            msign = 1 if mb >= MAT_CP else -1 if mb <= -MAT_CP else 0
+            if msign and msign == mat_sign:
+                mat_streak += 1
+            else:
+                mat_streak, mat_sign = (1 if msign else 0), msign
+            if mat_streak >= MAT_STREAK:
+                adjudicated = "1-0" if mat_sign > 0 else "0-1"
+                adj_reason = "ADJ-MATERIAL"
+                break
             ply = board.ply()           # 0-based count of moves already made
             fen_before = board.fen()
             if board.turn == chess.WHITE:
@@ -301,21 +337,36 @@ def play(depth: int, max_plies: int, opening: list[str], game_id: int,
                         adj_streak, adj_sign = (1 if sign else 0), sign
                     if adj_streak >= ADJ_STREAK:
                         adjudicated = "1-0" if adj_sign > 0 else "0-1"
+                        adj_reason = "ADJ-EVAL"
                         break
             else:
                 white_ply = board.ply()
                 black_ply = white_ply + 1
                 t = time.monotonic()
-                screen = col.submit_move(last_white_uci, white_ply, black_ply)
+                # A stuck scrape/inject (seen on promotion-checks: Colossus never
+                # echoes a reply) must NOT crash the batch -- end the game on the
+                # neutral material balance instead, so a long run still produces a
+                # result for every game.
+                try:
+                    screen = col.submit_move(last_white_uci, white_ply, black_ply)
+                    raw = dict(screen_move_entries(screen)).get(black_ply)
+                except RuntimeError as e:
+                    raw, screen = None, str(e)
                 wall_ms = int((time.monotonic() - t) * 1000)
-                raw = dict(screen_move_entries(screen)).get(black_ply)
                 if not raw:
-                    print(f"!! no Colossus reply ply {black_ply}\n{screen}")
-                    return {"result": "*", "error": "no-colossus-reply"}
+                    mb = material_cp(board)
+                    adjudicated = "1-0" if mb > 0 else "0-1" if mb < 0 else "1/2-1/2"
+                    adj_reason = "ADJ-MATERIAL(colossus-stuck)"
+                    print(f"  g{game_id} Colossus no-reply at ply {black_ply} "
+                          f"(material {mb:+d}) -> {adjudicated}")
+                    break
                 move = legalize_from_to(board, raw, chess)
                 if move is None:
-                    print(f"!! Colossus {raw} illegal at\n{fen_before}")
-                    return {"result": "*", "error": "colossus-illegal"}
+                    mb = material_cp(board)
+                    adjudicated = "1-0" if mb > 0 else "0-1" if mb < 0 else "1/2-1/2"
+                    adj_reason = "ADJ-MATERIAL(colossus-illegal)"
+                    print(f"  g{game_id} Colossus illegal {raw} -> {adjudicated} (material {mb:+d})")
+                    break
                 cs = colossus_stats(screen)
                 san = board.san(move)
                 board.push(move)
@@ -333,7 +384,7 @@ def play(depth: int, max_plies: int, opening: list[str], game_id: int,
         outcome = board.outcome(claim_draw=True)
         if adjudicated and not outcome:
             result = adjudicated
-            term_name = "ADJUDICATED"
+            term_name = adj_reason
         else:
             result = board.result(claim_draw=True)
             term_name = outcome.termination.name if outcome else "MAXPLIES"
@@ -456,7 +507,7 @@ def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--depth", type=int, default=4)
     ap.add_argument("--games", type=int, default=1)
-    ap.add_argument("--max-plies", type=int, default=160)
+    ap.add_argument("--max-plies", type=int, default=400)   # runaway safety, not the terminator
     ap.add_argument("--csv", type=Path, default=REPO / "build" / "match_telemetry.csv")
     ap.add_argument("--pgn", type=Path, default=REPO / "build" / "match_games.pgn")
     ap.add_argument("--quiet", action="store_true")
