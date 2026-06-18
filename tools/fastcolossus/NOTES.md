@@ -28,21 +28,40 @@ runner's never-root-caused fidelity bug (1.e4 → f7f6 instead of e7e5).
   polled instead of using the IRQ), or a CIA timer / VIC raster value. We return
   a static `io[0x0D]` today, so the awaited bit never sets → infinite spin. This
   is the hardware-fidelity gap the differential trace is meant to pin.
-- **Pinpointed** (I/O read histogram, `g_ioreads`): the spin hammers
-  **$D900–$D907** (~65k reads each) — an `LDA ($zp),Y` (op b1) whose pointer sits
-  in the $D800–$DBFF color-RAM/I-O region, almost certainly a WRONG pointer from
-  an upstream divergence (its symptom, not the bug). Implementing $DC0D ICR
-  (return 0x81 once/jiffy) did NOT change the spin, so it isn't $DC0D.
+### Session-2 deep trace (the picture is now precise)
+- **INPUT WORKS.** Full instruction trace from $F155: KERNAL RTS → Colossus init
+  ($4C26 SEI, $4C23 CLI) → `JSR $FFE4` (GETIN) → KERNAL buffer read at $E5B4 →
+  **reads `'2'` ($32)** → keystroke dispatch at $4C35 (CMP/BEQ chain). So the
+  keyboard buffer feed reaches Colossus correctly.
+- **The stall is a non-terminating BOARD-REDRAW loop AFTER the first keystroke.**
+  Feed log: only `'2'`($32) then `'E'`($45) get fed; `'E'` is never consumed —
+  Colossus enters a redraw loop and never returns to read the rest of the move.
+  The loop nest: caller `$5484` → inline-parameter subroutines (`$67AD`: `PLA/PLA`
+  to read the return addr, then reads inline `.byte` data after the `JSR`, advances
+  via the 16-bit ptr-inc at `$6F33`) → per-char chargen copy `$5645` (src
+  `$D800 + char*8` read with charen=0; that's the $D900 hammer). The `$548C`
+  `LDX #$26 … DEX … BNE` counter is effectively stuck → infinite.
+- **Ruled OUT as the cause:** undocumented opcodes (logged: NONE executed);
+  decimal mode (D flag never set in this region); `JSR`/`RTS` off-by-one (correct:
+  push pc-1 / pull+1); PHP/PLP/PLA/RTI B-flag & unused-bit quirks (all correct).
+  The core is solid for everything Colossus exercises here, so the divergence is
+  either a rarer CPU edge or an **I/O read value** the redraw branches on
+  (e.g. `BIT $B42B; BPL` — if $B42B was set from a wrong I/O read upstream).
+- Instruments in the harness (all env-gated): `FCDEBUG`/`FCFINE` (step trace),
+  `FCTRACE=N` (first N instrs), `FCRING` (48-instr ring + 140 after first $5645),
+  `FCKB` (keyboard feeds), `g_ioreads` histogram, undoc-opcode detector.
 
-## Next (differential trace vs VICE — the method the C# attempt lacked)
-1. Try the one-byte-at-a-time keyboard feed (feed next byte when $C6==0, with a
-   cycle gap), mirroring the C# QueuedKeyboardInput.
-2. If still stuck: trace the same snapshot on VICE (monitor `r`/step) and on this
-   core in lockstep; find the FIRST divergent instruction → fix the opcode/timing.
-   Candidates from the C# postmortem: CIA-timer/IRQ fidelity, undocumented opcodes
-   (cpu6502.c stubs them as NOP — log which Colossus hits), I/O-internal state.
-3. Once 1.e4 → e7e5 (VICE truth), wire move-in + screen-scrape and replace the
-   VICE Colossus in `match_caissa_colossus.py` with this (Caissa via caissa_cli).
+## Next — build the differential trace (the only definitive tool left)
+1. **Oracle problem:** only a RAM-only snapshot exists (no `.vsf` full chip state),
+   so re-running `ready.ram.bin` in VICE won't perfectly match. Regenerate a clean
+   reference: boot Colossus fresh in headless VICE from `coloss40_rebuilt.d64`,
+   play `1.e4` via the monitor, and capture a PC+regs trace (VICE CPU history
+   `chis`, or breakpoint-step). This run is full-state-faithful and ends in `e7e5`.
+2. Make this core boot the SAME way (or align both at a common checkpoint), then
+   **diff the PC+reg streams → first divergent instruction = the bug.** Fix it
+   (likely an I/O read value or a CPU flag edge), repeat until `1.e4 → e7e5`.
+3. Then wire move-in + screen-scrape and drop this in for the VICE Colossus in
+   `match_caissa_colossus.py` (Caissa via `caissa_cli`) → games in seconds.
 
 ## Build / run
     cc -O2 -I ../fast6502_bridge fastcolossus.c ../fast6502_bridge/cpu6502.c -o fastcolossus

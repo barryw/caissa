@@ -48,6 +48,26 @@ static uint16_t timerB(cpu6502_t *c) { return (uint16_t)(0xFFFF - (c->cycles % 0
 
 long g_ioreads[0x1000];   /* read frequency per $D000-offset (debug) */
 
+/* Documented NMOS opcode set (from cpu6502.c's case labels). cpu6502.c stubs
+ * everything else as a 2-cycle NOP -- if Colossus executes one, that's a likely
+ * divergence. */
+static uint8_t g_documented[256];
+static const uint8_t DOC_OPS[] = {
+ 0x00,0x01,0x05,0x06,0x08,0x09,0x0A,0x0D,0x0E,0x10,0x11,0x15,0x16,0x18,0x19,0x1D,
+ 0x1E,0x20,0x21,0x24,0x25,0x26,0x28,0x29,0x2A,0x2C,0x2D,0x2E,0x30,0x31,0x35,0x36,
+ 0x38,0x39,0x3D,0x3E,0x40,0x41,0x45,0x46,0x48,0x49,0x4A,0x4C,0x4D,0x4E,0x50,0x51,
+ 0x55,0x56,0x58,0x59,0x5D,0x5E,0x60,0x61,0x65,0x66,0x68,0x69,0x6A,0x6C,0x6D,0x6E,
+ 0x70,0x71,0x75,0x76,0x78,0x79,0x7D,0x7E,0x81,0x84,0x85,0x86,0x88,0x8A,0x8C,0x8D,
+ 0x8E,0x90,0x91,0x94,0x95,0x96,0x98,0x99,0x9A,0x9D,0xA0,0xA1,0xA2,0xA4,0xA5,0xA6,
+ 0xA8,0xA9,0xAA,0xAC,0xAD,0xAE,0xB0,0xB1,0xB4,0xB5,0xB6,0xB8,0xB9,0xBA,0xBC,0xBD,
+ 0xBE,0xC0,0xC1,0xC4,0xC5,0xC6,0xC8,0xC9,0xCA,0xCC,0xCD,0xCE,0xD0,0xD1,0xD5,0xD6,
+ 0xD8,0xD9,0xDD,0xDE,0xE0,0xE1,0xE4,0xE5,0xE6,0xE8,0xE9,0xEA,0xEC,0xED,0xEE,0xF0,
+ 0xF1,0xF5,0xF6,0xF8,0xF9,0xFD,0xFE };
+long g_undoc[256];          /* execution count per undocumented opcode */
+uint16_t g_first_undoc_pc;  /* PC of the first undoc opcode executed */
+uint8_t  g_first_undoc_op;  /* and which opcode */
+long g_undoc_total;
+
 static uint8_t c64_read(cpu6502_t *c, uint16_t a) {
     c64_t *m = (c64_t *)c->hook_ctx;
     if (a >= 0xD000 && a <= 0xDFFF) g_ioreads[a - 0xD000]++;
@@ -152,6 +172,18 @@ int main(int argc, char **argv) {
     memcpy(m->io,     cpuview + 0xD000, 0x1000);
     free(cpuview);
 
+    /* Chargen ROM ($D000-$DFFF when charen=0): not in the cpu-view snapshot
+     * (captured with I/O banked). Colossus copies chargen to build its board
+     * glyphs at setup; without it that routine spins. */
+    const char *cg = getenv("FC_CHARGEN");
+    char cgbuf[512];
+    if (!cg) { snprintf(cgbuf, sizeof cgbuf, "%s/Git/vice-macos/vice/data/C64/chargen-901225-01.bin", getenv("HOME")); cg = cgbuf; }
+    FILE *cf = fopen(cg, "rb");
+    if (cf) { if (fread(m->chargen, 1, 0x1000, cf) != 0x1000) fprintf(stderr, "warn: short chargen\n"); fclose(cf); }
+    else fprintf(stderr, "warn: no chargen at %s (board glyphs will be blank)\n", cg);
+
+    for (size_t i = 0; i < sizeof DOC_OPS; i++) g_documented[DOC_OPS[i]] = 1;
+
     c->read_hook = c64_read;
     c->write_hook = c64_write;
     c->hook_ctx = m;
@@ -190,6 +222,8 @@ int main(int argc, char **argv) {
         if (irq_pending && !(c->status & FLAG_I)) { deliver_irq(c); irq_pending = 0; irqs++; }
         /* Feed the next move keystroke once the buffer has drained. */
         if (kb_idx < sizeof move_in && c->mem[0x00C6] == 0 && c->cycles >= kb_next) {
+            if (getenv("FCKB")) fprintf(stderr, "[kb] feed byte %zu = $%02X at cyc %llu\n",
+                                        kb_idx, move_in[kb_idx], (unsigned long long)c->cycles);
             c->mem[0x0277] = move_in[kb_idx++];
             c->mem[0x00C6] = 1;
             kb_next = c->cycles + KB_GAP;
@@ -200,7 +234,32 @@ int main(int argc, char **argv) {
                     steps, c->pc, c->sp, c->mem[0xC6], c64_read(c, c->pc), irqs,
                     (c->status & FLAG_I) ? 1 : 0, c->mem[1]);
         (void)pc_hist_max; (void)pc_hist_cnt;
-        cpu6502_step(c);
+        uint16_t op_pc = c->pc;
+        /* Ring-buffer the last 48 instructions; when PC first reaches the stuck
+         * charset routine ($5645), dump the ring (the caller) + the next 140. */
+        static uint32_t ring[48]; static int rh = 0; static long trace_n = -1; static int dumped = 0;
+        if (getenv("FCRING")) {
+            ring[rh++ & 47] = ((uint32_t)c->pc << 16) | (c->x << 8) | c->a;
+            if (!dumped && c->pc == 0x5645) {
+                dumped = 1;
+                fprintf(stderr, "=== ring (caller -> $5645), oldest first: pc/x/a ===\n");
+                for (int k = 0; k < 48; k++) { uint32_t v = ring[(rh + k) & 47];
+                    fprintf(stderr, " %04X(x%02X a%02X)", v >> 16, (v >> 8) & 0xFF, v & 0xFF);
+                    if ((k & 5) == 5) fprintf(stderr, "\n"); }
+                fprintf(stderr, "\n"); trace_n = 140;
+            }
+            if (trace_n > 0) { trace_n--;
+                fprintf(stderr, "%04X a=%02X x=%02X y=%02X s=%02X p=%02X op=%02X\n",
+                        c->pc, c->a, c->x, c->y, c->sp, c->status, c64_read(c, c->pc)); }
+        }
+        if (getenv("FCTRACE") && steps < (long)atol(getenv("FCTRACE")))
+            fprintf(stderr, "%04X a=%02X x=%02X y=%02X s=%02X p=%02X op=%02X\n",
+                    c->pc, c->a, c->x, c->y, c->sp, c->status, c64_read(c, c->pc));
+        uint8_t op = cpu6502_step(c);
+        if (!g_documented[op]) {
+            if (g_undoc_total == 0) { g_first_undoc_pc = op_pc; g_first_undoc_op = op; }
+            g_undoc[op]++; g_undoc_total++;
+        }
         steps++;
     }
     if (dbg) {
@@ -219,6 +278,32 @@ int main(int argc, char **argv) {
     double secs = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
     printf("ran %ld steps, %llu cycles in %.2fs (%.1f M cyc/s)\n",
            steps, (unsigned long long)c->cycles, secs, c->cycles / 1e6 / secs);
+    if (g_undoc_total) {
+        printf("UNDOC opcodes executed: %ld total; first = $%02X at PC=$%04X\n",
+               g_undoc_total, g_first_undoc_op, g_first_undoc_pc);
+        printf("  by opcode:");
+        for (int i = 0; i < 256; i++) if (g_undoc[i]) printf(" $%02X x%ld", i, g_undoc[i]);
+        printf("\n");
+    } else {
+        printf("UNDOC opcodes executed: none\n");
+    }
     dump_screen(c);
+    if (dbg) {
+        printf("$F9=%02X%02X $FB=%02X%02X $B42F=%02X $B430=%02X\n",
+               c->mem[0xFA], c->mem[0xF9], c->mem[0xFC], c->mem[0xFB],
+               c->mem[0xB42F], c->mem[0xB430]);
+        printf("---- code $5630-$5710 ----\n");
+        for (uint16_t a = 0x5630; a < 0x5710; a += 16) {
+            printf("%04X:", a);
+            for (int i = 0; i < 16; i++) printf(" %02X", c->mem[a + i]);
+            printf("\n");
+        }
+        printf("---- zero page $00-$FF ----\n");
+        for (uint16_t a = 0; a < 0x100; a += 16) {
+            printf("%02X:", a);
+            for (int i = 0; i < 16; i++) printf(" %02X", c->mem[a + i]);
+            printf("\n");
+        }
+    }
     return 0;
 }
