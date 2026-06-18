@@ -18,9 +18,9 @@ REPO = Path(__file__).resolve().parents[2]
 def _find_x64sc():
     import os
     cands = [os.environ.get("X64SC"),
-             str(Path.home() / "Git" / "vice-macos" / "vice" / "src" / "x64sc"),
-             "/usr/local/bin/x64sc",
-             "/Applications/x64sc.app/Contents/MacOS/x64sc"]
+             "/tmp/x64sc_stable",
+             "/tmp/vice_stable/src/x64sc",
+             str(Path.home() / "Git" / "vice-macos" / "vice" / "src" / "x64sc")]
     for c in cands:
         if c and Path(c).exists():
             return c
@@ -105,13 +105,18 @@ def vice_trace(n: int) -> list[tuple]:
         m.cmd("bank ram")
         m.cmd(f'bload "{SNAP}" 0 0000')
         m.cmd("> 0000 2f")        # DDR
-        m.cmd("> 0001 37")        # banking: KERNAL+BASIC+I/O
+        m.cmd("> 0001 36")        # banking: KERNAL+IO, BASIC OUT (game banking)
         m.cmd("> 0277 32")        # keyboard buffer: '2'
         m.cmd("> 00c6 01")        # buffer length 1
         m.cmd("r pc=f155")
         m.cmd("r sp=f5")
         m.cmd("r a=00"); m.cmd("r x=00"); m.cmd("r y=00")
         m.cmd("r fl=23")   # C=1 Z=1 (matches the fast core's initial P)
+        # Capture VICE's cycle count so the fast core can phase-align (TOD/timers).
+        rout = m.cmd("r")
+        cm = re.search(r"(\d+)\s*$", rout.strip().splitlines()[-2] if len(rout.splitlines()) > 1 else rout)
+        global BASE_CYCLE
+        BASE_CYCLE = int(cm.group(1)) if cm else 0
         states = []
         for i in range(n):
             out = m.cmd("z")       # step one instruction
@@ -130,9 +135,12 @@ def vice_trace(n: int) -> list[tuple]:
             proc.kill()
 
 
+BASE_CYCLE = 0
+
+
 def fast_trace(n: int) -> list[tuple]:
     import os
-    env = dict(os.environ, FCHASH=str(n), FCEMIT="1")
+    env = dict(os.environ, FCHASH=str(n), FCEMIT="1", FCBASECYCLE=str(BASE_CYCLE))
     out = subprocess.run([str(FASTCORE)], cwd=str(REPO), env=env,
                          capture_output=True, text=True).stdout
     states = []

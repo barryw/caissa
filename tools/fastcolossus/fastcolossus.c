@@ -51,7 +51,11 @@ static uint16_t timerB(cpu6502_t *c) { return (uint16_t)(0xFFFF - (c->cycles % 0
  * ~985248 Hz -> ~98525 cycles per tenth. Live (unlatched) reads are enough for the
  * tenths-polling that was hanging. */
 static uint8_t  bcd(int v)            { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
-static long     tod_tenths(cpu6502_t *c) { return (long)(c->cycles / 98525); }
+/* Cycle base for VICE alignment (FCBASECYCLE): the fast core starts c->cycles
+ * here, and TOD/raster count from it, so the cycle-derived I/O shares VICE's
+ * phase (VICE's TOD reads ~0 at this point). 0 = cold start (normal runs). */
+static uint64_t g_base_cycle = 0;
+static long     tod_tenths(cpu6502_t *c) { return (long)((c->cycles - g_base_cycle) / 98525); }
 
 long g_ioreads[0x1000];   /* read frequency per $D000-offset (debug) */
 
@@ -204,13 +208,18 @@ int main(int argc, char **argv) {
      * running-C64 banking so KERNAL+BASIC+I/O are visible: $01=$37, DDR $00=$2F.
      * Without this, $01=0 banks everything to RAM and PC=$F155 executes garbage. */
     c->mem[0x0000] = 0x2F;
-    c->mem[0x0001] = 0x37;
+    c->mem[0x0001] = 0x36;  /* KERNAL+IO in, BASIC OUT (game banking) */
 
     /* Ready-state registers (build/colossus_extract/runtime/ready.json). */
     c->pc = 61781;          /* 0xF155, KERNAL keyboard-wait loop */
     c->sp = 0xF5;
     c->a = c->x = c->y = 0;
     c->status = FLAG_U | FLAG_Z | FLAG_C;   /* C=1 Z=1 */
+
+    /* Optional cycle base to phase-align with VICE (vice_diff.py reads VICE's
+     * cycle count and passes it here so TOD/timers start at VICE's phase). */
+    if (getenv("FCBASECYCLE")) g_base_cycle = (uint64_t)strtoull(getenv("FCBASECYCLE"), NULL, 10);
+    c->cycles = g_base_cycle;
 
     /* Keyboard input is fed ONE byte at a time as the buffer drains (mirroring
      * the C# runner's QueuedKeyboardInput) -- Colossus reads a char, processes,
@@ -231,7 +240,7 @@ int main(int argc, char **argv) {
     struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
 
     int dbg = getenv("FCDEBUG") != NULL;
-    uint64_t next_irq = 16421;
+    uint64_t next_irq = g_base_cycle + 16421;
     long steps = 0;
     uint16_t pc_hist_max = 0; long pc_hist_cnt = 0, irqs = 0; int irq_pending = 0;
     while (hashmode ? (steps < hashN) : (c->cycles < (uint64_t)max_cycles)) {
