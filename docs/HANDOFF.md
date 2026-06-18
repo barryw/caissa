@@ -1,6 +1,6 @@
 # Handoff — resume here
 
-_Last updated: 2026-06-17. Read this first, then `docs/ARCHITECTURE.md`._
+_Last updated: 2026-06-17 (fastcolossus diff grind). Read this first, then `docs/ARCHITECTURE.md`._
 
 ## The goal
 Get **Caïssa to beat Colossus 4.0 on a real C64**, and tune against Colossus in a
@@ -15,11 +15,58 @@ move is **225s**, depth-4 is 16s, so a full game is many minutes-to-hours. No fl
 The same 6502 binary on the **fast functional core (`cpu6502.c`)** runs **75–660×
 faster**: Caïssa depth-6 = **3.25s** (`caissa_cli`), depth-4 = 0.22s. So the live
 work is **`tools/fastcolossus/`** — run Colossus on that core too (a C port of the
-old C# raw runner). **Colossus BOOTS and renders on the fast core at 32 M cyc/s**
-(32× VICE); blocked on an input-handling emulation divergence (spins on $D900 I/O
-reads). See `tools/fastcolossus/NOTES.md` — that bring-up (differential trace vs a
-one-shot VICE oracle) is THE active task. Once `1.e4 → e7e5`, drop it into the
-match loop (Caïssa via `caissa_cli`) and games run in seconds.
+old C# raw runner). Once it plays `1.e4 → e7e5`, drop it into the match loop
+(Caïssa via `caissa_cli`) and games run in **seconds**.
+
+## ★★ RESUME HERE — fastcolossus differential-trace grind
+**THE active task.** Colossus boots + renders on the fast core but stalls (it reads
+move input fine, then hangs in a board-redraw loop). We hunt the emulation bugs by
+**differential trace vs VICE** — and it WORKS, grinding through bugs one at a time.
+
+**The loop:** `tools/fastcolossus/vice_diff.py [N]` boots VICE (`/tmp/x64sc_stable`),
+`bload`s the SAME `ready.ram.bin` both into VICE and the fast core, identical setup
+(`$01=$36`, regs, pre-poke `'2'`, `r fl=23`, FCBASECYCLE phase-align), single-steps
+both, and prints the **FIRST instruction where PC/regs diverge** (VICE = truth).
+→ read the divergent instruction → fix the fast core's I/O/CPU → re-run → repeat
+until no divergence, then `1.e4 → e7e5`.
+
+**Bugs found+fixed so far (each via the diff):**
+1. **Static TOD** — `$DC08` (CIA Time-of-Day, tenths) returned a frozen value;
+   Colossus polls it for its clock → THE stall. Now advances from cycles.
+2. **Banking** — was `$01=$37` (BASIC ROM in); Colossus runs **BASIC OUT**
+   (`$01=$36`: `$A000–$BFFF` = its RAM variables, it `STA $B491`). Fixed both sides.
+3. **Cycle align** — VICE's chip state isn't reset by `bload`; `vice_diff` reads
+   VICE's cycle count and passes `FCBASECYCLE` so TOD/timers share phase.
+
+**NEXT divergence to chase:** `$4C08 INC $B43B` (N flag). My core's result
+(`0xd1→0xd2`, N=1) looks correct → VICE's `$B43B` differs, so one more banking/load
+nuance. Peek VICE's `$B43B` at that step (`m b43b b43b` after stepping there) vs the
+snapshot (`ready.ram.bin[$B43B]=0xd1`) to see which is off.
+
+**Commands:**
+- Diff: `python3 tools/fastcolossus/vice_diff.py 600` (N = instructions to trace).
+- Fast core alone: `tools/fastcolossus/fastcolossus [max_cycles]` (from repo root);
+  rebuild: `cc -O2 -I tools/fast6502_bridge tools/fastcolossus/fastcolossus.c
+  tools/fast6502_bridge/cpu6502.c -o tools/fastcolossus/fastcolossus`.
+- Instruments (env): `FCDEBUG`/`FCFINE` (step trace), `FCTRACE=N`, `FCRING`
+  (ring + trace at first `$5645`), `FCKB` (keyboard feeds), `FCHASH=N`+`FCEMIT`
+  (deterministic trace for the diff), `g_ioreads` histogram, undoc detector.
+
+**GOTCHAS:**
+- The in-`~/Git/vice-macos` headless `x64sc` **kept getting wiped** (something
+  cleans the tree). Rebuilt to **`/tmp/x64sc_stable`** + full tree **`/tmp/vice_stable`**;
+  `vice_diff` prefers those. To rebuild if gone:
+  `cd ~/Git/vice-macos/vice && ./configure --enable-headlessui --disable-html-docs
+  && make -k -j8 ; cp src/x64sc /tmp/x64sc_stable` (the `make` rc=2 is the unrelated
+  x64dtv variant — `x64sc` still builds; copy it IMMEDIATELY).
+- VICE `z` reports state AFTER the step; `vice_diff` prepends the known initial state
+  to realign to "before instr i". `r fl=23` sets flags; `r a=00` etc. set regs.
+- Snapshots: `build/colossus_extract/runtime/ready.ram.bin` (RAM) +
+  `ready_cpu.ram.bin` (CPU-view, for ROM/IO). Ready PC = `$F155`, SP=`$F5`.
+  Chargen ROM loaded from `~/Git/vice-macos/vice/data/C64/chargen-901225-01.bin`.
+- Already ruled out as bug classes: undoc opcodes (none executed), JSR/RTS off-by-one,
+  PHP/PLP/PLA/RTI flag quirks — `cpu6502.c` core is solid there.
+Full play-by-play: `tools/fastcolossus/NOTES.md`.
 
 ## Where we are (merged to `main`, all commits green, not yet pushed)
 The whole Caïssa-vs-Colossus match harness is **BUILT and PROVEN end-to-end**.
