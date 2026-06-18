@@ -17,9 +17,12 @@ Prereq: native/cref_mos built
 import subprocess
 from pathlib import Path
 
+import os
 ROOT = Path(__file__).resolve().parent.parent.parent
 HERE = Path(__file__).resolve().parent
-CREF = ROOT / "native" / "cref_mos"
+# cref_mos is the matched-config oracle build_caissa.sh emits to /tmp (the repo
+# reorg removed native/; honor CREF_MOS for an explicit override).
+CREF = Path(os.environ.get("CREF_MOS", "/tmp/cref_mos"))
 
 
 def mv(fen: str, d: int) -> str:

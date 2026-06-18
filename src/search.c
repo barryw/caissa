@@ -115,8 +115,11 @@ void search_reset_config(void) {
     g_sc.check_ext = 0;    /* tested -69: unconditional extension wastes the budget */
     g_sc.aspiration = 0;
     g_sc.asp_delta = 50;
-    g_sc.delta = 0;          /* candidate: quiescence delta pruning (measure first) */
-    g_sc.delta_margin = 100;
+    g_sc.delta = 1;          /* quiescence delta pruning: −10% cycles/move on-chip
+                              * (same-corpus 6502 measure), fixed-depth strength-neutral
+                              * (1000-game self-play 50.6%, noise). The cycle win is
+                              * depth headroom at the chip's 1 MHz time control. */
+    g_sc.delta_margin = 200;
 }
 
 void search_set_budget(long nodes) { g_node_budget = nodes; }
