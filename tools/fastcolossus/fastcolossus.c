@@ -46,6 +46,13 @@ static int      raster(cpu6502_t *c) { return (int)((c->cycles / 63) % 312); }
 static uint16_t timerA(cpu6502_t *c) { return (uint16_t)(16421 - (c->cycles % 16422)); }
 static uint16_t timerB(cpu6502_t *c) { return (uint16_t)(0xFFFF - (c->cycles % 0x10000)); }
 
+/* CIA1 Time-of-Day clock ($DC08-$DC0B): tenths tick at 10 Hz. Colossus POLLS the
+ * TOD for its game clock -- a static value freezes that poll (the stall). PAL CPU
+ * ~985248 Hz -> ~98525 cycles per tenth. Live (unlatched) reads are enough for the
+ * tenths-polling that was hanging. */
+static uint8_t  bcd(int v)            { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
+static long     tod_tenths(cpu6502_t *c) { return (long)(c->cycles / 98525); }
+
 long g_ioreads[0x1000];   /* read frequency per $D000-offset (debug) */
 
 /* Documented NMOS opcode set (from cpu6502.c's case labels). cpu6502.c stubs
@@ -78,6 +85,10 @@ static uint8_t c64_read(cpu6502_t *c, uint16_t a) {
         if (!loram(c) && !hiram(c)) return c->mem[a];           /* RAM */
         if (!charen(c))            return m->chargen[a - 0xD000];
         switch (a) {                                            /* I/O */
+            case 0xDC08: return bcd((int)(tod_tenths(c) % 10));         /* TOD 1/10 s */
+            case 0xDC09: return bcd((int)((tod_tenths(c) / 10) % 60));  /* TOD seconds */
+            case 0xDC0A: return bcd((int)((tod_tenths(c) / 600) % 60)); /* TOD minutes */
+            case 0xDC0B: { int h = (int)((tod_tenths(c) / 36000) % 12); return bcd(h ? h : 12); }
             case 0xD012: return (uint8_t)(raster(c) & 0xFF);
             case 0xD011: return (uint8_t)((m->io[0x11] & 0x7F) | (((raster(c) >> 8) & 1) << 7));
             case 0xDC04: return (uint8_t)(timerA(c) & 0xFF);
@@ -208,6 +219,14 @@ int main(int argc, char **argv) {
     uint64_t kb_next = 0;          /* feed when cycles >= kb_next and buffer empty */
     const uint64_t KB_GAP = 20000; /* ~1 jiffy between keypresses */
 
+    /* Differential-trace mode: FCHASH=N runs exactly N instructions from the
+     * snapshot with a single pre-poked keystroke ('2') -- deterministic, no
+     * dynamic feeder -- then prints regs + a RAM hash. VICE (vice_diff.py) does
+     * the identical setup; binary-search N for the first divergence. */
+    long hashN = getenv("FCHASH") ? atol(getenv("FCHASH")) : -1;
+    int hashmode = hashN >= 0;
+    if (hashmode) { c->mem[0x0277] = 0x32; c->mem[0x00C6] = 1; kb_idx = sizeof move_in; }
+
     printf("Colossus on fast core: injecting 1.e4, running up to %ld cycles ...\n", max_cycles);
     struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
 
@@ -215,7 +234,7 @@ int main(int argc, char **argv) {
     uint64_t next_irq = 16421;
     long steps = 0;
     uint16_t pc_hist_max = 0; long pc_hist_cnt = 0, irqs = 0; int irq_pending = 0;
-    while (c->cycles < (uint64_t)max_cycles) {
+    while (hashmode ? (steps < hashN) : (c->cycles < (uint64_t)max_cycles)) {
         if (c->cycles >= next_irq) { next_irq += 16421; irq_pending = 1; }
         /* Latch the jiffy IRQ until the I flag clears (the line stays asserted,
          * like the CIA). Dropping it when I=1 was starving Colossus's timing. */
@@ -255,12 +274,28 @@ int main(int argc, char **argv) {
         if (getenv("FCTRACE") && steps < (long)atol(getenv("FCTRACE")))
             fprintf(stderr, "%04X a=%02X x=%02X y=%02X s=%02X p=%02X op=%02X\n",
                     c->pc, c->a, c->x, c->y, c->sp, c->status, c64_read(c, c->pc));
+        /* Canonical per-instruction emit for the VICE diff (FCHASH+FCEMIT). */
+        if (hashmode && getenv("FCEMIT"))
+            printf("I=%ld PC=%04X A=%02X X=%02X Y=%02X SP=%02X P=%02X\n",
+                   steps, c->pc, c->a, c->x, c->y, c->sp, c->status);
         uint8_t op = cpu6502_step(c);
         if (!g_documented[op]) {
             if (g_undoc_total == 0) { g_first_undoc_pc = op_pc; g_first_undoc_op = op; }
             g_undoc[op]++; g_undoc_total++;
         }
         steps++;
+    }
+    if (hashmode) {
+        /* FNV-1a over RAM, excluding the $D000-$DFFF I/O window (VICE's bank-ram
+         * view differs there). Print regs + hash for vice_diff.py to compare. */
+        uint32_t h = 2166136261u;
+        for (int a = 0; a <= 0xFFFF; a++) {
+            if (a >= 0xD000 && a <= 0xDFFF) continue;
+            h ^= c->mem[a]; h *= 16777619u;
+        }
+        printf("INSTR=%ld PC=%04X A=%02X X=%02X Y=%02X SP=%02X P=%02X HASH=%08X\n",
+               (long)hashN, c->pc, c->a, c->x, c->y, c->sp, c->status, h);
+        return 0;
     }
     if (dbg) {
         fprintf(stderr, "[dbg] total irqs delivered: %ld\n", irqs);
