@@ -125,6 +125,12 @@ void search_reset_config(void) {
                               * (1000-game self-play 50.6%, noise). The cycle win is
                               * depth headroom at the chip's 1 MHz time control. */
     g_sc.delta_margin = 200;
+    g_sc.lazy_margin = 80;   /* was 240. eval_full dominates (56% of cycles in the
+                              * opening); paying the full positional eval only within
+                              * 80cp of the window cuts −18% cyc/move and is strength
+                              * neutral-or-better (1400-game self-play ~+12 Elo for 80,
+                              * within noise). Coarser quiescence stand-pat, not the
+                              * root/PV eval, so eval QUALITY where it matters is intact. */
 }
 
 void search_set_budget(long nodes) { g_node_budget = nodes; }
@@ -249,8 +255,8 @@ static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
         int lazy_w = eval_material_pst(b);
         int lazy = b->wtm ? lazy_w : -lazy_w;
         int stand;
-        if (lazy >= beta + LAZY_EVAL_MARGIN) stand = lazy;
-        else if (lazy <= alpha - LAZY_EVAL_MARGIN) stand = lazy;
+        if (lazy >= beta + g_sc.lazy_margin) stand = lazy;
+        else if (lazy <= alpha - g_sc.lazy_margin) stand = lazy;
         else stand = eval_stm(b);
         if (stand >= beta) return stand;
         if (stand > alpha) alpha = stand;

@@ -37,6 +37,8 @@ typedef struct {
     int lmr;         /* late-move reductions */
     int delta;       /* quiescence delta pruning (futile-capture cutoff) */
     int delta_margin;/* delta-pruning safety margin in cp (default 100) */
+    int lazy_margin; /* quiescence lazy-eval margin in cp (default 240); smaller
+                      * = skip the full positional eval more often (faster, coarser) */
 } SearchConfig;
 
 extern SearchConfig g_sc;
