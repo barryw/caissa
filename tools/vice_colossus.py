@@ -559,6 +559,12 @@ class ViceColossus:
         if r1 not in "12345678" or r2 not in "12345678":
             raise ValueError(f"move ranks must be 1-8, got {uci!r}")
         seq = [ord(r1), ord(f1.upper()), 0x0D, ord(r2), ord(f2.upper()), 0x0D]
+        if len(normalized) >= 5:
+            # Promotion: answer Colossus's "Promotion piece?" prompt (N/B/R/Q;
+            # any other key -> queen). Omitting it stalls the move record/scrape.
+            if normalized[4] not in "qrbn":
+                raise ValueError(f"promotion piece must be q/r/b/n, got {uci!r}")
+            seq.append(ord(normalized[4].upper()))
 
         def fn(monitor: _Monitor) -> None:
             monitor.cmd("bank cpu")

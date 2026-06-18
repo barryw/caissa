@@ -17,6 +17,7 @@ python-chess is the source of truth for legality + result. Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -144,6 +145,12 @@ class FastColossus:
         m = uci.strip().lower()
         f1, r1, f2, r2 = m[0], m[1], m[2], m[3]
         seq = [ord(r1), ord(f1.upper()), 0x0D, ord(r2), ord(f2.upper()), 0x0D]
+        if len(m) >= 5:
+            # Promotion: Colossus prompts "Promotion piece?" after the to-square
+            # and waits for N/B/R/Q (any other key -> queen). Without this key it
+            # never records the move -> the scrape stalls. UCI's 5th char is the
+            # piece (q/r/b/n); send it uppercase to answer the prompt.
+            seq.append(ord(m[4].upper()))
         self.poke(0x0277, seq)
         self.poke(0x00C6, [len(seq)])
 
@@ -210,9 +217,16 @@ class FastColossus:
 
 
 def caissa_bestmove(fen: str, depth: int) -> tuple[str, dict]:
+    # Interim eval-term testing: drive Caissa via the host C engine (bit-identical
+    # to the 6502 image at baseline weights) so new eval weights can be tested vs
+    # Colossus BEFORE the 6502 asm port. CAISSA_ENGINE=cref + CAISSA_WEIGHTS=<spec>.
+    if os.environ.get("CAISSA_ENGINE") == "cref":
+        wspec = os.environ.get("CAISSA_WEIGHTS", "")   # e.g. "mobility=20,..."; "" = baseline
+        cmd = [str(REPO / "build" / "cref"), "bestmove", fen, str(depth), "0", wspec]
+    else:
+        cmd = [str(CAISSA_CLI), "bestmove", fen, str(depth)]
     out = subprocess.run(
-        [str(CAISSA_CLI), "bestmove", fen, str(depth)],
-        capture_output=True, text=True, timeout=300,
+        cmd, capture_output=True, text=True, timeout=300,
     ).stdout.strip()
     # "bestmove d2d4 score 0 depth 4 nodes 0"
     toks = out.split()
@@ -221,6 +235,9 @@ def caissa_bestmove(fen: str, depth: int) -> tuple[str, dict]:
     for k in ("score", "depth", "nodes", "qnodes", "tt_hits"):
         if k in toks:
             info[k] = toks[toks.index(k) + 1]
+    # cref prints score as "+25cp"; caissa_cli prints a plain int. Normalize.
+    if "score" in info:
+        info["score"] = info["score"].replace("cp", "").replace("+", "")
     if not mv:
         raise RuntimeError(f"caissa_cli gave no move: {out!r}")
     return mv, info
