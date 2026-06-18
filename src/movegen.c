@@ -433,5 +433,123 @@ int gen_legal(const Board *b, Move *list) {
 }
 #endif /* CREF_ASM_GEN_LEGAL */
 
+/* ---- gen_legal_captures ------------------------------------------------- */
+/* Captures/ep/promotion-captures only, fully legal, for quiescence when the
+ * side to move is NOT in check. Quiescence discards 89-97% of gen_legal's output
+ * (the quiet moves); this never generates them. Produces EXACTLY the capture
+ * subset gen_legal would (bit-exact set): pseudo captures are emitted in the
+ * same per-square/per-piece order, then each is verified by the same
+ * make_move -> king-safety -> unmake_move probe gen_legal uses for its
+ * test-needing moves (a directly-accepted capture there is legal, so the probe
+ * keeps it too). Caller must pass a board that is NOT in check.
+ * Always C (even on the 6502 image): generates few moves, so the win is fewer
+ * generated/legalized moves, not faster per-move codegen. */
+int gen_legal_captures(const Board *b, Move *list) {
+    int np = 0;
+    int white = b->wtm;
+    uint8_t my_color = white ? WHITE_FLAG : 0;
+    int push = white ? -16 : 16;
+    int promo_row_hi = white ? 0x00 : 0x70;
+    int sq, i, n;
+
+    for (sq = 0; sq < 128; sq++) {
+        uint8_t pc;
+        int type;
+        if (sq & 0x88) continue;
+        pc = b->sq[sq];
+        if (!pc) continue;
+        if ((IS_WHITE(pc) ? WHITE_FLAG : 0) != my_color) continue;
+        type = PT(pc);
+        switch (type) {
+        case PT_PAWN: {
+            int caps[2], ci;
+            /* Quiet promotion push (no capture, but quiescence treats every
+             * promotion as forcing -- its keep filter includes MF_PROMO). */
+            int one = sq + push;
+            if (!OFFBOARD(one) && b->sq[one] == 0 && (one & 0xF0) == promo_row_hi)
+                add_promotions(list, &np, sq, one, 0);
+            caps[0] = sq + push - 1;
+            caps[1] = sq + push + 1;
+            for (ci = 0; ci < 2; ci++) {
+                int t = caps[ci];
+                uint8_t target;
+                if (OFFBOARD(t)) continue;
+                target = b->sq[t];
+                if (target && (IS_WHITE(target) ? WHITE_FLAG : 0) != my_color) {
+                    if ((t & 0xF0) == promo_row_hi)
+                        add_promotions(list, &np, sq, t, MF_CAPTURE);
+                    else
+                        add_move(list, &np, sq, t, 0, MF_CAPTURE);
+                } else if (target == 0 && b->ep >= 0 && t == b->ep) {
+                    add_move(list, &np, sq, t, 0, MF_EP | MF_CAPTURE);
+                }
+            }
+            break;
+        }
+        case PT_KNIGHT:
+            for (i = 0; i < 8; i++) {
+                int t = sq + KNIGHT_OFF[i];
+                uint8_t target;
+                if (OFFBOARD(t)) continue;
+                target = b->sq[t];
+                if (target && (IS_WHITE(target) ? WHITE_FLAG : 0) != my_color)
+                    add_move(list, &np, sq, t, 0, MF_CAPTURE);
+            }
+            break;
+        case PT_KING:
+            for (i = 0; i < 8; i++) {
+                int t = sq + KING_OFF[i];
+                uint8_t target;
+                if (OFFBOARD(t)) continue;
+                target = b->sq[t];
+                if (target && (IS_WHITE(target) ? WHITE_FLAG : 0) != my_color)
+                    add_move(list, &np, sq, t, 0, MF_CAPTURE);
+            }
+            break;
+        case PT_BISHOP:
+        case PT_ROOK:
+        case PT_QUEEN: {
+            const int *off;
+            int noff;
+            if (type == PT_BISHOP) { off = BISHOP_OFF; noff = 4; }
+            else if (type == PT_ROOK) { off = ROOK_OFF; noff = 4; }
+            else { off = KING_OFF; noff = 8; }
+            for (i = 0; i < noff; i++) {
+                int t = sq + off[i];
+                while (!OFFBOARD(t)) {
+                    uint8_t target = b->sq[t];
+                    if (target) {
+                        if ((IS_WHITE(target) ? WHITE_FLAG : 0) != my_color)
+                            add_move(list, &np, sq, t, 0, MF_CAPTURE);
+                        break;
+                    }
+                    t += off[i];
+                }
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    }
+
+    /* Legality probe (in place; n <= i, so we never clobber an unread entry). */
+    {
+        Board *bb = (Board *)b;
+        int opp_white = white ? 0 : 1;
+        n = 0;
+        for (i = 0; i < np; i++) {
+            Undo u;
+            int kq;
+            make_move(bb, list[i], &u);
+            kq = white ? bb->wk : bb->bk;
+            if (!is_square_attacked(bb, kq, opp_white))
+                list[n++] = list[i];
+            unmake_move(bb, list[i], &u);
+        }
+    }
+    return n;
+}
+
 /* perft lives in the host-only test_perft.c (verification, not the engine): it
  * needs a per-depth stack of move lists, which we keep off the cc65 engine. */

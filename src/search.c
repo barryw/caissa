@@ -265,15 +265,15 @@ static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
     /* Pool full -> treat as a leaf (cannot generate safely). Vanishingly rare. */
     if (!POOL_ROOM) return check ? eval_stm(b) : best;
     list = g_pool + g_pool_top;
-    n = gen_legal(b, list);
-    if (check && n == 0) return -MATE_SCORE + ply;   /* checkmate (pool not reserved) */
-
-    /* in check: search all evasions; else only captures/promotions. Compact the
-     * kept moves to the FRONT of the same buffer in place (fn <= i always). */
-    fn = 0;
-    for (i = 0; i < n; i++) {
-        if (check || (list[i].flags & (MF_CAPTURE | MF_EP | MF_PROMO)))
-            list[fn++] = list[i];
+    /* In check: all evasions (gen_legal). Else: ONLY legal captures, generated
+     * directly -- gen_legal_captures never builds the quiet moves quiescence
+     * would discard (89-97% of gen_legal's output). Same kept set, bit-exact. */
+    if (check) {
+        n = gen_legal(b, list);
+        if (n == 0) return -MATE_SCORE + ply;        /* checkmate (pool not reserved) */
+        fn = n;
+    } else {
+        fn = gen_legal_captures(b, list);
     }
     /* Quiescence depth cap (matches the 6502 limiter): stop expanding captures
      * past MAX_QUIESCE_DEPTH plies, return the stand-pat (a static eval when in
