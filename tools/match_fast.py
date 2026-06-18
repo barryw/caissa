@@ -172,6 +172,16 @@ class FastColossus:
     def plies(self, screen: str) -> set[int]:
         return {ply for ply, _ in screen_move_entries(screen)}
 
+    def pondered_move(self, screen: str) -> str | None:
+        """When Colossus's search has SETTLED but it has not committed its move to
+        the move list -- a ponder/no-commit stall: it defers writing the move until
+        the opponent inputs again, and `$B49B=0` does not stop it -- the chosen move
+        is still the FIRST token of the on-screen 'Best line' PV. Return it as a
+        from/to string (e.g. 'c7d6'), or None if no PV move is shown."""
+        m = re.search(r"Best line[^)]*\)\s*([a-h][1-8][a-h][1-8])",
+                      screen.replace("\n", " "))
+        return m.group(1) if m else None
+
     def submit_move(self, white_uci: str, white_ply: int, black_ply: int,
                     budget_cycles: int = MOVE_BUDGET_CYCLES) -> str:
         """Feed White's move, then return the screen once Colossus has replied.
@@ -197,16 +207,30 @@ class FastColossus:
                 raise RuntimeError(f"Colossus never accepted White {white_uci} "
                                    f"(ply {white_ply})\n{screen}")
         self.poke(0x00C6, [0])                        # discard any leftover keys
-        # Phase B: wait for Colossus's reply.
+        # Phase B: wait for Colossus's COMMITTED reply. If instead the search SETTLES
+        # (Positions static) without committing -- the ponder/no-commit stall: the
+        # move is chosen but not written to the move list until White moves again --
+        # return the screen so the caller reads the move from the Best-line PV
+        # (pondered_move). This avoids burning the whole budget on an already-decided
+        # move. Normal replies commit DURING the search, before settle, so they take
+        # the move-list path and are unaffected.
+        last_pos, static = None, 0
         while True:
             screen = self.read_screen()
             if black_ply in self.plies(screen):
                 return screen
+            m = re.search(r"Positions=\s*(\d+)", screen)
+            pos = m.group(1) if m else None
+            if pos is not None and pos == last_pos and int(pos) > 0:
+                static += 1
+                if static >= 3 and self.pondered_move(screen):
+                    return screen                 # settled ponder -> caller uses PV
+            else:
+                static, last_pos = 0, pos
             self.run(CHUNK_CYCLES)
             spent += CHUNK_CYCLES
             if spent >= budget_cycles:
-                raise RuntimeError(f"Colossus did not reply to ply {black_ply} "
-                                   f"within budget\n{screen}")
+                return screen                     # caller tries PV, else adjudicates
 
     def close(self) -> None:
         try:
@@ -367,6 +391,14 @@ def play(depth: int, max_plies: int, opening: list[str], game_id: int,
                 try:
                     screen = col.submit_move(last_white_uci, white_ply, black_ply)
                     raw = dict(screen_move_entries(screen)).get(black_ply)
+                    if not raw:
+                        # Ponder/no-commit stall: Colossus chose its move but won't
+                        # write it to the list until White moves. Read it from the
+                        # Best-line PV so the game continues instead of stalling.
+                        raw = col.pondered_move(screen)
+                        if raw and not quiet:
+                            print(f"  g{game_id} [ponder/no-commit @ ply {black_ply}"
+                                  f" -> read '{raw}' from Best-line PV]")
                 except RuntimeError as e:
                     raw, screen = None, str(e)
                 wall_ms = int((time.monotonic() - t) * 1000)
