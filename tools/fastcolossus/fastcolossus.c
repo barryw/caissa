@@ -33,6 +33,7 @@ typedef struct {
     uint8_t kernal[0x2000];   /* $E000-$FFFF */
     uint8_t chargen[0x1000];  /* $D000-$DFFF when banked in */
     uint8_t io[0x1000];       /* $D000-$DFFF I/O shadow (VIC/SID/CIA regs) */
+    uint64_t dc0d_acked;      /* last jiffy period whose CIA1 ICR was read */
 } c64_t;
 
 static int loram(cpu6502_t *c)  { return c->mem[1] & 1; }
@@ -45,8 +46,11 @@ static int      raster(cpu6502_t *c) { return (int)((c->cycles / 63) % 312); }
 static uint16_t timerA(cpu6502_t *c) { return (uint16_t)(16421 - (c->cycles % 16422)); }
 static uint16_t timerB(cpu6502_t *c) { return (uint16_t)(0xFFFF - (c->cycles % 0x10000)); }
 
+long g_ioreads[0x1000];   /* read frequency per $D000-offset (debug) */
+
 static uint8_t c64_read(cpu6502_t *c, uint16_t a) {
     c64_t *m = (c64_t *)c->hook_ctx;
+    if (a >= 0xD000 && a <= 0xDFFF) g_ioreads[a - 0xD000]++;
     if (a == 0x0000 || a == 0x0001) return c->mem[a];           /* CPU port */
     if (a >= 0xA000 && a <= 0xBFFF)
         return (loram(c) && hiram(c)) ? m->basic[a - 0xA000] : c->mem[a];
@@ -62,6 +66,11 @@ static uint8_t c64_read(cpu6502_t *c, uint16_t a) {
             case 0xDC07: return (uint8_t)(timerB(c) >> 8);
             case 0xDC00: return 0xFF;   /* keyboard matrix port A: no key (we use the buffer) */
             case 0xDC01: return 0xFF;   /* keyboard matrix port B */
+            case 0xDC0D: {              /* CIA1 ICR: Timer A underflow, latched, clear-on-read */
+                uint64_t period = c->cycles / 16422;
+                if (period > m->dc0d_acked) { m->dc0d_acked = period; return 0x81; } /* IRQ|TA */
+                return 0x00;
+            }
             default:     return m->io[a - 0xD000];
         }
     }
@@ -160,9 +169,12 @@ int main(int argc, char **argv) {
     c->a = c->x = c->y = 0;
     c->status = FLAG_U | FLAG_Z | FLAG_C;   /* C=1 Z=1 */
 
-    /* Inject the move into the KERNAL keyboard buffer ($0277..) + count ($C6). */
-    for (size_t i = 0; i < sizeof move_in; i++) c->mem[0x0277 + i] = move_in[i];
-    c->mem[0x00C6] = (uint8_t)sizeof move_in;
+    /* Keyboard input is fed ONE byte at a time as the buffer drains (mirroring
+     * the C# runner's QueuedKeyboardInput) -- Colossus reads a char, processes,
+     * then expects the next keypress, not a pre-stuffed 6-byte buffer. */
+    size_t kb_idx = 0;
+    uint64_t kb_next = 0;          /* feed when cycles >= kb_next and buffer empty */
+    const uint64_t KB_GAP = 20000; /* ~1 jiffy between keypresses */
 
     printf("Colossus on fast core: injecting 1.e4, running up to %ld cycles ...\n", max_cycles);
     struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -176,6 +188,12 @@ int main(int argc, char **argv) {
         /* Latch the jiffy IRQ until the I flag clears (the line stays asserted,
          * like the CIA). Dropping it when I=1 was starving Colossus's timing. */
         if (irq_pending && !(c->status & FLAG_I)) { deliver_irq(c); irq_pending = 0; irqs++; }
+        /* Feed the next move keystroke once the buffer has drained. */
+        if (kb_idx < sizeof move_in && c->mem[0x00C6] == 0 && c->cycles >= kb_next) {
+            c->mem[0x0277] = move_in[kb_idx++];
+            c->mem[0x00C6] = 1;
+            kb_next = c->cycles + KB_GAP;
+        }
         long dbgmod = getenv("FCFINE") ? 5000 : 2000000;
         if (dbg && (steps % dbgmod) == 0)
             fprintf(stderr, "[dbg] step=%ld pc=%04x sp=%02x C6=%02x op=%02x irqs=%ld I=%d $01=%02x\n",
@@ -185,7 +203,17 @@ int main(int argc, char **argv) {
         cpu6502_step(c);
         steps++;
     }
-    if (dbg) fprintf(stderr, "[dbg] total irqs delivered: %ld\n", irqs);
+    if (dbg) {
+        fprintf(stderr, "[dbg] total irqs delivered: %ld\n", irqs);
+        fprintf(stderr, "[dbg] hottest I/O reads:\n");
+        for (int pass = 0; pass < 8; pass++) {
+            int best = -1; long bv = 0;
+            for (int i = 0; i < 0x1000; i++) if (g_ioreads[i] > bv) { bv = g_ioreads[i]; best = i; }
+            if (best < 0) break;
+            fprintf(stderr, "   $%04X : %ld\n", 0xD000 + best, bv);
+            g_ioreads[best] = 0;
+        }
+    }
 
     struct timespec t1; clock_gettime(CLOCK_MONOTONIC, &t1);
     double secs = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;

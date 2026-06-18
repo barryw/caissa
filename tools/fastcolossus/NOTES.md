@@ -19,11 +19,20 @@ runner's never-root-caused fidelity bug (1.e4 → f7f6 instead of e7e5).
 - Fixes landed: force `$01=$37` (snapshot RAM-view $01=0 banked out all ROM →
   BRK-loop to $0000); NMOS decimal mode + banked-memory hooks in `cpu6502.c`
   (gate stays bit-exact); latched jiffy IRQ.
-- **BLOCKED:** injecting 1.e4 (keyboard buffer $0277/$C6), Colossus consumes ONE
-  byte ($C6 6→5) then stalls in a loop at $566c–$568d with **I=1 forever** (jiffy
-  IRQ never fires). Either the keyboard feed is wrong (C# runner fed ONE byte at a
-  time with gaps via TryEnqueueKeyboardByte, not all 6 at once) or an emulation
-  divergence puts it in an infinite loop.
+- One-byte-at-a-time keyboard feed (feed when $C6==0) added; Colossus still does
+  not drain it.
+- **BLOCKED:** with 1.e4 fed, Colossus loops in **$5663–$56af with I=1 forever**,
+  repeatedly toggling `$01` 37↔33 to read **I/O registers** ($D0xx) and never
+  reading the keyboard. It is **polling a hardware register my emulation doesn't
+  faithfully reproduce** — prime suspect **CIA ICR $DC0D** (timer-underflow flag,
+  polled instead of using the IRQ), or a CIA timer / VIC raster value. We return
+  a static `io[0x0D]` today, so the awaited bit never sets → infinite spin. This
+  is the hardware-fidelity gap the differential trace is meant to pin.
+- **Pinpointed** (I/O read histogram, `g_ioreads`): the spin hammers
+  **$D900–$D907** (~65k reads each) — an `LDA ($zp),Y` (op b1) whose pointer sits
+  in the $D800–$DBFF color-RAM/I-O region, almost certainly a WRONG pointer from
+  an upstream divergence (its symptom, not the bug). Implementing $DC0D ICR
+  (return 0x81 once/jiffy) did NOT change the spin, so it isn't $DC0D.
 
 ## Next (differential trace vs VICE — the method the C# attempt lacked)
 1. Try the one-byte-at-a-time keyboard feed (feed next byte when $C6==0, with a
