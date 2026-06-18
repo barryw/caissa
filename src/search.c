@@ -76,7 +76,12 @@ static SearchInfo g_info;
 static Move g_pool[CREF_POOL_SIZE];
 static int  g_pool_top;
 static int  g_pool_hw;                    /* high-water mark (instrumentation) */
-static int  g_score[MAX_MOVES];           /* order_moves scratch (transient, shared) */
+static int  g_score[MAX_MOVES];           /* order_moves scratch (quiescence, transient) */
+/* Per-node ordering scores for negamax LAZY selection: mirrors g_pool exactly
+ * (same offset as a node's move list), so scores persist across the node's move
+ * loop even though children recurse. Lets negamax pick the next-best move on
+ * demand and skip sorting the tail it never searches (beta cutoff). */
+static int  g_score_pool[CREF_POOL_SIZE];
 #define POOL_ROOM (CREF_POOL_SIZE - g_pool_top >= MAX_MOVES)
 
 /* Search-feature config + node budget (the A/B knobs). */
@@ -170,14 +175,13 @@ static int is_killer(int ply, Move m) {
            (g_killer[ply][1].from == m.from && g_killer[ply][1].to == m.to) ? 2 : 0;
 }
 
-/* score moves for ordering, then selection-sort descending (n is small).
+/* Compute ordering scores (no sort) into score[0..n).
  * 16-bit-safe scores (cc65 int): TT 30000 > captures 10000+MVV-LVA > killers
  * 9000/8900 > history quiets 0..8000. */
-static void order_moves(const Board *b, Move *list, int n, Move tt_move, int ply) {
-    int *score = g_score;
+static void score_moves(const Board *b, Move *list, int *score, int n, Move tt_move, int ply) {
     int have_tt = (tt_move.from != tt_move.to);
     int stm = b->wtm ? 1 : 0;
-    int i, j;
+    int i;
     for (i = 0; i < n; i++) {
         Move m;
         m = list[i];               /* cc65 rejects struct copy-init */
@@ -202,19 +206,28 @@ static void order_moves(const Board *b, Move *list, int n, Move tt_move, int ply
             score[i] = s;
         }
     }
-    for (i = 0; i < n; i++) {
-        int best = i;
-        int bestval = score[i];   /* cache the running max in a register so the
-                                   * inner loop never reloads score[best] */
-        for (j = i + 1; j < n; j++) {
-            if (score[j] > bestval) { bestval = score[j]; best = j; }
-        }
-        if (best != i) {          /* bestval == score[best]; swap into front */
-            Move tm;
-            score[best] = score[i]; score[i] = bestval;
-            tm = list[i]; list[i] = list[best]; list[best] = tm;
-        }
+}
+
+/* One selection pass: swap the highest-scored move in [i,n) (first on ties) to
+ * position i, keeping list[] and score[] in lockstep. Calling this for i=0..n-1
+ * == a full selection sort; calling it on demand inside the move loop is LAZY
+ * selection -- a node that beta-cuts after k moves pays O(n*k), not O(n^2). */
+static void pick_best(Move *list, int *score, int n, int i) {
+    int best = i, bestval = score[i], j;
+    for (j = i + 1; j < n; j++)
+        if (score[j] > bestval) { bestval = score[j]; best = j; }
+    if (best != i) {
+        Move tm;
+        score[best] = score[i]; score[i] = bestval;
+        tm = list[i]; list[i] = list[best]; list[best] = tm;
     }
+}
+
+/* Eager score + full sort (used by quiescence, where n is small). */
+static void order_moves(const Board *b, Move *list, int n, Move tt_move, int ply) {
+    int i;
+    score_moves(b, list, g_score, n, tt_move, ply);
+    for (i = 0; i < n; i++) pick_best(list, g_score, n, i);
 }
 
 static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
@@ -296,6 +309,7 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
     TTEntry *e = &tt[b->hash & TT_MASK];
     Move tt_move = {0, 0, 0, 0};
     Move *list;                  /* allocated from the shared pool below */
+    int *scores;                 /* parallel slice of g_score_pool (lazy order) */
     int n, i, pool_base;
     int best_val;
     Move best_move;
@@ -356,9 +370,10 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
     /* Pool full -> static-eval leaf rather than overflow. Vanishingly rare. */
     if (!POOL_ROOM) return eval_stm(b);
     list = g_pool + g_pool_top;
+    scores = g_score_pool + g_pool_top;        /* parallel slice, same base as list */
     n = gen_legal(b, list);
     if (n == 0) return in_check(b) ? -MATE_SCORE + ply : 0;   /* nothing reserved */
-    order_moves(b, list, n, tt_move, ply);
+    score_moves(b, list, scores, n, tt_move, ply);   /* score only; sort lazily below */
 
     best_val = -SEARCH_INF;
     best_move = list[0];
@@ -369,6 +384,10 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
     for (i = 0; i < n; i++) {
         Undo u;
         int val, nd, gives_check, is_quiet;
+        /* Lazy selection: bring the next-best move to position i on demand. A
+         * node that beta-cuts early never sorts the moves it won't search. */
+        pick_best(list, scores, n, i);
+        if (i == 0) best_move = list[0];   /* match eager sort's default best */
         make_move(b, list[i], &u);
         gives_check = in_check(b);
         is_quiet = !(list[i].flags & (MF_CAPTURE | MF_EP | MF_PROMO));
