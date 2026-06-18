@@ -1,6 +1,6 @@
 # Handoff — resume here
 
-_Last updated: 2026-06-17 (fastcolossus PLAYS e7e5 — diff grind done). Read this first, then `docs/ARCHITECTURE.md`._
+_Last updated: 2026-06-18 (FULL Caïssa-vs-Colossus games run on the fast core in ~66s). Read this first, then `docs/ARCHITECTURE.md`._
 
 ## The goal
 Get **Caïssa to beat Colossus 4.0 on a real C64**, and tune against Colossus in a
@@ -18,25 +18,49 @@ work is **`tools/fastcolossus/`** — run Colossus on that core too (a C port of
 old C# raw runner). Once it plays `1.e4 → e7e5`, drop it into the match loop
 (Caïssa via `caissa_cli`) and games run in **seconds**.
 
-## ★★ RESUME HERE — fastcolossus PLAYS `1.e4 → e7e5`; wire it into the match loop
-**The differential-trace grind is DONE.** Colossus runs faithfully on the fast core:
-`./tools/fastcolossus/fastcolossus 80000000` injects `1.e4` and Colossus replies
-**`e7-e5`** (correct) in **5.0s at 16 M cyc/s**. The clean-room `cpu6502.c` core does
-NOT reproduce the deleted C# runner's `1.e4 → f7f6` bug. The diff is **bit-exact to
-VICE for ≥6000 instructions**.
+## ★★ RESUME HERE — FULL Caïssa-vs-Colossus GAMES RUN ON THE FAST CORE (seconds)
+**The match harness is BUILT and PROVEN end-to-end** (commit `67a4a0b`). A complete
+40-move (80-ply) game plays in **~66s**, both engines on the fast 6502 core, no
+realtime-VICE bottleneck. Caïssa won convincingly (promoted a queen).
 
-**NEXT (the actual remaining work):** turn `fastcolossus` into a drop-in for the
-VICE-Colossus driver so a full Caïssa-vs-Colossus game runs in seconds:
-1. Make `fastcolossus` accept a move (or a move list) as input instead of the
-   hardcoded `e2e4`, and emit Colossus's reply move in a parseable form (it already
-   prints the board + "Best line: e7e5"; `screen_move_entries` in `vice_colossus.py`
-   shows the scrape shape). A persistent stdin/arg protocol (one move in → one move
-   out) mirrors `caissa_server`.
-2. Write a `fastcolossus`-backed Colossus driver with the same surface
-   `match_caissa_colossus.py` expects from `vice_colossus.py` (`inject_move`,
-   `wait_for_ply`, `screen_move_entries`), and swap it in. Caïssa stays on
-   `caissa_cli`. Result: seconds-per-game tuning, the whole point of the pivot.
-3. Bound Colossus think-time / set a level if needed (see harness-gaps below).
+Run it:
+```
+tools/match_fast.py --depth 4 --max-plies 200 --pgn build/fast_game.pgn
+tools/match_fast.py --selftest        # 1.e4 -> e7e5 (smoke test)
+```
+- **Caïssa = White** via `tools/llvmmos_bench/caissa_cli` (`bestmove FEN DEPTH`).
+- **Colossus = Black** via `tools/fastcolossus/fastcolossus server` (persistent;
+  one live Colossus across the whole game, no reboot per move).
+- python-chess = legality/result truth. Reuses `vice_colossus.py`'s scrape
+  (`screen_move_entries`) + inject recipe.
+
+**Server line protocol** (`fastcolossus server`, stdin/stdout, hex):
+`K b..`=enqueue keys · `R n`=run n cycles · `P addr b..`=poke RAM · `M addr len`=dump
+RAM · `Q`=quit.
+
+**Two Colossus quirks pinned + handled (don't regress these):**
+1. Move input must be poked **all 6 bytes at once with `$C6=6`** (the vice recipe);
+   the one-key-at-a-time drain feeds move 1 but is silently dropped from move 2 on →
+   move list freezes.
+2. Once Colossus deepens (Lookahead≥3) it **PONDERS** after its move; the
+   interrupt-poll drains+discards a buffered keystroke, so a single inject is lost.
+   `submit_move()` re-injects while the buffer is drained until White's move echoes
+   on the list, then clears leftover keys and waits for the reply. (`$B49B=0`
+   prediction-disable alone did NOT stop the ponder key-eating.)
+
+**NEXT — scale + tune (the whole point of the speed pivot):**
+1. **Bound Colossus think-time.** In the endgame Colossus deepens and a single move
+   eats minutes of emulated time (Black clock hit ~10 min/move), so long games drag.
+   Options: set a fixed Colossus level, or port the **'M' move-now keypress** from
+   the retired `run_colossus_match.py@4e925d4`. Pick the lever, wire it in.
+2. **Caïssa-as-Black / color balance** for fair match pairs (Caïssa is White-only).
+3. **Scrape Colossus per-ply stats** (`Lookahead`/`Positions`/`Score` are on screen)
+   into the PGN for analysis.
+4. **Parallelise** (the server is just a subprocess — no monitor ports, unlike VICE)
+   and **SPRT-tune** Caïssa's eval/search against Colossus results.
+
+(Old VICE harness below still works but is realtime-slow; the fast core supersedes
+it for tuning. The `vice_*` drivers remain the fidelity oracle.)
 
 **Grind history (each bug found via the diff, all fixed):**
 1. **Static TOD** — `$DC08` (CIA Time-of-Day, tenths) returned a frozen value;
