@@ -46,6 +46,7 @@ volatile unsigned char g_status = 0;
 volatile unsigned char g_go     = 0;   /* host sets to 1 to start the search */
 volatile unsigned long g_nodes  = 0;   /* diagnostics: search node count */
 volatile unsigned long g_qnodes = 0;   /* diagnostics: quiescence node count */
+volatile unsigned long g_tt_hits = 0;  /* diagnostics: transposition-table hits */
 
 /* The board is large-ish; keep it off the C stack (static .bss). */
 static Board g_board;
@@ -103,6 +104,7 @@ void bench_bestmove(void) {
     g_score  = si.score;
     g_nodes  = si.nodes;
     g_qnodes = si.qnodes;
+    g_tt_hits = si.tt_hits;
     g_status = 0;
     g_done   = 1;
 }

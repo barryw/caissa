@@ -27,6 +27,13 @@
 
 static cpu6502_t cpu;
 static uint16_t A_g_fen, A_g_depth, A_g_from, A_g_to, A_g_promo, A_g_done, A_g_status, A_g_go;
+static uint16_t A_g_score, A_g_nodes, A_g_qnodes, A_g_tt_hits;
+
+static int      rd_i16(uint16_t a) { int v = cpu.mem[a] | (cpu.mem[a+1] << 8); return (int16_t)v; }
+static unsigned long rd_u32(uint16_t a) {
+    return (unsigned long)cpu.mem[a] | ((unsigned long)cpu.mem[a+1] << 8)
+         | ((unsigned long)cpu.mem[a+2] << 16) | ((unsigned long)cpu.mem[a+3] << 24);
+}
 
 static int map_addr(const char *mapfile, const char *sym, uint16_t *out) {
     FILE *f = fopen(mapfile, "r");
@@ -110,10 +117,15 @@ int main(int argc, char **argv) {
     const char *fen = argv[2]; int depth = atoi(argv[3]);
     if (map_addr(map,"g_fen",&A_g_fen)||map_addr(map,"g_depth",&A_g_depth)||map_addr(map,"g_from",&A_g_from)||
         map_addr(map,"g_to",&A_g_to)||map_addr(map,"g_promo",&A_g_promo)||map_addr(map,"g_done",&A_g_done)||
-        map_addr(map,"g_status",&A_g_status)||map_addr(map,"g_go",&A_g_go)) return 2;
+        map_addr(map,"g_status",&A_g_status)||map_addr(map,"g_go",&A_g_go)||
+        map_addr(map,"g_score",&A_g_score)||map_addr(map,"g_nodes",&A_g_nodes)||
+        map_addr(map,"g_qnodes",&A_g_qnodes)||map_addr(map,"g_tt_hits",&A_g_tt_hits)) return 2;
     if (load_image(sim) < 0) return 2;
     char uci[8]; int st;
     if (run_bestmove(fen, (unsigned char)depth, uci, &st) != 0) { printf("bestmove 0000\n"); return 1; }
-    printf("bestmove %s score 0 depth %d nodes 0\n", uci, depth);
+    /* Real diagnostics read back from the 6502 image's published globals. */
+    printf("bestmove %s score %d depth %d nodes %lu qnodes %lu tt_hits %lu\n",
+           uci, rd_i16(A_g_score), depth, rd_u32(A_g_nodes),
+           rd_u32(A_g_qnodes), rd_u32(A_g_tt_hits));
     return 0;
 }
