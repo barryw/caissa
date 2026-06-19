@@ -40,6 +40,7 @@ typedef struct {
     int lazy_margin; /* quiescence lazy-eval margin in cp (default 240); smaller
                       * = skip the full positional eval more often (faster, coarser) */
     int see;         /* quiescence SEE pruning: skip captures with see()<0 */
+    int see_order;   /* main-search move ordering: rank see()<0 captures below quiets */
 } SearchConfig;
 
 extern SearchConfig g_sc;

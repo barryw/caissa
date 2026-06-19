@@ -132,6 +132,7 @@ void search_reset_config(void) {
                               * within noise). Coarser quiescence stand-pat, not the
                               * root/PV eval, so eval QUALITY where it matters is intact. */
     g_sc.see = 1;            /* quiescence SEE pruning: on (Elo-neutral @800g d4). */
+    g_sc.see_order = 1;      /* main-search SEE move ordering: on (Elo-neutral @800g d4). */
 }
 
 void search_set_budget(long nodes) { g_node_budget = nodes; }
@@ -185,7 +186,8 @@ static int is_killer(int ply, Move m) {
 /* Compute ordering scores (no sort) into score[0..n).
  * 16-bit-safe scores (cc65 int): TT 30000 > captures 10000+MVV-LVA > killers
  * 9000/8900 > history quiets 0..8000. */
-static void score_moves(const Board *b, Move *list, int *score, int n, Move tt_move, int ply) {
+static void score_moves(const Board *b, Move *list, int *score, int n, Move tt_move,
+                        int ply, int see_ord) {
     int have_tt = (tt_move.from != tt_move.to);
     int stm = b->wtm ? 1 : 0;
     int i;
@@ -197,6 +199,18 @@ static void score_moves(const Board *b, Move *list, int *score, int n, Move tt_m
             score[i] = 30000;
         } else if (m.flags & (MF_CAPTURE | MF_EP | MF_PROMO)) {
             score[i] = 10000 + mvv_lva(b, m);
+            /* SEE-demote losing captures below all quiets/killers so they are
+             * searched last. Only captures that COULD lose need the costly see()
+             * call: capturing a piece of value >= the attacker's is always SEE>=0.
+             * Promotions add material -> treated as winning (never demoted). */
+            if (see_ord && !(m.flags & MF_PROMO)) {
+                int victim = (m.flags & MF_EP) ? PT_PAWN : PT(b->sq[m.to]);
+                int attacker = PT(b->sq[m.from]);
+                if (MVV[attacker] > MVV[victim]) {
+                    int sv = see(b, m);
+                    if (sv < 0) score[i] = sv;   /* < 0 -> below quiets (0..9000) */
+                }
+            }
         } else {
             int s = 0, k;
             /* Killers are only ever STORED for negamax plies (ply < MAX_PLY,
@@ -231,9 +245,10 @@ static void pick_best(Move *list, int *score, int n, int i) {
 }
 
 /* Eager score + full sort (used by quiescence, where n is small). */
-static void order_moves(const Board *b, Move *list, int n, Move tt_move, int ply) {
+static void order_moves(const Board *b, Move *list, int n, Move tt_move, int ply,
+                        int see_ord) {
     int i;
-    score_moves(b, list, g_score, n, tt_move, ply);
+    score_moves(b, list, g_score, n, tt_move, ply, see_ord);
     for (i = 0; i < n; i++) pick_best(list, g_score, n, i);
 }
 
@@ -282,7 +297,9 @@ static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
     if (qd >= MAX_QUIESCE_DEPTH)
         return check ? eval_stm(b) : best;
 
-    order_moves(b, list, fn, none, ply);
+    order_moves(b, list, fn, none, ply, 0);   /* quiescence: no SEE ordering (qsearch
+                                                * already see-prunes; demote-below-quiets
+                                                * is moot when there are no quiets) */
 
     pool_base = g_pool_top;
     g_pool_top += fn;                          /* reserve only the kept moves */
@@ -385,7 +402,7 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
     scores = g_score_pool + g_pool_top;        /* parallel slice, same base as list */
     n = gen_legal(b, list);
     if (n == 0) return in_check(b) ? -MATE_SCORE + ply : 0;   /* nothing reserved */
-    score_moves(b, list, scores, n, tt_move, ply);   /* score only; sort lazily below */
+    score_moves(b, list, scores, n, tt_move, ply, g_sc.see_order);   /* score only; sort lazily below */
 
     best_val = -SEARCH_INF;
     best_move = list[0];
@@ -497,7 +514,7 @@ Move search_bestmove(const Board *b, int depth,
         n = gen_legal(&work, list);
         if (n == 0) break;
         prev = best;
-        order_moves(&work, list, n, prev, 0);
+        order_moves(&work, list, n, prev, 0, g_sc.see_order);
         g_pool_top = n;               /* reserve the root list for the root loop */
         if (g_pool_top > g_pool_hw) g_pool_hw = g_pool_top;
         local_best = -SEARCH_INF;

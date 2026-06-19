@@ -98,6 +98,7 @@ static int set_search(SearchConfig *s, const char *key, int val) {
         {"asp_delta", &s->asp_delta}, {"check_ext", &s->check_ext}, {"lmr", &s->lmr},
         {"delta", &s->delta}, {"delta_margin", &s->delta_margin},
         {"lazy_margin", &s->lazy_margin}, {"see", &s->see},
+        {"see_order", &s->see_order},
         {NULL, NULL}
     };
     for (int i = 0; map[i].k; i++)
