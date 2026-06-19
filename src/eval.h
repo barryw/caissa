@@ -13,6 +13,11 @@
 
 #include "board.h"
 
+/* attack-based king-danger (term #1, docs/plans/2026-06-18-eval-rewrite-design.md):
+ * attacker units -> SAFETY_TABLE[units] -> centipawns. Units are clamped to the
+ * last table index. */
+#define KD_TABLE_SIZE 16
+
 typedef struct {
     int pawn, knight, bishop, rook, queen, king;            /* material */
     int pawn_attack_minor, pawn_attack_rook, pawn_attack_queen;
@@ -30,6 +35,13 @@ typedef struct {
     /* New A/B eval terms (default 0 -> bit-exact to baseline until enabled). */
     int tempo, trapped_penalty, king_attack_escalation, pawn_storm,
         queen_attacks_minor;
+    /* attack-based king-danger (term #1). Default 0/inert -> bit-exact baseline.
+     * Per-side: units = sum of attacker weights (ring_bonus if the attacker also
+     * hits a king-neighbor); danger = kd_safety_table[min(units, KD_TABLE_SIZE-1)];
+     * gated off when the attacked side's owner has < kd_phase_min_heavy enemy
+     * heavy material (queen=2, rook=1). */
+    int kd_w_queen, kd_w_rook, kd_w_minor, kd_ring_bonus, kd_phase_min_heavy;
+    int kd_safety_table[KD_TABLE_SIZE];
 } EvalWeights;
 
 extern EvalWeights g_w;           /* live weights (override target) */

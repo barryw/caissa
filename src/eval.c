@@ -109,6 +109,17 @@ void eval_reset_weights(void) {
     g_w.king_attack_escalation = 0;
     g_w.pawn_storm = 0;
     g_w.queen_attacks_minor = 0;
+
+    /* attack-based king-danger (term #1): default 0/inert -> bit-exact baseline. */
+    g_w.kd_w_queen = 0;
+    g_w.kd_w_rook = 0;
+    g_w.kd_w_minor = 0;
+    g_w.kd_ring_bonus = 0;
+    g_w.kd_phase_min_heavy = 0;
+    {
+        int i;
+        for (i = 0; i < KD_TABLE_SIZE; i++) g_w.kd_safety_table[i] = 0;
+    }
     eval_sync_tables();   /* refresh g_w-derived ET_* tables for the new weights */
 }
 
@@ -301,6 +312,8 @@ typedef struct {
     int nonpawn;
     int pawns;
     int queens;
+    int wheavy;             /* white heavy material for king-danger gate (Q=2,R=1) */
+    int bheavy;             /* black heavy material for king-danger gate (Q=2,R=1) */
     int wbishops;
     int bbishops;
     int endgame;
@@ -1092,6 +1105,72 @@ EVAL_HELPER void king_attack_escalation(Eval *e) {
     if (cb >= 2) e->score += g_w.king_attack_escalation * (cb - 1) * (cb - 1);
 }
 
+/* king_danger (term #1, attack-based): sum enemy attacker weights raying the
+ * king (queen on any dir, rook on orthogonal, bishop on diagonal) plus knight
+ * adjacency, into "attack units"; map units -> centipawns via kd_safety_table.
+ * Computed symmetrically for both kings so the term REWARDS attacking the enemy
+ * king, not only penalizing the own king. Detection mirrors
+ * count_king_zone_attackers; the per-attacker weight is the only addition. */
+static int king_danger_units(const Eval *e, int king_sq, int attacker_color) {
+    const uint8_t *b = e->b;
+    int units = 0;
+    int d, i;
+    for (d = 0; d < 8; d++) {
+        int delta = ALL_DIRECTION_OFFSETS[d];
+        int ray = king_sq;
+        for (;;) {
+            int piece, t;
+            ray = add8(ray, delta);
+            if (ray & OFFBOARD_MASK) break;
+            piece = b[ray];
+            if (piece == EMPTY) continue;
+            if ((piece & WHITE_COLOR) != attacker_color) break;
+            t = piece & 0x07;
+            if (t == QUEEN_T) { units += g_w.kd_w_queen; break; }
+            if (d == 1 || d == 3 || d == 4 || d == 6) {     /* orthogonal dirs */
+                if (t == ROOK_T) units += g_w.kd_w_rook;
+                break;
+            } else {                                        /* diagonal dirs */
+                if (t == BISHOP_T) units += g_w.kd_w_minor;
+                break;
+            }
+        }
+    }
+    for (i = 0; i < 8; i++) {
+        int dest = add8(king_sq, KNIGHT_OFFSETS[i]);
+        int piece;
+        if (dest & OFFBOARD_MASK) continue;
+        piece = b[dest];
+        if (piece == EMPTY) continue;
+        if ((piece & WHITE_COLOR) != attacker_color) continue;
+        if ((piece & 0x07) == KNIGHT_T) units += g_w.kd_w_minor;
+    }
+    return units;
+}
+
+static int kd_table_lookup(int units) {
+    if (units < 0) units = 0;
+    if (units >= KD_TABLE_SIZE) units = KD_TABLE_SIZE - 1;
+    return g_w.kd_safety_table[units];
+}
+
+EVAL_HELPER void king_danger(Eval *e) {
+    int uw, ub;
+    if (g_w.kd_w_queen == 0 && g_w.kd_w_rook == 0 && g_w.kd_w_minor == 0)
+        return;                                /* inert -> bit-exact baseline */
+    /* Phase gate: a king is only in danger if the attacking side has enough
+     * heavy material to mount an attack. White king attacked by black -> gate on
+     * black heavy; black king attacked by white -> gate on white heavy. */
+    if (e->bheavy >= g_w.kd_phase_min_heavy) {
+        uw = king_danger_units(e, e->wk, 0);            /* black attackers on white king */
+        e->score -= kd_table_lookup(uw);                /* white king in danger: bad for white */
+    }
+    if (e->wheavy >= g_w.kd_phase_min_heavy) {
+        ub = king_danger_units(e, e->bk, WHITE_COLOR);  /* white attackers on black king */
+        e->score += kd_table_lookup(ub);                /* black king in danger: good for white */
+    }
+}
+
 /* pawn_storm: own pawns advanced toward the ENEMY king (same file or an
  * adjacent file), monotonically increasing with advancement.
  *   white pawn near black king: file diff <=1, row 1..4 (chess rank 4..7),
@@ -1316,6 +1395,8 @@ int eval_full(const Board *board) {
     e.nonpawn = 0;
     e.pawns = 0;
     e.queens = 0;
+    e.wheavy = 0;
+    e.bheavy = 0;
     e.wbishops = 0;
     e.bbishops = 0;
     e.endgame = 0;
@@ -1351,7 +1432,12 @@ int eval_full(const Board *board) {
             if (ptype == BISHOP_T) {
                 if (color) e.wbishops++; else e.bbishops++;
             }
-            if (ptype == QUEEN_T) e.queens++;
+            if (ptype == QUEEN_T) {
+                e.queens++;
+                if (color) e.wheavy += 2; else e.bheavy += 2;
+            } else if (ptype == ROOK_T) {
+                if (color) e.wheavy += 1; else e.bheavy += 1;
+            }
         }
 
         /* per-piece full-eval terms (order matches eval.s). Every one of these
@@ -1400,6 +1486,7 @@ int eval_full(const Board *board) {
 
     /* ---- new A/B eval terms (additive; each is 0 unless its weight is set) ---- */
     king_attack_escalation(&e);
+    king_danger(&e);
     pawn_storm(&e);
     queen_attacks_minor(&e);
     /* tempo: side-to-move bonus on the white-POV score. */

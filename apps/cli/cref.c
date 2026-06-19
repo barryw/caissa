@@ -51,8 +51,18 @@ static int set_weight(EvalWeights *w, const char *key, int val) {
         {"tempo", &w->tempo}, {"trapped_penalty", &w->trapped_penalty},
         {"king_attack_escalation", &w->king_attack_escalation},
         {"pawn_storm", &w->pawn_storm}, {"queen_attacks_minor", &w->queen_attacks_minor},
+        /* king-danger (term #1) scalars; the safety table is "kd_st<i>" below. */
+        {"kd_w_queen", &w->kd_w_queen}, {"kd_w_rook", &w->kd_w_rook},
+        {"kd_w_minor", &w->kd_w_minor}, {"kd_ring_bonus", &w->kd_ring_bonus},
+        {"kd_phase_min_heavy", &w->kd_phase_min_heavy},
         {NULL, NULL}
     };
+    /* king-danger safety table: kd_st0 .. kd_st<KD_TABLE_SIZE-1> */
+    if (!strncmp(key, "kd_st", 5)) {
+        int idx = atoi(key + 5);
+        if (idx >= 0 && idx < KD_TABLE_SIZE) { w->kd_safety_table[idx] = val; return 0; }
+        return -1;
+    }
     for (int i = 0; map[i].k; i++)
         if (!strcmp(map[i].k, key)) { *map[i].p = val; return 0; }
     return -1;

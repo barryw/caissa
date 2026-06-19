@@ -38,15 +38,18 @@ $(BUILD)/test_perft: $(SRC)/board.c $(SRC)/movegen.c $(SRC)/eval.c test/test_per
 	$(CC) $(CFLAGS) $(INC) $(SRC)/board.c $(SRC)/movegen.c $(SRC)/eval.c test/test_perft.c -o $@
 $(BUILD)/test_eval: $(SRC)/board.c $(SRC)/eval.c test/test_eval.c $(HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) $(INC) $(SRC)/board.c $(SRC)/eval.c test/test_eval.c -o $@
+$(BUILD)/test_king_danger: $(SRC)/board.c $(SRC)/eval.c test/test_king_danger.c $(HDRS) | $(BUILD)
+	$(CC) $(CFLAGS) $(INC) $(SRC)/board.c $(SRC)/eval.c test/test_king_danger.c -o $@
 
 # public engine<->UI API (src/caissa.c) + its test
 $(BUILD)/test_api: $(ENGINE) $(SRC)/caissa.c test/test_api.c $(HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) $(INC) $(ENGINE) $(SRC)/caissa.c test/test_api.c -o $@ -lm
 
-verify test: $(BUILD)/test_perft $(BUILD)/test_eval $(BUILD)/test_api
+verify test: $(BUILD)/test_perft $(BUILD)/test_eval $(BUILD)/test_api $(BUILD)/test_king_danger
 	$(PYTHON) test/native_perft_check.py
 	$(PYTHON) test/native_eval_check.py
 	./$(BUILD)/test_api
+	./$(BUILD)/test_king_danger
 
 c64:
 	./tools/build_c64.sh
