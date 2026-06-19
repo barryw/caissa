@@ -48,6 +48,29 @@ Ultimate 64 (and Gideon's newer hardware) run the 6502 core at ~40 MHz.
 (Strength = `cref_mos`, the reduced config the 6502 image runs, vs Stockfish;
 golden-verified move-for-move identical to the image. Ladder ≈ +150 Elo/ply.)
 
+## Depth × clock sweep
+
+The clock is a pure divisor on the cycle-exact count, so one measurement per depth
+covers every clock. Full sweep (`onchip_strength_vs_tc.py bench --depths 1,2,3,4,5,6
+--clocks 1,5,10,12,20,40 --fens 8`; this run is an 8-position subsample to keep d5/d6
+tractable — clock ratios are exact, absolute cyc/move runs a touch high vs the
+full-corpus table above because the first 8 corpus positions are complexity-heavy):
+
+| depth | nodes/move | 1 MHz | 5 MHz | 10 MHz | 12 MHz | 20 MHz (SuperCPU) | 40 MHz (Ultimate) | strength |
+|------:|-----------:|------:|------:|-------:|-------:|------:|------:|---------:|
+| 1 | 461 | 25.1 s | 5.0 s | 2.5 s | 2.1 s | 1.3 s | 0.63 s | ~1256 |
+| 2 | 969 | 43.7 s | 8.7 s | 4.4 s | 3.6 s | 2.2 s | 1.1 s | ~1461 |
+| 3 | 4,466 | 2.6 m | 31.8 s | 15.9 s | 13.2 s | 7.9 s | 4.0 s | ~1605 |
+| 4 | 7,735 | 4.6 m | 55.0 s | 27.5 s | 22.9 s | 13.8 s | 6.9 s | ~1753 |
+| 5 | 27,979 | 15.9 m | 3.2 m | 1.6 m | 79.5 s | 47.7 s | 23.9 s | ~1850 |
+| 6 | 76,234 | 37.2 m | 7.4 m | 3.7 m | 3.1 m | 1.9 m | 55.7 s | ~1942 |
+
+- **Stock 1 MHz:** only depth 1-2 fits a human clock → ~1256-1461.
+- **~20 MHz (SuperCPU-class):** depth 4 in ~14 s, depth 5 in ~48 s → ~1750-1850 at
+  normal time controls.
+- **~40 MHz (Ultimate / Novu):** depth 4 in ~7 s, depth 5 in ~24 s, depth 6 in ~56 s
+  → **~1750-1942 across blitz→classical.** The d4-d5 band is the everyday sweet spot.
+
 ## What it means
 
 - **On a stock 1 MHz C64** the engine is a correspondence-class player: depth 4
