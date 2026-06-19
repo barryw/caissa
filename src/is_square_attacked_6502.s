@@ -139,15 +139,29 @@ is_square_attacked:
 ; ===========================================================================
 ; 2) KNIGHT attacks.  8 fixed offsets.
 ; ===========================================================================
+; Knight check inlined (was: jsr .Lcheck_knight).  Eliminates the jsr/rts
+; (12 cyc) + carry handshake per iteration; all branch targets here are local
+; and provably near, so short branches are safe.
 .Lknights:
 	ldx	#0
 .Lknight_loop:
 	lda	__rc8
 	clc
-	adc	knight_off,x
-	jsr	.Lcheck_knight
-	bcc	.Lknight_cont         ; no hit -> continue (near)
-	jmp	.Lhit                 ; hit -> return (absolute, always in range)
+	adc	knight_off,x          ; A = t = sq + knight_off[x]
+	tay
+	and	#$88
+	bne	.Lknight_cont         ; off-board -> next offset
+	lda	(__rc2),y             ; p = b->sq[t]
+	beq	.Lknight_cont         ; empty -> next
+	sta	__rc12                ; save p
+	and	#7
+	cmp	#PT_KNIGHT
+	bne	.Lknight_cont         ; not a knight -> next
+	lda	__rc12
+	and	#$80
+	cmp	__rc9                 ; right color?
+	bne	.Lknight_cont         ; wrong color -> next
+	jmp	.Lhit                 ; knight of color_match attacks sq
 .Lknight_cont:
 	inx
 	cpx	#8
@@ -156,15 +170,27 @@ is_square_attacked:
 ; ===========================================================================
 ; 3) KING adjacency.  8 fixed offsets.
 ; ===========================================================================
+; King check inlined (was: jsr .Lcheck_king).
 .Lkings:
 	ldx	#0
 .Lking_loop:
 	lda	__rc8
 	clc
-	adc	king_off,x
-	jsr	.Lcheck_king
-	bcc	.Lking_cont
-	jmp	.Lhit
+	adc	king_off,x            ; A = t = sq + king_off[x]
+	tay
+	and	#$88
+	bne	.Lking_cont           ; off-board -> next offset
+	lda	(__rc2),y             ; p = b->sq[t]
+	beq	.Lking_cont           ; empty -> next
+	sta	__rc12
+	and	#7
+	cmp	#PT_KING
+	bne	.Lking_cont           ; not a king -> next
+	lda	__rc12
+	and	#$80
+	cmp	__rc9
+	bne	.Lking_cont           ; wrong color -> next
+	jmp	.Lhit                 ; king of color_match attacks sq
 .Lking_cont:
 	inx
 	cpx	#8
@@ -299,51 +325,8 @@ is_square_attacked:
 	clc
 	rts
 
-; ===========================================================================
-; helper: .Lcheck_knight  (expects PT_KNIGHT)
-; ===========================================================================
-.Lcheck_knight:
-	tay
-	and	#$88
-	bne	.Lck_no
-	lda	(__rc2),y
-	beq	.Lck_no
-	sta	__rc12
-	and	#7
-	cmp	#PT_KNIGHT
-	bne	.Lck_no
-	lda	__rc12
-	and	#$80
-	cmp	__rc9
-	bne	.Lck_no
-	sec
-	rts
-.Lck_no:
-	clc
-	rts
-
-; ===========================================================================
-; helper: .Lcheck_king  (expects PT_KING)
-; ===========================================================================
-.Lcheck_king:
-	tay
-	and	#$88
-	bne	.Lckg_no
-	lda	(__rc2),y
-	beq	.Lckg_no
-	sta	__rc12
-	and	#7
-	cmp	#PT_KING
-	bne	.Lckg_no
-	lda	__rc12
-	and	#$80
-	cmp	__rc9
-	bne	.Lckg_no
-	sec
-	rts
-.Lckg_no:
-	clc
-	rts
+; (.Lcheck_knight and .Lcheck_king helpers removed -- inlined into their loops
+;  above to eliminate the per-call jsr/rts + carry handshake.)
 
 .Lfunc_end_isa:
 	.size	is_square_attacked, .Lfunc_end_isa-is_square_attacked
