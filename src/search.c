@@ -131,7 +131,7 @@ void search_reset_config(void) {
                               * neutral-or-better (1400-game self-play ~+12 Elo for 80,
                               * within noise). Coarser quiescence stand-pat, not the
                               * root/PV eval, so eval QUALITY where it matters is intact. */
-    g_sc.see = 0;            /* quiescence SEE pruning: off by default (bit-exact). */
+    g_sc.see = 1;            /* quiescence SEE pruning: on (Elo-neutral @800g d4). */
 }
 
 void search_set_budget(long nodes) { g_node_budget = nodes; }

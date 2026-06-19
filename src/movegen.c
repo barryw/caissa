@@ -135,7 +135,10 @@ static const int SEE_VAL[7] = { 0, 100, 300, 300, 500, 900, 10000 };
 static int see_lva(const Board *b, int sq, int by_white,
                    const unsigned char *used, int *val) {
     uint8_t cm = by_white ? WHITE_FLAG : 0;
-    int best_sq = -1, best = 1 << 30, i;
+    int best_sq = -1, best = 30000, i;   /* sentinel > any SEE_VAL (max 10000=king);
+                                          * MUST fit 16-bit int -- 1<<30 overflowed on
+                                          * llvm-mos (16-bit int) -> broke SEE on the
+                                          * 6502 image (under-pruned vs host). */
     /* pawns */
     int pa = by_white ? sq + 15 : sq - 15;
     int pb = by_white ? sq + 17 : sq - 17;
