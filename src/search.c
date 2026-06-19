@@ -319,9 +319,17 @@ static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
         }
         /* SEE pruning: out of check, skip a capture that loses material outright
          * (the recapture sequence nets negative). More precise than delta's
-         * victim+margin heuristic -- kills losing captures delta keeps. */
-        if (g_sc.see && !check && !(list[i].flags & MF_PROMO) && see(b, list[i]) < 0)
-            continue;
+         * victim+margin heuristic -- kills losing captures delta keeps. Only
+         * captures that COULD lose need the see() call: capturing a piece of value
+         * >= the attacker's is always SEE >= 0, so it can never be pruned. The
+         * MVV[attacker] > MVV[victim] guard skips see() for those -- behavior-
+         * identical (never skips a prune) and cuts see() calls (see ~12% of cyc). */
+        if (g_sc.see && !check && !(list[i].flags & MF_PROMO)) {
+            int sv = (list[i].flags & MF_EP) ? PT_PAWN : PT(b->sq[list[i].to]);
+            int sa = PT(b->sq[list[i].from]);
+            if (MVV[sa] > MVV[sv] && see(b, list[i]) < 0)
+                continue;
+        }
         make_move(b, list[i], &u);
         score = -quiesce(b, -beta, -alpha, ply + 1, qd + 1);
         unmake_move(b, list[i], &u);

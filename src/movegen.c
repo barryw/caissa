@@ -209,17 +209,26 @@ int see(const Board *b, Move m) {
     int to = m.to, from = m.from, i;
     uint8_t aggressor = b->sq[from];
     int gain[32], d = 0;
-    unsigned char used[128];
+    /* `used[]` marks squares whose piece has entered the exchange (so X-ray
+     * rescans skip them). It is kept all-zero BETWEEN calls so we never pay the
+     * 128-byte clear that dominated the profile (__memset ~6.5% of cyc/move once
+     * SEE runs in both qsearch pruning and move ordering). Each set is recorded in
+     * `touched[]` and undone before the single return -> invariant preserved.
+     * Safe as static: see() is not recursive (calls see_lva only), the 6502 is
+     * single-threaded, and host parallelism is fork()-based (separate address
+     * spaces). touched[] is sized to gain[]'s depth bound + the 2 pre-loop sets. */
+    static unsigned char used[128];
+    int touched[34], nt = 0;
     int attacker_val, agg_white, next_white;
-    for (i = 0; i < 128; i++) used[i] = 0;
 
     if (m.flags & MF_EP) {
+        int eps = (from & 0x70) | (to & 0x07);        /* ep-captured pawn */
         gain[0] = SEE_VAL[PT_PAWN];
-        used[(from & 0x70) | (to & 0x07)] = 1;        /* ep-captured pawn */
+        used[eps] = 1; touched[nt++] = eps;
     } else {
         gain[0] = SEE_VAL[PT(b->sq[to])];
     }
-    used[from] = 1;                                    /* aggressor leaves `from` */
+    used[from] = 1; touched[nt++] = from;             /* aggressor leaves `from` */
     attacker_val = SEE_VAL[PT(aggressor)];             /* now sits on `to`, at risk */
     if (m.flags & MF_PROMO) {
         gain[0] += SEE_VAL[m.promo] - SEE_VAL[PT_PAWN];
@@ -236,7 +245,7 @@ int see(const Board *b, Move m) {
         if ((a > bb ? a : bb) < 0) break;              /* max(-gain[d-1],gain[d])<0 */
         sq = see_lva(b, to, next_white, used, &v);
         if (sq < 0) break;
-        used[sq] = 1;
+        used[sq] = 1; touched[nt++] = sq;
         attacker_val = v;
         next_white = !next_white;
     }
@@ -244,6 +253,7 @@ int see(const Board *b, Move m) {
         int a = -gain[d - 1], bb = gain[d];
         gain[d - 1] = -(a > bb ? a : bb);
     }
+    for (i = 0; i < nt; i++) used[touched[i]] = 0;    /* restore all-zero invariant */
     return gain[0];
 }
 
