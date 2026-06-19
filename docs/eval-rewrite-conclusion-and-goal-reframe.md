@@ -47,6 +47,34 @@ session's −34% cyc) ≈ **~3.6× cumulative** — against a **~30-60×** requi
 reach d4 in seconds. ~10-20× more is needed and is not on the table from
 incremental C-level micro-optimization.
 
+## 2b. MEASURED — on-chip strength vs time control (2026-06-18)
+
+Measured directly (`tools/onchip_strength_vs_tc.py`), replacing the campaign's
+stale "~800-1000" inference. Time→depth from the cycle-accurate 6502 image
+(caissa_prof, 49-FEN corpus); depth→Elo from `cref_mos` (the reduced config the
+image runs, golden-identical to it) vs Stockfish.
+
+| Depth | cyc/move | wall @1 MHz | on-chip Elo (cref_mos vs SF) |
+|-------|----------|-------------|------------------------------|
+| d1 | 11.5M | ~11.5s | **1256** (240 g vs SF-1320) |
+| d2 | 33.8M | ~34s | **1461** (160 g vs SF-1400) |
+| d3 | 111.8M | ~112s (~2 min) | **1605** (160 g vs SF-1550) |
+| d4 | 350.9M | ~351s (~6 min) | ~1700-1750 (full-cref d4 ≈ 1800) |
+
+**Strength vs clock** (the chip plays fixed depth — the deepest that fits):
+
+| Time control | Depth | On-chip strength |
+|--------------|-------|------------------|
+| 10 s/move (blitz) | d1 | **~1256** |
+| 1 min/move | d2 | **~1461** |
+| ~2 min/move | d3 | **~1605** |
+| ~6 min/move | d4 | **~1700-1800** |
+
+**The chip is a ~d4-ceiling engine.** It plays ~1250 at blitz and needs ~6
+minutes/move to reach ~1800. The ladder is ~+150-200 Elo/ply at the low end
+(steeper than the +100/ply seen d4→d6), so EARLY depth is the cheapest Elo — and
+early depth is bought with SPEED.
+
 ## 3. Honest feasibility of "on-chip ~1800"
 
 "On-chip 1800" conflates two different things:
