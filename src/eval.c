@@ -110,6 +110,13 @@ void eval_reset_weights(void) {
     g_w.pawn_storm = 0;
     g_w.queen_attacks_minor = 0;
 
+    /* per-piece mobility multiplier (term #3): default 10 -> bit-exact to the
+     * old hardcoded contrib = (raw>>1) * 10. */
+    g_w.mob_knight = 10;
+    g_w.mob_bishop = 10;
+    g_w.mob_rook = 10;
+    g_w.mob_queen = 10;
+
     /* attack-based king-danger (term #1): default 0/inert -> bit-exact baseline. */
     g_w.kd_w_queen = 0;
     g_w.kd_w_rook = 0;
@@ -334,6 +341,7 @@ EVAL_DATA int ET_PAWN_ATTACK[7];
 EVAL_DATA int ET_QUEEN_ATTACK[7];
 EVAL_DATA int ET_MINOR_ATTACK[7];
 EVAL_DATA int ET_PINNED[7];
+EVAL_DATA int ET_MOBILITY[7];   /* per-piece mobility multiplier (term #3) */
 
 /* 1 if any EG PST value differs from its MG counterpart -- i.e. the tapered
  * EG-minus-MG blend can be nonzero. When 0 (the shipped config, where the EG
@@ -376,6 +384,11 @@ void eval_sync_tables(void) {
     ET_PINNED[BISHOP_T] = g_w.pinned_minor;
     ET_PINNED[ROOK_T]   = g_w.pinned_rook;
     ET_PINNED[QUEEN_T]  = g_w.pinned_queen;
+    /* MOBILITY = per-piece multiplier (knight..queen); default 10 each */
+    ET_MOBILITY[KNIGHT_T] = g_w.mob_knight;
+    ET_MOBILITY[BISHOP_T] = g_w.mob_bishop;
+    ET_MOBILITY[ROOK_T]   = g_w.mob_rook;
+    ET_MOBILITY[QUEEN_T]  = g_w.mob_queen;
 
     /* Detect whether the EG PST tables diverge from MG anywhere; if not, the
      * accumulator can skip the egdiff term entirely (see g_eg_active). */
@@ -581,10 +594,10 @@ EVAL_HELPER void mobility(Eval *e, int sq, int color, int ptype) {
     if (raw == 0) {
         if (color) e->score -= g_w.trapped_penalty; else e->score += g_w.trapped_penalty;
     }
-    /* ApplyMobilityScore: lsr (halve), then *10 (only if nonzero). */
+    /* ApplyMobilityScore: lsr (halve), then * per-piece multiplier (default 10). */
     half = raw >> 1;
     if (half == 0) return;
-    contrib = half * 10;
+    contrib = half * ET_MOBILITY[ptype];
     if (color) e->score += contrib; else e->score -= contrib;
 }
 

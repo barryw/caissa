@@ -55,6 +55,8 @@ static int set_weight(EvalWeights *w, const char *key, int val) {
         {"kd_w_queen", &w->kd_w_queen}, {"kd_w_rook", &w->kd_w_rook},
         {"kd_w_minor", &w->kd_w_minor}, {"kd_ring_bonus", &w->kd_ring_bonus},
         {"kd_phase_min_heavy", &w->kd_phase_min_heavy},
+        {"mob_knight", &w->mob_knight}, {"mob_bishop", &w->mob_bishop},
+        {"mob_rook", &w->mob_rook}, {"mob_queen", &w->mob_queen},
         {NULL, NULL}
     };
     /* king-danger safety table: kd_st0 .. kd_st<KD_TABLE_SIZE-1> */

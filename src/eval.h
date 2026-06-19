@@ -42,6 +42,9 @@ typedef struct {
      * heavy material (queen=2, rook=1). */
     int kd_w_queen, kd_w_rook, kd_w_minor, kd_ring_bonus, kd_phase_min_heavy;
     int kd_safety_table[KD_TABLE_SIZE];
+    /* per-piece mobility multiplier (term #3): contrib = (raw>>1) * mob_<type>.
+     * Default 10 each -> bit-exact to the old hardcoded *10. */
+    int mob_knight, mob_bishop, mob_rook, mob_queen;
 } EvalWeights;
 
 extern EvalWeights g_w;           /* live weights (override target) */
