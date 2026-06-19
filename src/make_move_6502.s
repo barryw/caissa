@@ -250,13 +250,11 @@ make_move:
 	lda	#0
 	ldy	#U_CAPTURED
 	sta	(__rc6),y
-	; u->cap_sq = m.to   (low = m.to, high = 0)
-	lda	__rc9
-	ldy	#U_CAPSQ
-	sta	(__rc6),y
-	lda	#0
-	ldy	#U_CAPSQ+1
-	sta	(__rc6),y
+	; NOTE: the unconditional `u->cap_sq = m.to` store is deferred. cap_sq is
+	; only ever READ when u->captured != 0 (unmake, zobrist, eval_acc_apply all
+	; gate on captured), so writing it on quiet moves is dead work. The EP path
+	; writes its own cap_sq; the normal-capture path writes cap_sq=m.to below.
+	; A quiet move leaves Undo.cap_sq stale, but with captured==0 nobody reads it.
 
 	; ================= board mutation =================
 	; lift mover: b->sq[m.from] = 0
@@ -303,11 +301,17 @@ make_move:
 	lda	__rc10
 	and	#MF_CAPTURE
 	beq	.Lplace               ; near
-	; normal capture: u->captured = b->sq[m.to]   (cap_sq already = m.to)
+	; normal capture: u->captured = b->sq[m.to] ; u->cap_sq = m.to (low/high=0)
 	ldy	__rc9
 	lda	(__rc2),y
 	ldy	#U_CAPTURED
 	sta	(__rc6),y
+	lda	__rc9
+	ldy	#U_CAPSQ
+	sta	(__rc6),y             ; u->cap_sq low = m.to
+	lda	#0
+	ldy	#U_CAPSQ+1
+	sta	(__rc6),y             ; u->cap_sq high = 0
 
 .Lplace:
 	; placed = (flags & MF_PROMO) ? (m.promo | colorflag) : piece

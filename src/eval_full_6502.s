@@ -1113,21 +1113,84 @@ eval_full:
 	lda	#WHITE_KNIGHT
 .Lka_setenemy:
 	sta	__rc9              ; enemy
-	ldx	#0
-.Lka_loop:
-	lda	WALKX
+	; FULLY UNROLLED over KNIGHT_OFFS = $DF,$E1,$EE,$F2,$0E,$12,$1F,$21. Immediate
+	; offsets kill the abs,x index and the inx/cpx/bcc loop tax. A match branches
+	; to .Lka_yes (placed just below, in range); else fall to next / final A=0.
+	; sq held in X across the unroll -> `txa` (2cyc) replaces `lda WALKX` (abs,4cyc).
+	ldx	WALKX              ; X = sq (invariant through the 8 checks)
+	txa
 	clc
-	adc	KNIGHT_OFFS, x     ; dest = add8(sq, off)
+	adc	#$DF
 	tay
 	and	#OFFBOARD_MASK
-	bne	.Lka_next          ; dest & 0x88 -> continue
-	lda	(__rc2),y          ; b[dest]
+	bne	.Lka1
+	lda	(__rc2),y
 	cmp	__rc9
 	beq	.Lka_yes
-.Lka_next:
-	inx
-	cpx	#8
-	bcc	.Lka_loop
+.Lka1:	txa
+	clc
+	adc	#$E1
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lka2
+	lda	(__rc2),y
+	cmp	__rc9
+	beq	.Lka_yes
+.Lka2:	txa
+	clc
+	adc	#$EE
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lka3
+	lda	(__rc2),y
+	cmp	__rc9
+	beq	.Lka_yes
+.Lka3:	txa
+	clc
+	adc	#$F2
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lka4
+	lda	(__rc2),y
+	cmp	__rc9
+	beq	.Lka_yes
+.Lka4:	txa
+	clc
+	adc	#$0E
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lka5
+	lda	(__rc2),y
+	cmp	__rc9
+	beq	.Lka_yes
+.Lka5:	txa
+	clc
+	adc	#$12
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lka6
+	lda	(__rc2),y
+	cmp	__rc9
+	beq	.Lka_yes
+.Lka6:	txa
+	clc
+	adc	#$1F
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lka7
+	lda	(__rc2),y
+	cmp	__rc9
+	beq	.Lka_yes
+.Lka7:	txa
+	clc
+	adc	#$21
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lka_no
+	lda	(__rc2),y
+	cmp	__rc9
+	beq	.Lka_yes
+.Lka_no:
 	lda	#0
 	rts
 .Lka_yes:
@@ -1403,25 +1466,108 @@ eval_full:
 	sta	__rc8              ; color (0 or 0x80)
 	lda	#0
 	sta	__rc9              ; count = 0
-	ldx	#0                 ; X = offset index 0..7
-.Lmk_loop:
-	lda	WALKX
+	; FULLY UNROLLED over KNIGHT_OFFS. Each block: offboard? skip. empty? count.
+	; enemy? count. friendly? skip. (count = mobility squares). Immediates kill the
+	; abs,x index + the inx/cpx/bcc loop tax; all branch targets are local/near.
+	; sq held in X across the unroll -> `txa` (2cyc) replaces `lda WALKX` (abs,4cyc).
+	ldx	WALKX              ; X = sq (invariant through the 8 checks)
+	txa
 	clc
-	adc	KNIGHT_OFFS, x     ; dest = add8(sq, off)
+	adc	#$DF
 	tay
 	and	#OFFBOARD_MASK
-	bne	.Lmk_next          ; dest & 0x88 -> continue
-	lda	(__rc2),y          ; p = b[dest]
-	beq	.Lmk_count         ; p == EMPTY -> count++
-	and	#WHITE_COLOR       ; p & 0x80
-	eor	__rc8              ; (p & 0x80) ^ color -> nonzero iff enemy
-	beq	.Lmk_next          ; equal color (friendly) -> skip
-.Lmk_count:
-	inc	__rc9
-.Lmk_next:
-	inx
-	cpx	#8
-	bcc	.Lmk_loop
+	bne	.Lmk1
+	lda	(__rc2),y
+	beq	.Lmkc0
+	and	#WHITE_COLOR
+	eor	__rc8
+	beq	.Lmk1
+.Lmkc0:	inc	__rc9
+.Lmk1:	txa
+	clc
+	adc	#$E1
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lmk2
+	lda	(__rc2),y
+	beq	.Lmkc1
+	and	#WHITE_COLOR
+	eor	__rc8
+	beq	.Lmk2
+.Lmkc1:	inc	__rc9
+.Lmk2:	txa
+	clc
+	adc	#$EE
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lmk3
+	lda	(__rc2),y
+	beq	.Lmkc2
+	and	#WHITE_COLOR
+	eor	__rc8
+	beq	.Lmk3
+.Lmkc2:	inc	__rc9
+.Lmk3:	txa
+	clc
+	adc	#$F2
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lmk4
+	lda	(__rc2),y
+	beq	.Lmkc3
+	and	#WHITE_COLOR
+	eor	__rc8
+	beq	.Lmk4
+.Lmkc3:	inc	__rc9
+.Lmk4:	txa
+	clc
+	adc	#$0E
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lmk5
+	lda	(__rc2),y
+	beq	.Lmkc4
+	and	#WHITE_COLOR
+	eor	__rc8
+	beq	.Lmk5
+.Lmkc4:	inc	__rc9
+.Lmk5:	txa
+	clc
+	adc	#$12
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lmk6
+	lda	(__rc2),y
+	beq	.Lmkc5
+	and	#WHITE_COLOR
+	eor	__rc8
+	beq	.Lmk6
+.Lmkc5:	inc	__rc9
+.Lmk6:	txa
+	clc
+	adc	#$1F
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lmk7
+	lda	(__rc2),y
+	beq	.Lmkc6
+	and	#WHITE_COLOR
+	eor	__rc8
+	beq	.Lmk7
+.Lmkc6:	inc	__rc9
+.Lmk7:	txa
+	clc
+	adc	#$21
+	tay
+	and	#OFFBOARD_MASK
+	bne	.Lmk_done
+	lda	(__rc2),y
+	beq	.Lmkc7
+	and	#WHITE_COLOR
+	eor	__rc8
+	beq	.Lmk_done
+.Lmkc7:	inc	__rc9
+.Lmk_done:
 	lda	__rc9              ; A = count
 	rts
 
@@ -3048,11 +3194,12 @@ eval_full:
 ; knight attackers: for i=0..7
 	lda	#0
 	sta	KS_I
+	clc                          ; carry clear for the body's adc; back edge
+	                             ; (cmp #8 with KS_I in 1..7) re-clears it.
 .Lkzp_kloop:
 	ldx	KS_I
 	lda	KS_KZK
-	clc
-	adc	KNIGHT_OFFS, x       ; dest = add8(king_sq, KNIGHT_OFFSETS[i])
+	adc	KNIGHT_OFFS, x       ; dest = add8(king_sq, KNIGHT_OFFSETS[i])  (carry clear)
 	tay
 	and	#OFFBOARD_MASK
 	bne	.Lkzp_knext          ; offboard -> continue
@@ -3071,7 +3218,7 @@ eval_full:
 .Lkzp_knext:
 	inc	KS_I
 	lda	KS_I
-	cmp	#8
+	cmp	#8                   ; KS_I<8 -> carry CLEAR -> next adc carry-in clear
 	bcc	.Lkzp_kloop
 	rts
 
@@ -3230,11 +3377,12 @@ eval_full:
 ; knight attackers: for i=0..7
 	lda	#0
 	sta	AB_D                   ; reuse AB_D as knight index i
+	clc                            ; carry clear for the body's adc; back edge
+	                               ; (cmp #8 with AB_D in 1..7) re-clears it.
 .Lckza_kloop:
 	ldx	AB_D
 	lda	AB_KSQ
-	clc
-	adc	KNIGHT_OFFS, x         ; dest = add8(king_sq, KNIGHT_OFFSETS[i])
+	adc	KNIGHT_OFFS, x         ; dest = add8(king_sq, KNIGHT_OFFSETS[i])  (carry clear)
 	tay
 	and	#OFFBOARD_MASK
 	bne	.Lckza_knext           ; offboard -> continue
@@ -3252,7 +3400,7 @@ eval_full:
 .Lckza_knext:
 	inc	AB_D
 	lda	AB_D
-	cmp	#8
+	cmp	#8                     ; AB_D<8 -> carry CLEAR -> next adc carry-in clear
 	bcc	.Lckza_kloop
 	lda	AB_CNT                 ; A = c
 	rts

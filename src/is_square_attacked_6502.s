@@ -110,32 +110,63 @@ is_square_attacked:
 ;       on-board && PT(p)==PAWN && (p & 0x80)==color_match
 ; ===========================================================================
 .Lpawns:
+	; target = PT_PAWN | color_match. A piece byte is EXACTLY type|colorbit
+	; (board.h), so the C test "on-board && (p&7)==PAWN && (p&0x80)==cm" is just
+	; a single CMP against the target (empty=0 never matches). Same one-CMP trick
+	; the knight/king scans use; this also kills the jsr/rts to .Lcheck_pawn.
+	;
+	; sq is held in X across the whole pawn+knight+king block (X is otherwise free
+	; until .Lbishops re-uses it), so each target is formed with `txa` (2cyc)
+	; instead of reloading `lda __rc8` (3cyc) -- 1 cyc saved per check on the hot
+	; (full-scan) path, 20 checks.
+	ldx	__rc8                 ; X = sq (invariant through pawn/knight/king)
+	lda	#PT_PAWN
+	ora	__rc9
+	sta	__rc13                ; __rc13 = target pawn byte
 	lda	__rc9
 	bne	.Lpawn_white          ; color_match==0x80 -> white -> +15/+17
-	; black: deltas -15 (=$F1) and -17 (=$EF)
-	lda	__rc8
+	; black: attackers on sq-15 ($F1) and sq-17 ($EF)
+	txa
 	clc
 	adc	#$F1                  ; sq - 15
-	jsr	.Lcheck_pawn
-	bcs	.Lhit                 ; near (.Lhit is just above)
-	lda	__rc8
+	tay
+	and	#$88
+	bne	.Lbpawn2              ; off-board -> try other diagonal
+	lda	(__rc2),y
+	cmp	__rc13
+	beq	.Lhit
+.Lbpawn2:
+	txa
 	clc
 	adc	#$EF                  ; sq - 17
-	jsr	.Lcheck_pawn
-	bcs	.Lhit
+	tay
+	and	#$88
+	bne	.Lknights             ; off-board -> done with pawns
+	lda	(__rc2),y
+	cmp	__rc13
+	beq	.Lhit
 	jmp	.Lknights
 .Lpawn_white:
-	; white: deltas +15 and +17
-	lda	__rc8
+	; white: attackers on sq+15 and sq+17
+	txa
 	clc
 	adc	#15                   ; sq + 15
-	jsr	.Lcheck_pawn
-	bcs	.Lhit
-	lda	__rc8
+	tay
+	and	#$88
+	bne	.Lwpawn2
+	lda	(__rc2),y
+	cmp	__rc13
+	beq	.Lhit
+.Lwpawn2:
+	txa
 	clc
 	adc	#17                   ; sq + 17
-	jsr	.Lcheck_pawn
-	bcs	.Lhit
+	tay
+	and	#$88
+	bne	.Lknights             ; off-board -> done with pawns
+	lda	(__rc2),y
+	cmp	__rc13
+	beq	.Lhit
 	; fall through to knights
 
 ; ===========================================================================
@@ -149,48 +180,199 @@ is_square_attacked:
 	; (no other bits ever set, board.h), so a single CMP against the target
 	; matches type AND color in one shot -- and empty(0) never equals the
 	; nonzero target, so the empty-check folds in too.
+	;
+	; FULLY UNROLLED (was an 8-iteration loop over knight_off[]). Each offset is
+	; an immediate, killing the abs,x table index AND the inx/cpx/bne loop tax
+	; (~6-9 cyc/iter). On a match we invert-and-jmp to .Lhit (far, out of branch
+	; range); the jmp only runs on a hit (rare), so the no-match hot path is just
+	; a not-taken bne. Empty/wrong-piece both fall through the cmp's bne.
 	lda	#PT_KNIGHT
 	ora	__rc9
 	sta	__rc13                ; __rc13 = target knight byte
-	ldx	#0
-.Lknight_loop:
-	lda	__rc8
+	; -- knight check #1: sq-33 ($DF) --
+	txa
 	clc
-	adc	knight_off,x          ; A = t = sq + knight_off[x]
+	adc	#$DF
 	tay
 	and	#$88
-	bne	.Lknight_cont         ; off-board -> next offset
-	lda	(__rc2),y             ; p = b->sq[t]
-	cmp	__rc13                ; knight of color_match? (type+color+nonempty)
-	beq	.Lhit
-.Lknight_cont:
-	inx
-	cpx	#8
-	bne	.Lknight_loop
+	bne	.Lkn1                 ; off-board -> next
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lkn1
+	jmp	.Lhit
+.Lkn1:	; -- #2: sq-31 ($E1) --
+	txa
+	clc
+	adc	#$E1
+	tay
+	and	#$88
+	bne	.Lkn2
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lkn2
+	jmp	.Lhit
+.Lkn2:	; -- #3: sq-18 ($EE) --
+	txa
+	clc
+	adc	#$EE
+	tay
+	and	#$88
+	bne	.Lkn3
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lkn3
+	jmp	.Lhit
+.Lkn3:	; -- #4: sq-14 ($F2) --
+	txa
+	clc
+	adc	#$F2
+	tay
+	and	#$88
+	bne	.Lkn4
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lkn4
+	jmp	.Lhit
+.Lkn4:	; -- #5: sq+14 ($0E) --
+	txa
+	clc
+	adc	#$0E
+	tay
+	and	#$88
+	bne	.Lkn5
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lkn5
+	jmp	.Lhit
+.Lkn5:	; -- #6: sq+18 ($12) --
+	txa
+	clc
+	adc	#$12
+	tay
+	and	#$88
+	bne	.Lkn6
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lkn6
+	jmp	.Lhit
+.Lkn6:	; -- #7: sq+31 ($1F) --
+	txa
+	clc
+	adc	#$1F
+	tay
+	and	#$88
+	bne	.Lkn7
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lkn7
+	jmp	.Lhit
+.Lkn7:	; -- #8: sq+33 ($21) --
+	txa
+	clc
+	adc	#$21
+	tay
+	and	#$88
+	bne	.Lkings               ; off-board -> done with knights
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lkings
+	jmp	.Lhit
 
 ; ===========================================================================
-; 3) KING adjacency.  8 fixed offsets.
+; 3) KING adjacency.  8 fixed offsets.  FULLY UNROLLED (same scheme as knights).
 ; ===========================================================================
-; King check inlined (was: jsr .Lcheck_king).
 .Lkings:
 	lda	#PT_KING
 	ora	__rc9
 	sta	__rc13                ; __rc13 = target king byte
-	ldx	#0
-.Lking_loop:
-	lda	__rc8
+	; -- #1: sq-17 ($EF) --
+	txa
 	clc
-	adc	king_off,x            ; A = t = sq + king_off[x]
+	adc	#$EF
 	tay
 	and	#$88
-	bne	.Lking_cont           ; off-board -> next offset
-	lda	(__rc2),y             ; p = b->sq[t]
-	cmp	__rc13                ; king of color_match? (type+color+nonempty)
-	beq	.Lhit
-.Lking_cont:
-	inx
-	cpx	#8
-	bne	.Lking_loop
+	bne	.Lkg1
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lkg1
+	jmp	.Lhit
+.Lkg1:	; -- #2: sq-16 ($F0) --
+	txa
+	clc
+	adc	#$F0
+	tay
+	and	#$88
+	bne	.Lkg2
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lkg2
+	jmp	.Lhit
+.Lkg2:	; -- #3: sq-15 ($F1) --
+	txa
+	clc
+	adc	#$F1
+	tay
+	and	#$88
+	bne	.Lkg3
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lkg3
+	jmp	.Lhit
+.Lkg3:	; -- #4: sq-1 ($FF) --
+	txa
+	clc
+	adc	#$FF
+	tay
+	and	#$88
+	bne	.Lkg4
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lkg4
+	jmp	.Lhit
+.Lkg4:	; -- #5: sq+1 ($01) --
+	txa
+	clc
+	adc	#$01
+	tay
+	and	#$88
+	bne	.Lkg5
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lkg5
+	jmp	.Lhit
+.Lkg5:	; -- #6: sq+15 ($0F) --
+	txa
+	clc
+	adc	#$0F
+	tay
+	and	#$88
+	bne	.Lkg6
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lkg6
+	jmp	.Lhit
+.Lkg6:	; -- #7: sq+16 ($10) --
+	txa
+	clc
+	adc	#$10
+	tay
+	and	#$88
+	bne	.Lkg7
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lkg7
+	jmp	.Lhit
+.Lkg7:	; -- #8: sq+17 ($11) --
+	txa
+	clc
+	adc	#$11
+	tay
+	and	#$88
+	bne	.Lbishops             ; off-board -> done with kings
+	lda	(__rc2),y
+	cmp	__rc13
+	bne	.Lbishops
+	jmp	.Lhit
 
 ; ===========================================================================
 ; 4) DIAGONAL slider rays: bishop or queen.  4 directions; walk until offboard
@@ -295,34 +477,8 @@ is_square_attacked:
 .Lrook_done:
 	jmp	.Lmiss
 
-; ===========================================================================
-; helper: .Lcheck_pawn
-;   in:  A = target square t (may be off-board)
-;   out: carry SET if a pawn of color_match sits at t, else carry CLEAR.
-;        A,Y clobbered; X preserved.
-; ===========================================================================
-.Lcheck_pawn:
-	tay
-	and	#$88
-	bne	.Lcp_no               ; off-board
-	lda	(__rc2),y
-	beq	.Lcp_no               ; empty
-	sta	__rc12
-	and	#7
-	cmp	#PT_PAWN
-	bne	.Lcp_no
-	lda	__rc12
-	and	#$80
-	cmp	__rc9
-	bne	.Lcp_no
-	sec
-	rts
-.Lcp_no:
-	clc
-	rts
-
-; (.Lcheck_knight and .Lcheck_king helpers removed -- inlined into their loops
-;  above to eliminate the per-call jsr/rts + carry handshake.)
+; (.Lcheck_pawn, .Lcheck_knight, .Lcheck_king helpers all removed -- inlined into
+;  their checks above as single-CMP tests, eliminating the per-call jsr/rts.)
 
 .Lfunc_end_isa:
 	.size	is_square_attacked, .Lfunc_end_isa-is_square_attacked
@@ -332,10 +488,8 @@ is_square_attacked:
 ; exactly what the 0x88 off-board test needs)
 ; ===========================================================================
 	.section	.rodata.is_square_attacked,"a",@progbits
-knight_off:
-	.byte	256-33, 256-31, 256-18, 256-14, 14, 18, 31, 33   ; -33,-31,-18,-14,14,18,31,33
-king_off:
-	.byte	256-17, 256-16, 256-15, 256-1, 1, 15, 16, 17     ; -17,-16,-15,-1,1,15,16,17
+; knight_off / king_off tables removed -- the knight & king scans are now fully
+; unrolled with immediate offsets (see .Lknights / .Lkings), so no table is read.
 bishop_off:
 	.byte	256-17, 256-15, 15, 17                            ; -17,-15,15,17
 rook_off:
