@@ -59,7 +59,7 @@ image runs, golden-identical to it) vs Stockfish.
 | d1 | 11.5M | ~11.5s | **1256** (240 g vs SF-1320) |
 | d2 | 33.8M | ~34s | **1461** (160 g vs SF-1400) |
 | d3 | 111.8M | ~112s (~2 min) | **1605** (160 g vs SF-1550) |
-| d4 | 350.9M | ~351s (~6 min) | ~1700-1750 (full-cref d4 ≈ 1800) |
+| d4 | 350.9M | ~351s (~6 min) | **1753** (160 g vs SF-1700; full-cref d4 ≈ 1800) |
 
 **Strength vs clock** (the chip plays fixed depth — the deepest that fits):
 
@@ -68,7 +68,11 @@ image runs, golden-identical to it) vs Stockfish.
 | 10 s/move (blitz) | d1 | **~1256** |
 | 1 min/move | d2 | **~1461** |
 | ~2 min/move | d3 | **~1605** |
-| ~6 min/move | d4 | **~1700-1800** |
+| ~6 min/move | d4 | **~1753** |
+
+Ladder measured at **+205 / +144 / +148 Elo per ply** (d1→d4) — ~+150/ply, steeper
+than the +100/ply seen d4→d6. The reduced on-chip config (TT8 / no history) costs
+only ~45 Elo vs full-cref at d4 (1753 vs ~1800).
 
 **The chip is a ~d4-ceiling engine.** It plays ~1250 at blitz and needs ~6
 minutes/move to reach ~1800. The ladder is ~+150-200 Elo/ply at the low end
