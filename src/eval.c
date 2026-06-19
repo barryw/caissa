@@ -1105,19 +1105,18 @@ EVAL_HELPER void king_attack_escalation(Eval *e) {
     if (cb >= 2) e->score += g_w.king_attack_escalation * (cb - 1) * (cb - 1);
 }
 
-/* king_danger (term #1, attack-based): sum enemy attacker weights raying the
- * king (queen on any dir, rook on orthogonal, bishop on diagonal) plus knight
- * adjacency, into "attack units"; map units -> centipawns via kd_safety_table.
- * Computed symmetrically for both kings so the term REWARDS attacking the enemy
- * king, not only penalizing the own king. Detection mirrors
- * count_king_zone_attackers; the per-attacker weight is the only addition. */
-static int king_danger_units(const Eval *e, int king_sq, int attacker_color) {
+/* Weighted enemy sliders/knights attacking a single square `sq`. queen on any
+ * direction, rook on orthogonal, bishop on diagonal (first blocker per ray),
+ * plus knight adjacency. (Ray-to-the-king-SQUARE detection measured 0/5000 on
+ * real positions -- a slider seeing the king square means check -- so the king
+ * RING is what matters; this is the per-square primitive for that scan.) */
+static int square_attacker_units(const Eval *e, int sq, int attacker_color) {
     const uint8_t *b = e->b;
     int units = 0;
     int d, i;
     for (d = 0; d < 8; d++) {
         int delta = ALL_DIRECTION_OFFSETS[d];
-        int ray = king_sq;
+        int ray = sq;
         for (;;) {
             int piece, t;
             ray = add8(ray, delta);
@@ -1137,13 +1136,30 @@ static int king_danger_units(const Eval *e, int king_sq, int attacker_color) {
         }
     }
     for (i = 0; i < 8; i++) {
-        int dest = add8(king_sq, KNIGHT_OFFSETS[i]);
+        int dest = add8(sq, KNIGHT_OFFSETS[i]);
         int piece;
         if (dest & OFFBOARD_MASK) continue;
         piece = b[dest];
         if (piece == EMPTY) continue;
         if ((piece & WHITE_COLOR) != attacker_color) continue;
         if ((piece & 0x07) == KNIGHT_T) units += g_w.kd_w_minor;
+    }
+    return units;
+}
+
+/* king_danger (term #1, attack-based): sum weighted enemy attacks over the
+ * king's RING (the king square + its 8 neighbours) into "attack units"; map
+ * units -> centipawns via kd_safety_table. A piece bearing on several ring
+ * squares is counted per square -- a natural escalation proxy. Computed
+ * symmetrically for both kings so the term REWARDS attacking the enemy king,
+ * not only penalizing the own king. */
+static int king_danger_units(const Eval *e, int king_sq, int attacker_color) {
+    int units = square_attacker_units(e, king_sq, attacker_color);
+    int d;
+    for (d = 0; d < 8; d++) {
+        int rs = add8(king_sq, ALL_DIRECTION_OFFSETS[d]);
+        if (rs & OFFBOARD_MASK) continue;
+        units += square_attacker_units(e, rs, attacker_color);
     }
     return units;
 }

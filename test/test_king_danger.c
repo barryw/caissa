@@ -96,6 +96,20 @@ int main(void) {
     int def = eval_fen(attack);
     CHECK(def == disabled, "default weights keep king-danger inert (bit-exact baseline)");
 
+    /* TEST 5: RING-attack detection. Black king g8 is shielded by f7/g7/h7, so
+     * no white slider rays the king SQUARE -- but the white queen on g3 bears on
+     * g7, a RING square. A correct king-danger detector fires on ring pressure;
+     * ray-to-king-square detection (which measured 0/5000 on real positions)
+     * does not. This is the discriminating case. */
+    const char *shielded = "6k1/5ppp/8/8/8/6Q1/8/6K1 w - - 0 1";
+    eval_reset_weights();
+    int shield_off = eval_fen(shielded);
+    enable_king_danger();
+    g_w.kd_phase_min_heavy = 2;            /* white heavy = 2 (queen) -> active */
+    int shield_on = eval_fen(shielded);
+    CHECK(shield_on > shield_off,
+          "king-danger fires on ring pressure against a pawn-shielded king");
+
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("all king-danger contract tests passed\n");
     return 0;
