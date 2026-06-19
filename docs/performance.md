@@ -83,6 +83,25 @@ full-corpus table above because the first 8 corpus positions are complexity-heav
   depths the chip reaches (Texel-MSE no longer predicts d4 Elo — see
   `docs/eval-rewrite-conclusion-and-goal-reframe.md`), so cycle wins are the lever.
 
+## The benchmark: Colossus 4.0 (our north star)
+
+Colossus 4.0 is a hand-built ~1700-1800 C64 engine. Measured on the same
+cycle-exact fast core (`tools/colossus_timing.py` driving `fastcolossus`), at its
+default level it plays **Lookahead 3-4, ~2,000-3,800 positions, ~20M cyc/move**
+(@1 MHz 20 s, **@40 MHz 0.5 s**). Head to head at comparable strength:
+
+| Engine | depth | nodes/move | cyc/move | cyc/node | @40 MHz | strength |
+|--------|-------|-----------:|---------:|---------:|--------:|----------|
+| Colossus 4.0 | LA 3-4 | ~3,000 | **~20M** | ~6,700 | 0.5 s | ~1650-1750 |
+| Caïssa | d4 | ~10,100 | **321M** | ~31,700 | 8.0 s | ~1753 |
+
+**Caïssa is ~16x heavier per move** — ~3.4x more nodes AND ~4.7x more cycles per
+node — at roughly equal strength. (Caïssa still *wins* the match ~72%, so it is
+stronger; it just pays ~16x the cycles.) A human-built engine proved a ~1700
+player fits in ~20M cyc/move on a 6502, so the efficiency headroom is enormous.
+Closing this gap is the engine's reason for being; the plan is in
+`docs/closing-the-colossus-gap.md`.
+
 ## Speed campaign
 
 The hot path is hand-written 6502 asm (`src/*_6502.s`), each change gated
