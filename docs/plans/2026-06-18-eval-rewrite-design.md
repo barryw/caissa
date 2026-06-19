@@ -37,6 +37,42 @@ symmetric both-kings, units → safety table, phase-gated, default-inert.
   king-danger positions), `tools/kd_tune.py` (SF-supervision tuner). Rule:
   **tune eval SHAPE via Texel-MSE, SCALE via SF games — never magnitude via MSE.**
 
+### Term #2 — pawn structure: NEUTRAL→slightly−neg at d4 (NOT shipped)
+
+Existing detection (isolated/connected/protected) ships at weight 0. Texel MSE on
+the QUIET set: `isolated_pawn≈12` best (−0.37%), `doubled 37→45` a sliver;
+**connected/protected passer HURT MSE** (Texel rejects — passed_pawn_bonus covers
+it). Combined `isolated=12,doubled=45` MSE −0.4%. vs SF d4 600g: early 53.6% →
+**FINAL 45.6% (−31 Elo)** — same early-lift-fades pattern. Not shipped (no code
+changed; weights unchanged).
+
+### Term #3 — mobility: NEUTRAL→−neg at d4 (parametrized, NOT shipped)
+
+Mobility's hardcoded `*10` parametrized to per-piece `mob_*` (commit `7203ed6`,
+bit-exact refactor, default 10). **Strongest Texel signal of the session:** MSE
+−1.25% at `knight=22,bishop=16,rook=10,queen=14` (the old `*10` badly under-weighted
+knight mobility). But vs SF d4 800g: MSE-optimal **48.6% (−10 Elo)**, moderated
+**46.5% (−20 Elo)** — both below baseline. Even the dimension with a historical
++41 Elo win does not pay now. Parametrization kept (default-identity, harmless).
+
+## CONCLUSION — eval-rewrite premise REFUTED; binding constraint is SPEED
+
+Three positional terms (king-safety, pawn structure, mobility), each improving
+Texel MSE vs Stockfish (−2% / −0.4% / −1.25%), **all NEUTRAL-to-negative at d4 in
+game-play.** The cross-cutting finding: **Texel MSE no longer predicts d4 Elo.**
+MSE rewards absolute-eval accuracy; Elo rewards move ORDERING — and the baseline
+eval's move-ordering is saturated for shallow (d4) search, so a more accurate eval
+does not change which move d4 selects.
+
+The handover's premise — "the binding constraint is the shallow-depth positional
+eval" — is **disproved**. The native algorithm already measures ~1800 Elo at d4
+(this session's baseline, ~2300 games vs SF-1800 ≈ 49.5%) and ~1940 at d6; eval
+cannot push d4 higher (tapped). The real binding constraint is **SPEED → DEPTH**:
+the same algorithm is ~30-60× too slow on-chip to reach d4 at practical time
+controls, so the chip plays ~d3 and scores far below its d4 ceiling. **Strength
+now comes only from depth, and depth comes only from speed.** See
+`docs/eval-rewrite-conclusion-and-goal-reframe.md` for the goal reframing.
+
 ---
 
 ## 0. Decision summary
