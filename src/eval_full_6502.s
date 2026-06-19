@@ -418,14 +418,19 @@ eval_full:
 	lda	#0
 	sta	WALKX
 
-.Lwalk:
-; ---- load piece = b[x]; if EMPTY continue ----------------------------------
+; Establish __rc2/3 = BPTR ONCE. The per-square term helpers clobber __rc2/3,
+; so they are RE-established only on the occupied-square path (just before
+; .Lwalk_next). Empty squares never call a helper, so __rc2/3 survives intact
+; across the loop backedge -- no per-iteration reload needed for them.
 	lda	BPTR
 	sta	__rc2
 	lda	BPTR+1
 	sta	__rc3
+
+.Lwalk:
+; ---- load piece = b[x]; if EMPTY continue ----------------------------------
 	ldy	WALKX
-	lda	(__rc2),y          ; A = b[x]
+	lda	(__rc2),y          ; A = b[x]  (__rc2/3 == BPTR, held across loop)
 	; if (piece == EMPTY) continue;
 	bne	.Lnot_empty
 	jmp	.Lwalk_next
@@ -577,12 +582,11 @@ eval_full:
 ;   pawn_pressure, queen_pressure, minor_pressure, knight_outpost,
 ;   mobility, seventh_rank -- each (&e, x, color, ptype).
 ; ALL SIX are INLINE (.Ls_* local subroutines; no jsr to C).
-; Set __rc2/3 = BPTR so the inlined probes can do (zp),Y board reads. The
-; inline terms never jsr to C, so __rc2/3 survives across the whole term block.
-	lda	BPTR
-	sta	__rc2
-	lda	BPTR+1
-	sta	__rc3
+; __rc2/3 is ALREADY == BPTR here: it is held across the loop (set once before
+; .Lwalk, re-established on the occupied path before .Lwalk_next), and the path
+; from .Lwalk to here (counters + advanced_pawn->.Ls_score_addAX) clobbers
+; neither __rc2 nor __rc3. So no reload is needed -- the inline probes below can
+; do (zp),Y board reads directly.
 
 ; ---- pawn_pressure (INLINE, eval.c 481-486) --------------------------------
 ;   if (!is_pawn_attacked(e,sq,color,ptype)) return;
@@ -627,6 +631,13 @@ eval_full:
 ;  not be BPTR here. It reads all state fresh from .bss, so .Ls_mobility's
 ;  scratch clobbers are harmless.)
 	jsr	.Ls_seventh_rank
+	; occupied-square term helpers clobbered __rc2/3 -> re-establish BPTR for
+	; the next square's (__rc2),y load. (Empty squares skip straight to
+	; .Lwalk_next with __rc2/3 still == BPTR, so this is only paid when needed.)
+	lda	BPTR
+	sta	__rc2
+	lda	BPTR+1
+	sta	__rc3
 	; fall through to walk_next
 
 ; ---- loop increment: x++; if (x & 8) x += 8; while (x < 128) --------------

@@ -32,6 +32,7 @@
 ;   __rc10 = ray offset    (signed delta added each step on a slider ray)
 ;   __rc11 = table index   (slider direction index)
 ;   __rc12 = piece scratch
+;   __rc13 = target piece byte (PT_x | color_match) for single-CMP loops
 ;   b pointer stays in __rc2/__rc3 and is the (zp),Y base.
 ;
 ; BRANCH-RANGE NOTE: this function is ~340 bytes, larger than the 8-bit
@@ -57,6 +58,7 @@
 	.zeropage	__rc10
 	.zeropage	__rc11
 	.zeropage	__rc12
+	.zeropage	__rc13
 
 	.section	.text.is_square_attacked,"ax",@progbits
 	.globl	is_square_attacked
@@ -143,6 +145,13 @@ is_square_attacked:
 ; (12 cyc) + carry handshake per iteration; all branch targets here are local
 ; and provably near, so short branches are safe.
 .Lknights:
+	; target = PT_KNIGHT | color_match. A piece byte is EXACTLY type|colorbit
+	; (no other bits ever set, board.h), so a single CMP against the target
+	; matches type AND color in one shot -- and empty(0) never equals the
+	; nonzero target, so the empty-check folds in too.
+	lda	#PT_KNIGHT
+	ora	__rc9
+	sta	__rc13                ; __rc13 = target knight byte
 	ldx	#0
 .Lknight_loop:
 	lda	__rc8
@@ -152,16 +161,8 @@ is_square_attacked:
 	and	#$88
 	bne	.Lknight_cont         ; off-board -> next offset
 	lda	(__rc2),y             ; p = b->sq[t]
-	beq	.Lknight_cont         ; empty -> next
-	sta	__rc12                ; save p
-	and	#7
-	cmp	#PT_KNIGHT
-	bne	.Lknight_cont         ; not a knight -> next
-	lda	__rc12
-	and	#$80
-	cmp	__rc9                 ; right color?
-	bne	.Lknight_cont         ; wrong color -> next
-	jmp	.Lhit                 ; knight of color_match attacks sq
+	cmp	__rc13                ; knight of color_match? (type+color+nonempty)
+	beq	.Lhit
 .Lknight_cont:
 	inx
 	cpx	#8
@@ -172,6 +173,9 @@ is_square_attacked:
 ; ===========================================================================
 ; King check inlined (was: jsr .Lcheck_king).
 .Lkings:
+	lda	#PT_KING
+	ora	__rc9
+	sta	__rc13                ; __rc13 = target king byte
 	ldx	#0
 .Lking_loop:
 	lda	__rc8
@@ -181,16 +185,8 @@ is_square_attacked:
 	and	#$88
 	bne	.Lking_cont           ; off-board -> next offset
 	lda	(__rc2),y             ; p = b->sq[t]
-	beq	.Lking_cont           ; empty -> next
-	sta	__rc12
-	and	#7
-	cmp	#PT_KING
-	bne	.Lking_cont           ; not a king -> next
-	lda	__rc12
-	and	#$80
-	cmp	__rc9
-	bne	.Lking_cont           ; wrong color -> next
-	jmp	.Lhit                 ; king of color_match attacks sq
+	cmp	__rc13                ; king of color_match? (type+color+nonempty)
+	beq	.Lhit
 .Lking_cont:
 	inx
 	cpx	#8
