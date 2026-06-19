@@ -1,11 +1,41 @@
 # Eval Positional-Layer Rewrite — Design
 
 **Date:** 2026-06-18
-**Status:** ACCEPTED (design pass). Implementation not started.
+**Status:** IN PROGRESS. Term #1 (king-danger) IMPLEMENTED + MEASURED = NEUTRAL (not shipped).
 **Context:** resumes `docs/handover-eval-rewrite.md`. The engine's foundation
 (movegen/search/board/speed) is verified solid; the binding strength constraint is
 the shallow-depth positional eval. This document specifies an incremental,
 measurement-gated rebuild of the positional layer.
+
+---
+
+## RESULTS LOG
+
+### Term #1 — attack-based king-danger: NEUTRAL at d4 (NOT shipped)
+
+Implemented as designed (commits `af56ab7`, `3179199`): ring-attack detection,
+symmetric both-kings, units → safety table, phase-gated, default-inert.
+
+- **Real correction found by measurement** (`3179199`): the first cut detected
+  sliders raying the king's OWN square; that fired **0 / 5000** real king-danger
+  positions (a slider seeing the king square = check, ~never in quiet eval). Fixed
+  to scan the king RING (king square + 8 neighbours).
+- **Calibration lesson:** MSE-supervising to Stockfish-d18 gave the right table
+  SHAPE but the WRONG SCALE for shallow play. The MSE-optimal magnitude scored
+  **−25 Elo** vs SF at d4 (SF-d18 encodes tactics d4 can't see → over-eager). A
+  scale sweep showed an inverted-U; half-magnitude looked best.
+- **Verdict (vs SF-1800 at d4):** half-magnitude scored +28%/+20 Elo over 300–800
+  games, but at **2300+ games it regressed to ~neutral** (49–50%, indistinguishable
+  from baseline; self-play SPRT also neutral). The early lift was best-of-3-scale
+  selection noise. Per the data-driven mandate, neutral does not ship; the term
+  stays in-tree default-inert (zero harm) and the 6502 asm was never re-derived.
+- **Takeaway:** even a *structurally correct* attack-based king-safety term is a
+  tapped/neutral lever at the shallow depth the chip plays — king-safety pays with
+  DEPTH, which is speed-capped away. (5th king-safety attempt; the first that is
+  neutral rather than −Elo — the attack-side framing avoided the passivity harm.)
+- **Tooling banked:** `tools/filter_king_danger.py`, `build/kd_tune.tsv` (212k
+  king-danger positions), `tools/kd_tune.py` (SF-supervision tuner). Rule:
+  **tune eval SHAPE via Texel-MSE, SCALE via SF games — never magnitude via MSE.**
 
 ---
 
