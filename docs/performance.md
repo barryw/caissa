@@ -1,51 +1,78 @@
-# Performance Loop
+# Performance & on-chip benchmark
 
-Use the headless ca65 harness for fast, repeatable performance checks:
+How fast the engine searches on a 6502, and how that converts to playing
+strength at a given clock. All numbers are from the **cycle-exact 6502 image**
+(the same binary `make c64` ships), so they project to real hardware to within
+clock accuracy.
+
+> Note: this supersedes the old ca65 `make benchmark` / `engine_harness` numbers —
+> that engine was removed when the project converged on the single C+llvm-mos
+> engine. The harness here measures the shipping 6502 image.
+
+## Tools
 
 ```sh
-make benchmark
-make benchmark-json
-make size
+# cycles + nodes/sec per depth, at any clock (1 MHz stock, 40 MHz Ultimate, ...)
+python3 tools/onchip_strength_vs_tc.py cycles --depths 1,2,3,4 --mhz 40
+# strength per depth (cref_mos == the 6502 image's config, vs Stockfish)
+python3 tools/onchip_strength_vs_tc.py elo --games 240
+# per-function + in-function PC-histogram cycle profile of the 6502 image
+tools/llvmmos_bench/caissa_prof "FEN" DEPTH [symbol]
+# full fidelity + speed gate (bit-exact vs host oracle + cyc/move)
+bash tools/llvmmos_bench/speed_gate.sh
 ```
 
-`make benchmark` runs `tests/engine_benchmark.6502` through the latest Sim6502
-Docker image and then reruns a temporary copy with cycle assertions forced to
-fail, which exposes exact cycle counts without weakening the checked-in gates.
+## Search speed (cycle-exact 6502 image, 49-position corpus)
 
-Current standalone benchmark baseline:
+| Depth | cyc/move | nodes/move | cyc/node |
+|------:|---------:|-----------:|---------:|
+| 1 | 11.0M | 174 | 63,183 |
+| 2 | 31.7M | 732 | 43,341 |
+| 3 | 102.3M | 3,611 | 28,332 |
+| 4 | 321.3M | 10,131 | 31,719 |
 
-| Benchmark | Cycles | Gate |
-| --- | ---: | ---: |
-| easy mate in one | 593,655 | 2,400,000 |
-| medium mate in one | 593,655 | 2,400,000 |
-| hard mate in one | 593,655 | 2,400,000 |
-| depth-1 hanging queen search | 866,528 | 1,000,000 |
-| hard hanging queen | 668,188 | 700,000 |
-| depth-5 middlegame search | 4,569,439 | 5,000,000 |
-| hard white promotion | 507,099 | 650,000 |
-| hard black promotion | 507,288 | 650,000 |
-| hard rook activation | 687,897 | 750,000 |
+cyc/node is dominated by the static eval (~20%) + check/legality scans + make/unmake.
 
-About 5K of the hard-path cycles are the host-state sanitizer and the
-final move-legality guard added after the Nova UI illegal-move report; that
-is a deliberately accepted tradeoff for a hard output guarantee.
+## Performance vs clock
 
-`make size` reports ld65 segment sizes from `build/engine_harness.dbg`. `FILE`
-is the emitted PRG payload; `RUNTIME` includes `BSS` RAM reserved by the linker.
-Current standalone ca65 size:
+cyc/move == seconds/move at 1 MHz; divide by the clock. The C64 Ultimate /
+Ultimate 64 (and Gideon's newer hardware) run the 6502 core at ~40 MHz.
 
-| Segment | Range | Bytes |
-| --- | --- | ---: |
-| `LOADADDR` | `$0000-$0001` | 2 |
-| `CODE` | `$0801-$58bd` | 20,669 |
-| `BSS` | `$58be-$6c47` | 5,002 |
-| PRG payload | | 20,671 |
-| runtime footprint | | 25,673 |
+| Depth | @1 MHz (stock C64) | @40 MHz (Ultimate) | nodes/sec @40 MHz | strength |
+|------:|-------------------:|-------------------:|------------------:|---------:|
+| 1 | 11.0 s/move | **0.27 s/move** | ~630 | ~1256 |
+| 2 | 31.7 s/move | **0.79 s/move** | ~920 | ~1461 |
+| 3 | 102 s/move | **2.6 s/move** | ~1,410 | ~1605 |
+| 4 | 321 s/move | **8.0 s/move** | ~1,260 | ~1753 |
 
-The resident engine budget target is 35K runtime footprint. The current
-standalone harness leaves 9,327 bytes for additional resident engine logic
-before hitting that ceiling. The current label span ends at `$6c42`.
+(Strength = `cref_mos`, the reduced config the 6502 image runs, vs Stockfish;
+golden-verified move-for-move identical to the image. Ladder ≈ +150 Elo/ply.)
 
-Treat benchmark changes as suspicious until they have both a cycle explanation
-and a strength/correctness test result. The goal is to make every optimization
-visible as either fewer cycles, fewer bytes, or a deliberately accepted tradeoff.
+## What it means
+
+- **On a stock 1 MHz C64** the engine is a correspondence-class player: depth 4
+  (~1753) costs ~5 minutes/move; at human clocks it plays ~depth 1-2 (~1256-1461).
+- **On a 40 MHz Ultimate** the same binary plays **depth 4 (~1753) in ~8 s/move**,
+  depth 5 (~1850, extrapolated) in ~26 s — i.e. **~1750-1850 at normal time
+  controls.** The 40x hardware closes the gap that made 1800 correspondence-only
+  on stock silicon.
+- Strength is **depth-bound, hence speed-bound**: the static eval is tapped at the
+  depths the chip reaches (Texel-MSE no longer predicts d4 Elo — see
+  `docs/eval-rewrite-conclusion-and-goal-reframe.md`), so cycle wins are the lever.
+
+## Speed campaign
+
+The hot path is hand-written 6502 asm (`src/*_6502.s`), each change gated
+bit-exact (`speed_gate.sh`: 6502 image == host oracle 50/50, PERFT, eval
+22157/22157, golden 0-mismatch). Recent corpus cyc/move: **343.9M → 321.3M
+(-6.6%)** via attacker-test collapse + scan unrolling + make_move fast-paths.
+Per the asm audit the hot path is now near the 6502 addressing floor; the largest
+remaining lever (incremental check-detection in quiescence) was measured at a
+~1% ceiling for high risk and not pursued.
+
+## On real hardware
+
+`make c64` builds `chess.prg`. It runs unmodified on a stock C64 (`x64sc
+chess.prg`) and on a C64 Ultimate / Ultimate 64 / Novu, where the 40 MHz core
+yields the @40 MHz column above. The cycle-exact sim means measured-here ==
+on-hardware to within clock accuracy.

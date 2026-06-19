@@ -1,5 +1,6 @@
 # build artifacts
 caissa_cli
+caissa_prof
 validate
 run_sim
 *.o

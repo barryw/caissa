@@ -40,21 +40,63 @@ CREF_MOS = ROOT / "build" / "cref_mos"
 MHZ = 1_000_000  # cycles per second at the C64 clock (~1 MHz)
 
 
-def measure_cycles(depths):
+def measure_rows(depths, nfens=0):
+    """Per-depth (avg cyc/move, avg nodes/move) over the corpus (or its first
+    `nfens` positions if nfens>0 -- handy to keep deep searches tractable)."""
     fens = [l.strip() for l in open(FENS) if l.strip()]
-    print(f"{'depth':>5}  {'avg cyc/move':>14}  {'s/move @1MHz':>12}")
+    if nfens:
+        fens = fens[:nfens]
     rows = {}
     for d in depths:
-        tot = nf = 0
+        tot = tnodes = nf = 0
         for f in fens:
             out = subprocess.run([str(PROF), f, str(d)], capture_output=True, text=True).stdout
-            m = re.search(r"total cycles=(\d+)", out)
+            m = re.search(r"total cycles=(\d+)\s+nodes=(\d+)\s+qnodes=(\d+)", out)
             if m:
-                tot += int(m.group(1)); nf += 1
-        avg = tot / nf if nf else 0
-        rows[d] = avg
-        print(f"{d:>5}  {avg:>14,.0f}  {avg/MHZ:>11.1f}s")
-    return rows
+                tot += int(m.group(1)); tnodes += int(m.group(2)) + int(m.group(3)); nf += 1
+        if nf:
+            rows[d] = (tot / nf, tnodes / nf)
+    return rows, len(fens)
+
+
+def fmt_time(sec):
+    if sec < 1:    return f"{sec*1000:.0f}ms"
+    if sec < 90:   return f"{sec:.1f}s"
+    return f"{sec/60:.1f}m"
+
+
+def measure_cycles(depths, mhz=1.0, nfens=0):
+    rows, n = measure_rows(depths, nfens)
+    hz = mhz * MHZ
+    print(f"clock = {mhz:g} MHz  ({n} positions)")
+    print(f"{'depth':>5} {'cyc/move':>14} {'nodes/move':>11} {'cyc/node':>9} "
+          f"{'s/move':>8} {'nodes/sec':>10}")
+    for d in depths:
+        if d not in rows: continue
+        cm, nm = rows[d]; cpn = cm / nm if nm else 0
+        print(f"{d:>5} {cm:>14,.0f} {nm:>11,.0f} {cpn:>9,.0f} "
+              f"{fmt_time(cm/hz):>8} {hz/cpn if cpn else 0:>10,.0f}")
+    return {d: rows[d][0] for d in rows}
+
+
+def bench(depths, clocks, nfens=0):
+    """Depth x clock matrix of seconds/move for the real 6502 image. Clock is a
+    pure divisor on the cycle-exact count, so one measurement per depth covers
+    every clock. Clocks in MHz: 1=stock C64, ~20=SuperCPU, ~40=Ultimate/Novu."""
+    rows, n = measure_rows(depths, nfens)
+    print(f"=== on-chip benchmark: {n} positions, cycle-exact 6502 image ===\n")
+    print(f"{'depth':>5} {'cyc/move':>14} {'nodes/move':>11} {'cyc/node':>9}")
+    for d in depths:
+        if d not in rows: continue
+        cm, nm = rows[d]
+        print(f"{d:>5} {cm:>14,.0f} {nm:>11,.0f} {cm/nm if nm else 0:>9,.0f}")
+    print(f"\n=== seconds/move by clock ===")
+    hdr = "depth " + "".join(f"{str(c)+'MHz':>9}" for c in clocks)
+    print(hdr)
+    for d in depths:
+        if d not in rows: continue
+        cm = rows[d][0]
+        print(f"{d:>5} " + "".join(f"{fmt_time(cm/(c*MHZ)):>9}" for c in clocks))
 
 
 def measure_elo(depths, sf_by_depth, games, jobs):
@@ -78,14 +120,22 @@ def measure_elo(depths, sf_by_depth, games, jobs):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["cycles", "elo"])
+    ap.add_argument("mode", choices=["cycles", "bench", "elo"])
     ap.add_argument("--games", type=int, default=240)
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--depths", default="1,2,3,4")
+    ap.add_argument("--clocks", default="1,5,10,12,20,40",
+                    help="bench mode: CPU clocks in MHz (1=stock, ~20=SuperCPU, ~40=Ultimate)")
+    ap.add_argument("--fens", type=int, default=0,
+                    help="use only the first N corpus positions (0=all; keeps deep searches tractable)")
+    ap.add_argument("--mhz", type=float, default=1.0,
+                    help="cycles mode: CPU clock for the report (e.g. 40 for a C64 Ultimate)")
     args = ap.parse_args()
     depths = [int(x) for x in args.depths.split(",")]
     if args.mode == "cycles":
-        measure_cycles(depths)
+        measure_cycles(depths, args.mhz, args.fens)
+    elif args.mode == "bench":
+        bench(depths, [float(c) if "." in c else int(c) for c in args.clocks.split(",")], args.fens)
     else:
         sf_by_depth = {1: 1320, 2: 1400, 3: 1550, 4: 1700}
         measure_elo(depths, sf_by_depth, args.games, args.jobs)

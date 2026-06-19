@@ -47,22 +47,35 @@ Full reference + examples in **`docs/API.md`**; working example in `test/test_ap
 (`make verify` runs it). A cross-toolchain / non-C UI can embed the fixed-address
 blob in `apps/c64/caissa_abi.c`.
 
-## Strength — what is and isn't measured
-- **Host (PC):** ~1785–1874 vs Stockfish at depth 6.
-- **On-chip move quality:** ~1850 (direct, the real 6502 binary vs Stockfish, zero
-  forfeits) — i.e. the *moves* are ~1800-grade.
-- **On-chip at a real time control:** **speed-capped.** Depth 6 ≈ hours/move on a real
-  1MHz C64, so the reachable depth (hence strength) at a sane clock is lower. Closing
-  this is the open frontier — hence the ongoing speed work on the 6502 hot paths.
-- **vs Colossus:** not yet measured. A headless-VICE Colossus match harness (see
-  `docs/colossus.md`) is being built to get the at-time-control, vs-Colossus number,
-  then tune the engine against it.
+## Strength — measured
+Strength is **depth-bound, hence speed-bound**: the static eval is tapped at the
+depths the chip reaches, so cycle wins (not eval terms) are the lever. Measured by
+playing `cref_mos` — the reduced config the 6502 image runs, golden-verified
+move-for-move identical to it — vs Stockfish (`tools/onchip_strength_vs_tc.py`):
+
+| Depth | on-chip Elo | cyc/move | @1 MHz | @40 MHz (Ultimate) |
+|------:|------------:|---------:|-------:|-------------------:|
+| 1 | ~1256 | 11.0M | 11 s/move | 0.27 s/move |
+| 2 | ~1461 | 31.7M | 32 s/move | 0.79 s/move |
+| 3 | ~1605 | 102M | 102 s/move | 2.6 s/move |
+| 4 | ~1753 | 321M | 321 s/move | 8.0 s/move |
+
+- **Stock 1 MHz C64:** correspondence-class — depth 4 (~1753) ≈ 5 min/move; at human
+  clocks it plays ~depth 1-2 (~1256-1461).
+- **40 MHz C64 Ultimate / Ultimate 64 / Novu:** the same binary plays **depth 4
+  (~1753) in ~8 s/move** — i.e. **~1750-1850 at normal time controls**, competitive
+  with the strongest 8-bit engines (Colossus). The 40× hardware closes the gap that
+  made 1800 correspondence-only on stock silicon.
+- **Host (PC):** the full-config engine is ~1800 @ d4, ~1942 @ d6 vs Stockfish.
+
+See `docs/performance.md` for the full speed/clock benchmark and
+`docs/eval-rewrite-conclusion-and-goal-reframe.md` for why eval is tapped and speed
+is the lever.
 
 ## Measurement harness
-The 6502 build + fidelity/speed gate live in `tools/llvmmos_bench/` (`build_caissa.sh`,
-`speed_gate.sh`, the `validate` FEN→move runner). The Colossus match harness drives the
-real Colossus 4.0 inside a **headless VICE** core (accurate by construction) and plays it
-against the engine; `docs/colossus.md` has the details. (The legacy Stockfish strength/Elo
-ladder tooling measured the old ca65 engine and is being repointed onto this engine.)
+The 6502 build + cycle-exact fidelity/speed gate live in `tools/llvmmos_bench/`
+(`build_caissa.sh`, `speed_gate.sh`, the `validate` FEN→move runner, the `caissa_prof`
+profiler). Strength + clock benchmarks: `tools/onchip_strength_vs_tc.py`. A headless-VICE
+Colossus 4.0 match harness (`docs/colossus.md`) plays the real Colossus against the engine.
 
 See `docs/ARCHITECTURE.md` for the full picture and `docs/performance.md` for the speed campaign.
