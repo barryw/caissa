@@ -84,6 +84,31 @@ static accuracy). It is the immediate free cut. king_pins is another ~13% for
 trivial static value that the tactical search likely makes redundant at d4.
 Cutting both ≈ a quarter of eval cost (more on the 6502, ray-heavy) for ~zero Elo.
 
+### P0/P1a CORRECTION (measured 2026-06-19) — the plan was eval-heavy; the lever is quiescence
+
+Two measurements re-ranked the levers:
+
+- **Eval-strip is modest, not the main event.** On the 6502 (llvm-mos -O2) cutting
+  king_safety moved eval_full **52,432 → 49,691 cyc/eval (−5.2% of eval, ~−1% of
+  total cyc/move)** — far less than host-timing's 12.9%. eval is ~20% of cyc/move,
+  and the valuable terms (mobility +41, passed pawns) can't be cut, so the whole
+  realistic eval-strip is **~8-10% of total** — real, worth doing as a batch, but
+  not the 16x closer.
+- **Quiescence is the dominant lever — and delta-pruning is Elo-tapped.** Measured
+  q/main = **3.20** (29,088 qnodes vs 9,093 main at d4). Tightening delta_margin
+  200→100 cuts qnodes ~12% but was already measured at **−29 Elo** (too blunt). So
+  the lever is **SEE (static exchange evaluation)**: prune/early-out captures that
+  lose material *precisely*, where delta's victim+margin heuristic can't. SEE also
+  sharpens move ordering (fewer main nodes). This is the highest-value remaining
+  move and it does NOT cost the eval's quality.
+
+**Revised lever order:** (1) **SEE in quiescence + ordering** (the 3.2x node
+explosion — biggest, Elo-safe); (2) eval-strip batch (king_safety free, then
+king_pins + dead weight-0 terms + pawn_structure trim, ~−8-10%, one asm re-derive);
+(3) incremental survivors; (4) forward pruning. Honest near-term target: 321M →
+**~150-200M cyc/move** (= d5 at the old d4 clock, +~100 Elo). Colossus's 20M is a
+sustained program, not one phase.
+
 **Phase 1 — strip the eval.** Remove the dead-weight terms (Phase 0's cut list),
 keeping material + PST + whatever survives a cost/Elo test. Target: full eval 28k →
 ~10-12k cyc; widen the lazy-eval margin so fewer nodes pay full eval at all.
