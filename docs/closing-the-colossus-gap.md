@@ -62,6 +62,28 @@ histogram already localizes warm spots) and cross with the per-term Elo from the
 tuning history. Output: a ranked "cost vs Elo" table. Cut candidates = expensive +
 low/zero Elo.
 
+### P0 RESULTS (measured 2026-06-19)
+
+Per-term eval cost (host toggle-timing, 4000 positions; host *under*-weights the
+ray-scan terms, which are worse on the 6502) crossed with value (Texel-MSE delta
+when the term's weights are zeroed, on the 375k quiet set):
+
+| term | % of eval cost | MSE when zeroed | verdict |
+|---|---:|---|---|
+| pawn_structure | 25.5% | — (mixed: passed real, conn/prot/iso rejected) | split: keep passed, cut rest |
+| mobility | 17.9% | real (+41 Elo historically) | keep, cheapen |
+| **king_safety** | **12.9%** | **0.01467532 → 0.01467532 (IDENTICAL)** | **CUT — zero value, pure dead weight** |
+| king_pins | 13.1% | 0.01467532 → 0.01472589 (small +value) | test-then-cut (search handles pins) |
+| minor_pressure | 6.8% | small +value | test |
+| pawn/queen_pressure, knight_outpost, seventh_rank, bishop_pair, advanced_pawn | <2% each | mostly weight-0 (bishop_pair real) | cut dead ones (low priority, cheap) |
+| **all positional** | **78.2%** | | material+PST is only 22% of eval |
+
+Headline: **king_safety is ~13% of eval cost for exactly zero eval value** (MSE
+identical when zeroed — it both tested neutral in games AND contributes nothing to
+static accuracy). It is the immediate free cut. king_pins is another ~13% for
+trivial static value that the tactical search likely makes redundant at d4.
+Cutting both ≈ a quarter of eval cost (more on the 6502, ray-heavy) for ~zero Elo.
+
 **Phase 1 — strip the eval.** Remove the dead-weight terms (Phase 0's cut list),
 keeping material + PST + whatever survives a cost/Elo test. Target: full eval 28k →
 ~10-12k cyc; widen the lazy-eval margin so fewer nodes pay full eval at all.
