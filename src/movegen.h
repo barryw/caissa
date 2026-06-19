@@ -10,6 +10,12 @@
 /* Is square `sq` (0x88) attacked by side `by_white` (1=white,0=black)? */
 int is_square_attacked(const Board *b, int sq, int by_white);
 
+/* Static exchange evaluation: net material swing (centipawns, SEE values
+ * P=100 N=B=300 R=500 Q=900) of the capture move `m` on its target square,
+ * assuming both sides recapture with the least-valuable attacker (X-rays
+ * included). Negative => the capture loses material. */
+int see(const Board *b, Move m);
+
 /* Is the side to move currently in check? */
 int in_check(const Board *b);
 

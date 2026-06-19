@@ -123,6 +123,127 @@ int is_square_attacked(const Board *b, int sq, int by_white) {
 }
 #endif /* !CREF_ASM_IS_SQUARE_ATTACKED */
 
+/* ---- static exchange evaluation (SEE) ----------------------------------- */
+/* Classic swap-list SEE. Values are SEE-conventional (not the tuned eval
+ * material), pawn-anchored, so the prune decision is robust. */
+static const int SEE_VAL[7] = { 0, 100, 300, 300, 500, 900, 10000 };
+
+/* Least-valuable attacker of `sq` by side `by_white`, skipping squares already
+ * marked in `used[]` (so a slider X-raying through a removed attacker is
+ * revealed). Returns the attacker's 0x88 square (-1 if none); *val gets its
+ * SEE value. Pawn (100) is the cheapest possible, so it short-circuits. */
+static int see_lva(const Board *b, int sq, int by_white,
+                   const unsigned char *used, int *val) {
+    uint8_t cm = by_white ? WHITE_FLAG : 0;
+    int best_sq = -1, best = 1 << 30, i;
+    /* pawns */
+    int pa = by_white ? sq + 15 : sq - 15;
+    int pb = by_white ? sq + 17 : sq - 17;
+    int ps[2] = { pa, pb };
+    for (i = 0; i < 2; i++) {
+        int t = ps[i];
+        if (OFFBOARD(t) || used[t]) continue;
+        uint8_t p = b->sq[t];
+        if (p && PT(p) == PT_PAWN && (IS_WHITE(p) ? WHITE_FLAG : 0) == cm) {
+            *val = SEE_VAL[PT_PAWN]; return t;        /* cheapest possible */
+        }
+    }
+    /* knights */
+    for (i = 0; i < 8; i++) {
+        int t = sq + KNIGHT_OFF[i];
+        if (OFFBOARD(t) || used[t]) continue;
+        uint8_t p = b->sq[t];
+        if (p && PT(p) == PT_KNIGHT && (IS_WHITE(p) ? WHITE_FLAG : 0) == cm
+            && SEE_VAL[PT_KNIGHT] < best) { best = SEE_VAL[PT_KNIGHT]; best_sq = t; }
+    }
+    /* diagonal sliders (bishop/queen), X-ray through used squares */
+    for (i = 0; i < 4; i++) {
+        int off = BISHOP_OFF[i], t = sq + off;
+        while (!OFFBOARD(t)) {
+            if (used[t]) { t += off; continue; }
+            uint8_t p = b->sq[t];
+            if (p) {
+                int pt = PT(p);
+                if ((pt == PT_BISHOP || pt == PT_QUEEN)
+                    && (IS_WHITE(p) ? WHITE_FLAG : 0) == cm && SEE_VAL[pt] < best) {
+                    best = SEE_VAL[pt]; best_sq = t;
+                }
+                break;
+            }
+            t += off;
+        }
+    }
+    /* orthogonal sliders (rook/queen) */
+    for (i = 0; i < 4; i++) {
+        int off = ROOK_OFF[i], t = sq + off;
+        while (!OFFBOARD(t)) {
+            if (used[t]) { t += off; continue; }
+            uint8_t p = b->sq[t];
+            if (p) {
+                int pt = PT(p);
+                if ((pt == PT_ROOK || pt == PT_QUEEN)
+                    && (IS_WHITE(p) ? WHITE_FLAG : 0) == cm && SEE_VAL[pt] < best) {
+                    best = SEE_VAL[pt]; best_sq = t;
+                }
+                break;
+            }
+            t += off;
+        }
+    }
+    /* king */
+    for (i = 0; i < 8; i++) {
+        int t = sq + KING_OFF[i];
+        if (OFFBOARD(t) || used[t]) continue;
+        uint8_t p = b->sq[t];
+        if (p && PT(p) == PT_KING && (IS_WHITE(p) ? WHITE_FLAG : 0) == cm
+            && SEE_VAL[PT_KING] < best) { best = SEE_VAL[PT_KING]; best_sq = t; }
+    }
+    if (best_sq >= 0) *val = best;
+    return best_sq;
+}
+
+int see(const Board *b, Move m) {
+    int to = m.to, from = m.from, i;
+    uint8_t aggressor = b->sq[from];
+    int gain[32], d = 0;
+    unsigned char used[128];
+    int attacker_val, agg_white, next_white;
+    for (i = 0; i < 128; i++) used[i] = 0;
+
+    if (m.flags & MF_EP) {
+        gain[0] = SEE_VAL[PT_PAWN];
+        used[(from & 0x70) | (to & 0x07)] = 1;        /* ep-captured pawn */
+    } else {
+        gain[0] = SEE_VAL[PT(b->sq[to])];
+    }
+    used[from] = 1;                                    /* aggressor leaves `from` */
+    attacker_val = SEE_VAL[PT(aggressor)];             /* now sits on `to`, at risk */
+    if (m.flags & MF_PROMO) {
+        gain[0] += SEE_VAL[m.promo] - SEE_VAL[PT_PAWN];
+        attacker_val = SEE_VAL[m.promo];
+    }
+    agg_white = IS_WHITE(aggressor) ? 1 : 0;
+    next_white = !agg_white;                           /* opponent recaptures next */
+
+    for (;;) {
+        int a, bb, sq, v;
+        d++;
+        gain[d] = attacker_val - gain[d - 1];
+        a = -gain[d - 1]; bb = gain[d];
+        if ((a > bb ? a : bb) < 0) break;              /* max(-gain[d-1],gain[d])<0 */
+        sq = see_lva(b, to, next_white, used, &v);
+        if (sq < 0) break;
+        used[sq] = 1;
+        attacker_val = v;
+        next_white = !next_white;
+    }
+    while (--d) {
+        int a = -gain[d - 1], bb = gain[d];
+        gain[d - 1] = -(a > bb ? a : bb);
+    }
+    return gain[0];
+}
+
 /* ---- in_check ----------------------------------------------------------- */
 int in_check(const Board *b) {
     /* Side to move's king is attacked by the opponent. */

@@ -131,6 +131,7 @@ void search_reset_config(void) {
                               * neutral-or-better (1400-game self-play ~+12 Elo for 80,
                               * within noise). Coarser quiescence stand-pat, not the
                               * root/PV eval, so eval QUALITY where it matters is intact. */
+    g_sc.see = 0;            /* quiescence SEE pruning: off by default (bit-exact). */
 }
 
 void search_set_budget(long nodes) { g_node_budget = nodes; }
@@ -299,6 +300,11 @@ static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
             if (best + MVV[victim] + g_sc.delta_margin <= alpha)
                 continue;
         }
+        /* SEE pruning: out of check, skip a capture that loses material outright
+         * (the recapture sequence nets negative). More precise than delta's
+         * victim+margin heuristic -- kills losing captures delta keeps. */
+        if (g_sc.see && !check && !(list[i].flags & MF_PROMO) && see(b, list[i]) < 0)
+            continue;
         make_move(b, list[i], &u);
         score = -quiesce(b, -beta, -alpha, ply + 1, qd + 1);
         unmake_move(b, list[i], &u);
