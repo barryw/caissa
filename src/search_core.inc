@@ -688,7 +688,9 @@ Move search_bestmove(const Board *b, int depth,
     memset(tt, 0, sizeof(tt));
 #endif
     memset(&g_info, 0, sizeof(g_info));
-    g_info.depth = depth;
+    g_info.depth = 0;   /* last COMPLETED iteration depth (set in the ID loop below);
+                         * under a node budget the requested depth is 64 but only a few
+                         * plies finish -- the harness needs the depth actually reached. */
 
     rep_base = 0;
     if (hist && hist_len > 0) {
@@ -741,6 +743,7 @@ Move search_bestmove(const Board *b, int depth,
         if (g_stop) break;          /* budget hit mid-iteration -> discard it */
         best = local_move;
         best_score = local_best;
+        g_info.depth = d;           /* this iteration completed in full */
         if (best_score > MATE_THRESHOLD || best_score < -MATE_THRESHOLD) break;
     }
 

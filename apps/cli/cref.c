@@ -155,6 +155,21 @@ static int build_search(SearchConfig *out, const char *spec) {
     return 0;
 }
 
+/* ---- node-budget measurement control ------------------------------------
+ * CAISSA_NODE_BUDGET (a long; 0/unset/invalid = unlimited) caps every search at
+ * the same nodes/move so the full-width and selective builds can be compared in
+ * the regime a stock 1 MHz C64 actually plays in (Task 6, THE GATE). This is a
+ * MEASUREMENT control for BOTH builds -- it is NOT selective-specific, so it is
+ * deliberately NOT guarded by CREF_SEARCH_SELECTIVE. cref is the measurement CLI
+ * (not linked into the shipping c64/server binaries), and the host gate runs
+ * cref_mos with this env UNSET, so golden moves are unchanged. */
+static long env_node_budget(void) {
+    const char *e = getenv("CAISSA_NODE_BUDGET");
+    if (!e || !*e) return 0;
+    long n = atol(e);
+    return n > 0 ? n : 0;
+}
+
 /* ---- material adjudication (white-POV cp) ------------------------------ */
 static int material_cp(const Board *b) {
     static const int val[7] = {0, 100, 320, 330, 500, 900, 0};
@@ -314,6 +329,7 @@ static int cmd_selfplay(int argc, char **argv) {
     }
     if (depth_a < 0) depth_a = depth;
     if (depth_b < 0) depth_b = depth;
+    { long env_b = env_node_budget(); if (env_b) node_budget = env_b; }   /* env wins (measurement control) */
     if (node_budget) { depth_a = depth_b = 64; }   /* budget-bound: let ID run deep */
 
     EvalWeights wa, wb;
@@ -401,6 +417,7 @@ static int cmd_bestmove(const char *fen, int depth, long nodes,
     if (build_weights(&g_w, wspec)) return 2;   /* baseline, then optional overrides */
     eval_sync_tables();   /* build_weights overrode g_w after reset -> resync */
     if (build_search(&g_sc, scfg)) return 2;    /* defaults, then optional overrides */
+    { long env_b = env_node_budget(); if (env_b) nodes = env_b; }   /* env wins (measurement control) */
     search_set_budget(nodes);
     if (nodes) depth = 64;            /* budget-bound: let ID run deep */
     SearchInfo info;
