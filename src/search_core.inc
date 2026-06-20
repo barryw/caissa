@@ -596,6 +596,22 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
         make_move(b, list[i], &u);
         gives_check = in_check(b);
         is_quiet = !(list[i].flags & (MF_CAPTURE | MF_EP | MF_PROMO));
+#if defined(CREF_SEARCH_SELECTIVE)
+        /* Plausibility forward-pruning: past the per-depth quiet-move cap, search only
+         * forcing moves (captures/promos are already excluded by is_quiet; checks are
+         * kept via !gives_check). Quiet, non-checking moves ranked beyond the cap are
+         * hard-pruned -- the narrow-and-deep trade that reaches useful depth at 1 MHz.
+         * Never at the root (ply 0); never before at least one move has been searched
+         * (the best_val guard => >=1 move always searched => a move is always returned);
+         * never in shallow nodes (sel_min_depth keeps them wide). With the default
+         * sel_width[]=9999 (no-prune) this never fires, so selective stays node-exact to
+         * full-width until a schedule is set. */
+        if (ply > 0 && depth > g_sc.sel_min_depth && is_quiet && !gives_check &&
+            i >= sel_width(depth) && best_val > -SEARCH_INF) {
+            unmake_move(b, list[i], &u);
+            continue;
+        }
+#endif
         nd = depth - 1;
         if (g_sc.lmr && depth >= 3 && i >= 3 && is_quiet && !gives_check &&
             best_val > -SEARCH_INF) {

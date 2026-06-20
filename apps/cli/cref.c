@@ -107,8 +107,35 @@ static int set_search(SearchConfig *s, const char *key, int val) {
     return -1;
 }
 
+#if defined(CREF_SEARCH_SELECTIVE)
+/* Optional env override of the selective forward-prune schedule, so a width
+ * schedule can be tuned without recompiling. Applied AFTER search_reset_config()
+ * (which sets the 9999 no-prune defaults) so it wins. Unset env => no-op =>
+ * defaults stay => selective is node-exact to full-width. CAISSA_SEL_WIDTH is up
+ * to 8 comma-separated ints into g_sc.sel_width[0..7] (fewer keep the default for
+ * the rest; extras ignored). CAISSA_SEL_MIN_DEPTH is a single int into
+ * g_sc.sel_min_depth. */
+static void apply_sel_env(void) {
+    const char *w = getenv("CAISSA_SEL_WIDTH");
+    if (w && *w) {
+        char buf[128];
+        strncpy(buf, w, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = 0;
+        int k = 0;
+        for (char *tok = strtok(buf, ","); tok && k < 8; tok = strtok(NULL, ","))
+            g_sc.sel_width[k++] = atoi(tok);
+    }
+    const char *m = getenv("CAISSA_SEL_MIN_DEPTH");
+    if (m && *m)
+        g_sc.sel_min_depth = atoi(m);
+}
+#endif
+
 static int build_search(SearchConfig *out, const char *spec) {
     search_reset_config();
+#if defined(CREF_SEARCH_SELECTIVE)
+    apply_sel_env();
+#endif
     *out = g_sc;
     if (!spec || !*spec) return 0;
     char buf[512];
