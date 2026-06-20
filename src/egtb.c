@@ -72,10 +72,12 @@ static unsigned char egtb_read(unsigned long off) {
     return val;
 }
 void egtb_set_data(const unsigned char *blob) { (void)blob; }   /* REU build: tables preloaded */
+#define egtb_ready() 1
 #else
 static const unsigned char *g_egtb = 0;            /* host flat copy of egtb_tables.bin */
 void egtb_set_data(const unsigned char *blob) { g_egtb = blob; }
-static unsigned char egtb_read(unsigned long off) { return g_egtb ? g_egtb[off] : 0; }
+static unsigned char egtb_read(unsigned long off) { return g_egtb[off]; }
+#define egtb_ready() (g_egtb != 0)                 /* inert until the .bin is loaded */
 #endif
 
 /* ---- probe ---- */
@@ -83,6 +85,7 @@ int egtb_probe(const Board *b, int ply, int *score) {
     int i, npieces = 0, strong_sq88 = -1;
     int combo = -1;   /* 0=KQK 1=KRK 2=KPK */
     unsigned long base = 0;
+    if (!egtb_ready()) return 0;   /* tables not loaded -> inert (NOT a draw) */
     /* gate: exactly 3 men, find the non-king piece */
     for (i = 0; i < 128; i++) {
         if (i & 0x88) continue;
