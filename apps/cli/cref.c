@@ -122,8 +122,10 @@ static void apply_sel_env(void) {
         strncpy(buf, w, sizeof(buf) - 1);
         buf[sizeof(buf) - 1] = 0;
         int k = 0;
-        for (char *tok = strtok(buf, ","); tok && k < 8; tok = strtok(NULL, ","))
-            g_sc.sel_width[k++] = atoi(tok);
+        for (char *tok = strtok(buf, ","); tok && k < CREF_SEL_WIDTH_N; tok = strtok(NULL, ",")) {
+            int v = atoi(tok);
+            g_sc.sel_width[k++] = v < 1 ? 9999 : v;   /* malformed/0/negative => no prune (fail safe) */
+        }
     }
     const char *m = getenv("CAISSA_SEL_MIN_DEPTH");
     if (m && *m)

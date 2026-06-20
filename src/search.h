@@ -22,6 +22,11 @@ typedef struct {
     Move best;
 } SearchInfo;
 
+/* Selective search width-schedule length (indexed by remaining depth; deeper depths
+ * clamp to the last slot). One constant so the struct field, the reset loop, the
+ * clamp, and the env parser stay in lockstep. */
+#define CREF_SEL_WIDTH_N 8
+
 /* Search-feature toggles (the A/B knobs, analogous to EvalWeights). Defaults
  * (search_reset_config) reproduce the baseline search exactly, so an all-default
  * A vs B self-play is 50%. Each feature is measured by flipping one toggle. */
@@ -46,7 +51,7 @@ typedef struct {
      * the max number of QUIET moves searched at remaining-depth d (forcing moves --
      * captures/promos/checks -- are always searched). Index clamped to the array. A
      * huge value = no prune = identical to full-width. */
-    int sel_width[8];
+    int sel_width[CREF_SEL_WIDTH_N];
     int sel_min_depth;   /* don't prune when depth <= this (keep shallow nodes wide) */
 #endif
 } SearchConfig;

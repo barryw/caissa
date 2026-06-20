@@ -256,7 +256,7 @@ void search_reset_config(void) {
     g_sc.see = 1;            /* quiescence SEE pruning: on (Elo-neutral @800g d4). */
     g_sc.see_order = 1;      /* main-search SEE move ordering: on (Elo-neutral @800g d4). */
 #if defined(CREF_SEARCH_SELECTIVE)
-    { int k; for (k = 0; k < 8; k++) g_sc.sel_width[k] = 9999; }
+    { int k; for (k = 0; k < CREF_SEL_WIDTH_N; k++) g_sc.sel_width[k] = 9999; }
     g_sc.sel_min_depth = 0;
 #endif
 }
@@ -268,7 +268,7 @@ static const int MVV[7] = {0, 100, 320, 330, 500, 900, 20000};
 
 #if defined(CREF_SEARCH_SELECTIVE)
 static int sel_width(int depth) {
-    int d = depth; if (d < 0) d = 0; if (d > 7) d = 7;
+    int d = depth; if (d < 0) d = 0; if (d > CREF_SEL_WIDTH_N - 1) d = CREF_SEL_WIDTH_N - 1;
     return g_sc.sel_width[d];
 }
 #endif
