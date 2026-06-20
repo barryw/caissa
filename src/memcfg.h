@@ -63,6 +63,20 @@
 #  define CREF_POOL_SIZE   768
 #  define CREF_LAZY_SELECT   0    /* eager in-place ordering (bit-exact, frees RAM) */
 
+#elif defined(CREF_PROFILE_REU)
+/* C64 + RAM Expansion Unit (1764/1750/1700+). The transposition table lives in the
+ * REU via $DF00 DMA (CREF_TT_XRAM + CREF_TT_REU), so the big TT costs ZERO low RAM
+ * -> the stock 64K build fits with lazy ordering kept, and TT_BITS rises to 14 (16K
+ * entries = 192 KB REU). Measured: ~-25% nodes at d6, access penalty ~0.15% of
+ * cyc/move -> net ~-25% cyc/move (grows with depth). MAX_PLY 8 -> d7. */
+#  define CREF_TT_XRAM       1
+#  define CREF_TT_REU        1
+#  define CREF_TT_BITS      14    /* 16K-entry TT in the REU (192 KB) */
+#  define CREF_MAX_PLY       8    /* d7 ~2013 */
+#  define CREF_MAX_PATH     64
+#  define CREF_HISTORY_DIM   1
+#  define CREF_POOL_SIZE   768
+
 #elif defined(CREF_PROFILE_NOVA)
 /* Mirrors C64 for now -- see the XRAM caveat above. The larger values these will
  * take once XRAM placement exists are left commented as the target:
@@ -99,6 +113,16 @@
  * fall back to eager in-place ordering (bit-exact, just sorts the whole list). */
 #ifndef CREF_LAZY_SELECT
 #  define CREF_LAZY_SELECT 1
+#endif
+
+/* TT off-address-space backing (Nova XRAM / C64 REU). Default off: the TT is a flat
+ * in-RAM array. A profile sets CREF_TT_XRAM (copy entries in/out) and CREF_TT_REU
+ * (the $DF00 DMA accessor) to host a >64K TT. */
+#ifndef CREF_TT_XRAM
+#  define CREF_TT_XRAM 0
+#endif
+#ifndef CREF_TT_REU
+#  define CREF_TT_REU 0
 #endif
 
 #endif /* CREF_MEMCFG_H */

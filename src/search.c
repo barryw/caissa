@@ -53,10 +53,36 @@ typedef struct {
  * backing here is the VALIDATION shim (proves the in/out logic is bit-exact on the
  * flat mos-sim core); the real REU/Nova accessors swap memcpy for DMA/window. */
 #if CREF_TT_XRAM
-static TTEntry tt_x[TT_SIZE];   /* validation backing (flat); real build = XRAM */
+#  if CREF_TT_REU
+/* C64 REU (1764/1750) DMA backing: the TT lives in the RAM Expansion Unit; each
+ * probe/store copies one entry between a C64 scratch and REU[idx*sizeof] via the
+ * $DF00 DMA controller (CPU halts ~sizeof cycles per transfer). $DF01 commands:
+ * $91 = fetch REU->C64, $90 = stash C64->REU (bit7 execute, bit4 immediate). */
+#define REU_REG ((volatile unsigned char *)0xDF00)
+static void reu_xfer(const void *c64, unsigned long reu, unsigned len, unsigned char cmd) {
+    unsigned a = (unsigned)c64;
+    REU_REG[0x02] = (unsigned char)a;          REU_REG[0x03] = (unsigned char)(a >> 8);
+    REU_REG[0x04] = (unsigned char)reu;        REU_REG[0x05] = (unsigned char)(reu >> 8);
+    REU_REG[0x06] = (unsigned char)(reu >> 16);
+    REU_REG[0x07] = (unsigned char)len;        REU_REG[0x08] = (unsigned char)(len >> 8);
+    REU_REG[0x0A] = 0;                          /* increment both C64 and REU addrs */
+    REU_REG[0x01] = cmd;                        /* execute */
+}
+static inline void tt_xram_load(unsigned i, TTEntry *d)
+    { reu_xfer(d, (unsigned long)i * sizeof(TTEntry), sizeof(TTEntry), 0x91); }
+static inline void tt_xram_store(unsigned i, const TTEntry *s)
+    { reu_xfer(s, (unsigned long)i * sizeof(TTEntry), sizeof(TTEntry), 0x90); }
+static void tt_xram_clear(void) {                 /* zero all entries (REU has no fill) */
+    static const TTEntry zero = {0, {0,0,0,0}, 0, 0, 0};
+    unsigned i;
+    for (i = 0; i < TT_SIZE; i++) tt_xram_store(i, &zero);
+}
+#  else
+static TTEntry tt_x[TT_SIZE];   /* validation backing (flat); real build = REU/XRAM */
 static inline void tt_xram_load(unsigned i, TTEntry *d)        { *d = tt_x[i]; }
 static inline void tt_xram_store(unsigned i, const TTEntry *s) { tt_x[i] = *s; }
 static inline void tt_xram_clear(void) { memset(tt_x, 0, sizeof(tt_x)); }
+#  endif
 #else
 static TTEntry tt[TT_SIZE];
 #endif
