@@ -53,11 +53,55 @@ config, regression corpus):
   accesses vs ~18K saved expensive nodes ⇒ the penalty is negligible on **both**
   Nova windowed XRAM and C64 REU DMA.
 - The cut **grows with depth** (more transpositions) — biggest exactly at the d7/d8
-  the 64 MHz Ultimate / fast HW reaches. Knee at **TT14 (16K entries ≈ 192 KB)**,
-  fits Nova 512K and any REU.
+  the 64 MHz Ultimate / fast HW reaches. Default **TT14 (16K entries ≈ 192 KB)** is
+  the universal-REU-safe floor; bigger REUs gain another −10 % (TT15) to −20 % (TT18)
+  at d7 — see "Measured payoff" below for the size sweep.
 
 Net: **~−25 % cyc/move at d6**, recovering the TT7 fit-tax and adding more on top
 → shallower-time-to-depth → more Elo on fast hardware.
+
+## Measured payoff on THIS engine (2026-06-20) — node counts (host == 6502, bit-exact)
+The numbers above were a host estimate; these are measured on cref over 50 self-play
+**midgame** positions. (`cyc/node` is ~flat, so node% ≈ cyc% ≈ time%; the per-access
+DMA penalty is ~0.15%.)
+
+**REU TT14 vs the Ultimate's flat TT7** — the real win of putting the TT in the REU:
+
+| depth | TT7 nodes | TT14 nodes | reduction |
+|---|---|---|---|
+| d4 | 251 820 | 195 925 | **−22.2 %** |
+| d5 | 933 181 | 703 146 | **−24.7 %** |
+| d6 | 3 308 485 | 2 248 099 | **−32.1 %** |
+
+Grows with depth (more transpositions deeper) — biggest exactly where the 64 MHz
+Ultimate plays.
+
+**TT-size sweep @ d7 (vs TT14), midgame** — how big a REU is worth it:
+
+| TT | REU (12 B/entry) | d7 nodes vs TT14 | marginal/doubling |
+|---|---|---|---|
+| TT15 | 384 KB | **−10.2 %** | −10.2 % |
+| TT16 | 768 KB | **−13.9 %** | −4.2 % |
+| TT17 | 1.5 MB | −16.7 % | −3.3 % |
+| TT18 | 3 MB | −20.3 % | −4.2 % |
+
+Big jump at TT14→TT15, then ~3–4 %/doubling. The `tt_xram_clear` cost (TT_SIZE DMA
+stores/move) stays negligible vs the node savings even at TT18.
+
+⚠ **Midgame-only.** The sparse endgame corpus is already **saturated at TT14**
+(~0 % from TT15/16) — few distinct positions. Most of a real game is midgame, so it
+is a genuine play lever.
+
+### Sizing guidance (which TT for which REU)
+- `CREF_PROFILE_REU` ships **TT14** = universal-safe: fits a 256 KB 1764, validated
+  move+node bit-exact in `x64sc -reu` at d4/d5/d6 + a full 30-move game.
+- Bigger REUs override the (`#ifndef`-guarded) knob:
+  - **512 KB 1750** → `-DCREF_TT_BITS=15` (`-reusize 512`): **−10 % nodes @ d7**.
+    Validated move+node bit-exact in `x64sc -reu -reusize 512` (10 midgame @ d5).
+  - **Ultimate 64 (large REU)** → `-DCREF_TT_BITS=16` (`-reusize 1024`): −14 % @ d7.
+- No separate "Ultimate+REU" profile is needed: `CREF_PROFILE_REU` already sets
+  MAX_PLY 8, so `CREF_PROFILE_REU -DCREF_TT_BITS=16` on the Ultimate IS the flagship
+  config (64 MHz + a big REU TT).
 
 ## The abstraction (DONE, bit-exact — `src/search.c`)
 TT access is wrapped so any backing plugs in. The flat default keeps direct entry
