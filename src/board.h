@@ -107,4 +107,9 @@ hash_t board_zobrist(const Board *b);   /* full recompute (for verify) */
 int move_from_uci(const Board *b, const char *uci, Move *out);
 void move_to_uci(Move m, char *out);      /* out >= 6 bytes */
 
+/* 1 if the side to move has at least one legal move (else mate/stalemate -- use
+ * in_check() to disambiguate). Reuses the engine's internal move scratch, so the
+ * caller needs no MAX_MOVES buffer of its own. */
+int board_any_legal_move(const Board *b);
+
 #endif

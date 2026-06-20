@@ -1,5 +1,5 @@
 /* c64chess.c -- minimal playable Commodore 64 chess front-end for the native C
- * engine (board.c/movegen.c/eval.c/search.c), compiled with llvm-mos for the
+ * engine (board.c/movegen.c/eval.c/search_fullwidth.c), compiled with llvm-mos for the
  * real c64 target. This is the FIRST integration proving the engine is usable in
  * a real game on a real 6502 -- a text UI over the same engine the speed campaign
  * optimized. The UI is deliberately tiny; the engine is doing all the chess.
@@ -84,12 +84,6 @@ static int read_level(void) {
     return lvl;
 }
 
-/* 1 if the side to move has at least one legal move. */
-static int has_legal_move(const Board *b) {
-    static Move ml[MAX_MOVES];
-    return gen_legal(b, ml) > 0;
-}
-
 int main(void) {
     Board b;
     Undo u;
@@ -108,7 +102,7 @@ int main(void) {
     for (;;) {
         print_board(&b);
 
-        if (!has_legal_move(&b)) {
+        if (!board_any_legal_move(&b)) {
             prints(in_check(&b) ? "checkmate.\n" : "stalemate.\n");
             break;
         }
@@ -126,7 +120,7 @@ int main(void) {
         }
 
         print_board(&b);
-        if (!has_legal_move(&b)) {
+        if (!board_any_legal_move(&b)) {
             prints(in_check(&b) ? "you win -- checkmate.\n" : "stalemate.\n");
             break;
         }

@@ -377,3 +377,10 @@ int move_from_uci(const Board *b, const char *uci, Move *out) {
     }
     return -1;
 }
+
+/* Mate/stalemate test, reusing g_uci_list so callers (e.g. the c64 game UI) need
+ * no MAX_MOVES buffer of their own -- a 256-entry MoveList per caller is real RAM
+ * on the 64K target. */
+int board_any_legal_move(const Board *b) {
+    return gen_legal(b, g_uci_list) > 0;
+}
