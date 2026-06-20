@@ -41,6 +41,14 @@ typedef struct {
                       * = skip the full positional eval more often (faster, coarser) */
     int see;         /* quiescence SEE pruning: skip captures with see()<0 */
     int see_order;   /* main-search move ordering: rank see()<0 captures below quiets */
+#if defined(CREF_SEARCH_SELECTIVE)
+    /* Selective plausibility forward-pruning (search_selective only). sel_width[d] is
+     * the max number of QUIET moves searched at remaining-depth d (forcing moves --
+     * captures/promos/checks -- are always searched). Index clamped to the array. A
+     * huge value = no prune = identical to full-width. */
+    int sel_width[8];
+    int sel_min_depth;   /* don't prune when depth <= this (keep shallow nodes wide) */
+#endif
 } SearchConfig;
 
 extern SearchConfig g_sc;

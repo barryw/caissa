@@ -255,12 +255,23 @@ void search_reset_config(void) {
                               * root/PV eval, so eval QUALITY where it matters is intact. */
     g_sc.see = 1;            /* quiescence SEE pruning: on (Elo-neutral @800g d4). */
     g_sc.see_order = 1;      /* main-search SEE move ordering: on (Elo-neutral @800g d4). */
+#if defined(CREF_SEARCH_SELECTIVE)
+    { int k; for (k = 0; k < 8; k++) g_sc.sel_width[k] = 9999; }
+    g_sc.sel_min_depth = 0;
+#endif
 }
 
 void search_set_budget(long nodes) { g_node_budget = nodes; }
 
 /* MVV-LVA piece values (king as attacker = cheapest pinner avoidance). */
 static const int MVV[7] = {0, 100, 320, 330, 500, 900, 20000};
+
+#if defined(CREF_SEARCH_SELECTIVE)
+static int sel_width(int depth) {
+    int d = depth; if (d < 0) d = 0; if (d > 7) d = 7;
+    return g_sc.sel_width[d];
+}
+#endif
 
 static int eval_stm(const Board *b) {
     int e = eval_full(b);
