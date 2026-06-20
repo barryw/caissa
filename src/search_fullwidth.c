@@ -1,4 +1,9 @@
-/* search.c -- representative reference search (mirrors tools/reference_engine.py).
+/* search_fullwidth.c -- the full-width search plugin (#1) behind the search.h
+ * contract (search_bestmove). Linked on every host EXCEPT the stock C64, which
+ * links search_selective.c instead (see memcfg.h / the pluggable-search design,
+ * docs/plans/2026-06-20-pluggable-search-design.md). This is today's engine moved
+ * VERBATIM under the rename -- the socket extraction is bit-exact (cref/server/
+ * golden are byte-identical to the pre-rename build).
  *
  * Negamax + alpha-beta + quiescence (check-aware, no stand-pat in check) +
  * a small transposition table + MVV-LVA move ordering. The eval (eval_full) is

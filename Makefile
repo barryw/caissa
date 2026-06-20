@@ -17,7 +17,7 @@ PYTHON  ?= python3
 
 SRC     := src
 BUILD   := build
-ENGINE  := $(SRC)/board.c $(SRC)/movegen.c $(SRC)/eval.c $(SRC)/search.c $(SRC)/egtb.c
+ENGINE  := $(SRC)/board.c $(SRC)/movegen.c $(SRC)/eval.c $(SRC)/search_fullwidth.c $(SRC)/egtb.c
 HDRS    := $(wildcard $(SRC)/*.h)
 INC     := -I$(SRC)
 

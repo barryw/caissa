@@ -10,9 +10,9 @@ Run this to RE-BLESS golden ONLY after an INTENTIONAL behavior change (then
 re-measure Elo: NATIVE_CREF=tools/llvmmos_bench/caissa_cli
 python3 tools/native_vs_stockfish.py --native-depth 6 --sf-elo 1700 ...).
 
-Prereq: native/cref_mos built
-  clang -O3 -D__mos__ native/board.c native/movegen.c native/eval.c \
-        native/search.c native/cref.c -o native/cref_mos
+Prereq: /tmp/cref_mos built (tools/llvmmos_bench/build_caissa.sh does this):
+  cc -O3 -D__mos__ src/board.c src/movegen.c src/eval.c \
+     src/search_fullwidth.c src/egtb.c apps/cli/cref.c -o /tmp/cref_mos -lm
 """
 import subprocess
 from pathlib import Path

@@ -25,7 +25,7 @@ ASM="-DCREF_ASM_IS_SQUARE_ATTACKED $N/is_square_attacked_6502.s \
 "$LM/mos-c64-clang" -Os -I "$N" \
     -DCREF_PROFILE_ULTIMATE \
     $ASM \
-    "$N/board.c" "$N/movegen.c" "$N/eval.c" "$N/search.c" "$UI/c64chess.c" \
+    "$N/board.c" "$N/movegen.c" "$N/eval.c" "$N/search_fullwidth.c" "$UI/c64chess.c" \
     -o "$OUT" -Wl,-Map="${OUT%.prg}.map"
 
 size=$(wc -c < "$OUT")

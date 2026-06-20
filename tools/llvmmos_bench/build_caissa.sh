@@ -25,7 +25,10 @@ SIMCC="$LLVM_MOS/bin/mos-sim-clang"
 DEPTH="${1:-4}"
 FENLIST="${2:-/tmp/fenlist.txt}"
 
-CORE="$NATIVE/board.c $NATIVE/movegen.c $NATIVE/eval.c $NATIVE/search.c"
+# egtb.c is required: apps/cli/cref.c references egtb_set_data (the host EGTB loader),
+# so cref_mos and the mos-sim image fail to link without it. Under the 6502/__mos__
+# profile CREF_EGTB=0, so egtb.c compiles to inert stubs -> the image stays bit-exact.
+CORE="$NATIVE/board.c $NATIVE/movegen.c $NATIVE/eval.c $NATIVE/search_fullwidth.c $NATIVE/egtb.c"
 
 REPO="$HERE/../.."
 echo ">> [1/5] host gates (perft + eval bit-exact) must stay green"

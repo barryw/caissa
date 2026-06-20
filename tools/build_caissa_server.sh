@@ -41,7 +41,7 @@ fi
 
 # shellcheck disable=SC2086
 "$LM/mos-c64-clang" -Os -I "$N" $ASM $DEFS \
-    "$N/board.c" "$N/movegen.c" "$N/eval.c" "$N/search.c" $EGTB_SRC "$UI/caissa_server.c" \
+    "$N/board.c" "$N/movegen.c" "$N/eval.c" "$N/search_fullwidth.c" $EGTB_SRC "$UI/caissa_server.c" \
     -o "$OUT" -Wl,-Map="${OUT%.prg}.map"
 
 size=$(wc -c < "$OUT")
