@@ -31,9 +31,13 @@ ASM="-DCREF_ASM_IS_SQUARE_ATTACKED $N/is_square_attacked_6502.s \
 # game does not need. This + board_any_legal_move() reclaiming the UI's 256-move
 # buffer is what keeps the full interactive game inside the stock c64's 64K. (The
 # Ultimate profile already sets this for the same reason.)
-# SEARCH=fullwidth (default) | selective -- which search plugin to link. The stock
-# 1 MHz C64 is the selective search's eventual home (SEARCH=selective), once Phase 2
-# lands; both plugin TUs #include search_core.inc.
+# SEARCH=fullwidth (default) | selective -- which search plugin to link. NOTE: the
+# selective build does NOT currently FIT the stock c64 game: full-width is already at
+# ~513 B RAM free and the selective code overflows by ~831 B. Shipping selective here
+# needs a RAM-budget pass (e.g. a smaller TT) -- and that is an UNMEASURED config (the
+# +11 Elo was at a fixed node budget; the game plays fixed depth), so it is deferred to
+# a follow-up rather than forced. The selective plugin is tuned + buildable elsewhere
+# (cref / server via SEARCH=selective). Both plugin TUs #include search_core.inc.
 SEARCH_SRC="$N/search_${SEARCH:-fullwidth}.c"
 # A selective build must define CREF_SEARCH_SELECTIVE for EVERY engine TU (shared
 # SearchConfig ABI in src/search.h), so it comes from -D, not a #define in one .c.
