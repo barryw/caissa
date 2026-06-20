@@ -41,8 +41,25 @@ typedef struct {
 
 /* No _Thread_local: cc65 has no threads (6502), and host parallelism is fork()-
  * based (separate processes), so plain file-scope statics are correct -- each
- * process gets its own copy. One game runs per process; no locking needed. */
+ * process gets its own copy. One game runs per process; no locking needed.
+ *
+ * CREF_TT_XRAM: a >64K transposition table lives off the 6502's 16-bit address
+ * space (Nova 512K windowed XRAM / C64 REU DMA), accessed by copying one entry
+ * in/out of a scratch via the platform's tt_xram_load/store/clear. Measured win:
+ * a TT14 (16K entries) cuts ~25% of nodes at d6; the per-access window/DMA penalty
+ * (~30 cyc x ~48K accesses/move = ~1.4M cyc) is ~0.15% of cyc/move -- negligible
+ * vs the ~311M cyc the node cut saves. The DEFAULT (flat) path below keeps direct
+ * entry pointers: zero-copy, byte-identical to the original. The copy-through
+ * backing here is the VALIDATION shim (proves the in/out logic is bit-exact on the
+ * flat mos-sim core); the real REU/Nova accessors swap memcpy for DMA/window. */
+#if CREF_TT_XRAM
+static TTEntry tt_x[TT_SIZE];   /* validation backing (flat); real build = XRAM */
+static inline void tt_xram_load(unsigned i, TTEntry *d)        { *d = tt_x[i]; }
+static inline void tt_xram_store(unsigned i, const TTEntry *s) { tt_x[i] = *s; }
+static inline void tt_xram_clear(void) { memset(tt_x, 0, sizeof(tt_x)); }
+#else
 static TTEntry tt[TT_SIZE];
+#endif
 
 /* repetition: game history copied in, search path pushed on top (MAX_PATH in search.h) */
 static hash_t rep[MAX_PATH];
@@ -348,7 +365,14 @@ static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
 
 static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
     int alpha_orig = alpha;
-    TTEntry *e = &tt[b->hash & TT_MASK];
+    unsigned tt_idx = (unsigned)(b->hash & TT_MASK);
+#if CREF_TT_XRAM
+    TTEntry te;                 /* this node's entry: copied in below, flushed at store */
+    TTEntry *e = &te;
+    tt_xram_load(tt_idx, e);
+#else
+    TTEntry *e = &tt[tt_idx];
+#endif
     Move tt_move = {0, 0, 0, 0};
     Move *list;                  /* allocated from the shared pool below */
     int *scores;                 /* parallel slice of g_score_pool (lazy order) */
@@ -493,6 +517,9 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
     e->depth = depth;
     e->flag = (best_val <= alpha_orig) ? TT_UPPER :
               (best_val >= beta)       ? TT_LOWER : TT_EXACT;
+#if CREF_TT_XRAM
+    tt_xram_store(tt_idx, e);   /* flush this node's entry back to XRAM */
+#endif
     return best_val;
 }
 
@@ -503,7 +530,11 @@ Move search_bestmove(const Board *b, int depth,
     int best_score = 0;
     int d;
 
+#if CREF_TT_XRAM
+    tt_xram_clear();
+#else
     memset(tt, 0, sizeof(tt));
+#endif
     memset(&g_info, 0, sizeof(g_info));
     g_info.depth = depth;
 
