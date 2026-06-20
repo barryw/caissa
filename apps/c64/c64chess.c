@@ -23,9 +23,15 @@ static void prints(const char *s) { while (*s) putchar(*s++); }
 
 #define START_FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
-/* Engine strength/speed dial. d3 is ~minutes/move on a real 1MHz c64; keep it
- * low for a usable demo (the search is the slow part, not the UI). */
-#define ENGINE_DEPTH 3
+/* Engine strength/speed dial, chosen at startup (read_level). Each ply is
+ * ~+100-150 Elo but costs ~3-4x the cycles. Approx strength vs search depth
+ * (measured, cref_mos vs Stockfish): d2~1461 d3~1605 d4~1753 d5~1850 d6~1942.
+ * Per-move time scales with the host clock -- on a stock 1 MHz c64 d3 is already
+ * minutes/move, but on a 64 MHz Ultimate 64 d6 is ~19 s/move and on a 12 MHz
+ * Nova d4-d5 is seconds. So the player picks the level to match their machine.
+ * MAX_PLY (memcfg, =7 on the c64 profile) caps this at 6. */
+#define ENGINE_DEPTH_DEFAULT 4
+#define ENGINE_DEPTH_MAX 6
 
 static const char PIECE_CH[7] = { '.', 'P', 'N', 'B', 'R', 'Q', 'K' };
 
@@ -66,6 +72,18 @@ static int read_move(char *buf) {
     return n;
 }
 
+/* Ask the player for a search level (1..ENGINE_DEPTH_MAX). The first digit typed
+ * wins; anything else (e.g. a bare RETURN) keeps the default. Higher = stronger
+ * and slower -- match it to how fast your machine is. */
+static int read_level(void) {
+    int c, lvl = ENGINE_DEPTH_DEFAULT;
+    prints("level 1-6 (6=~1942 elo, fast machine)? ");
+    c = getchar();
+    if (c >= '1' && c <= ('0' + ENGINE_DEPTH_MAX)) lvl = c - '0';
+    while (c != '\n' && c != '\r' && c != EOF) c = getchar();   /* drain line */
+    return lvl;
+}
+
 /* 1 if the side to move has at least one legal move. */
 static int has_legal_move(const Board *b) {
     static Move ml[MAX_MOVES];
@@ -77,6 +95,7 @@ int main(void) {
     Undo u;
     char buf[8];
     SearchInfo info;
+    int engine_depth;
 
     eval_reset_weights();
     search_reset_config();
@@ -84,6 +103,7 @@ int main(void) {
 
     prints("CAISSA -- native C engine on 6502\n");
     prints("enter moves like e2e4, q to quit\n");
+    engine_depth = read_level();
 
     for (;;) {
         print_board(&b);
@@ -118,7 +138,7 @@ int main(void) {
             hash_t hist[1];
             hist[0] = b.hash;
             prints("thinking...\n");
-            m = search_bestmove(&b, ENGINE_DEPTH, hist, 1, &info);
+            m = search_bestmove(&b, engine_depth, hist, 1, &info);
             move_to_uci(m, uci);
             prints("engine plays ");
             prints(uci);

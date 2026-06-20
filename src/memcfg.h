@@ -48,6 +48,21 @@
 #  define CREF_HISTORY_DIM  64    /* full [stm][64][64] butterfly history */
 #  define CREF_POOL_SIZE  8192    /* shared move pool (Move entries) */
 
+#elif defined(CREF_PROFILE_ULTIMATE)
+/* Ultimate 64 (64 MHz) / fast C64. Boots with the STOCK mos-c64 link script (no
+ * banking, no linker surgery). The 64K overflow is reclaimed by dropping the
+ * lazy-move-selection scratch (CREF_LAZY_SELECT 0 -> no g_score_pool, ~1.5 KB):
+ * lazy-select skips sorting the move tail on a beta cutoff, a SPEED win that the
+ * 64 MHz clock makes irrelevant, and eager in-place ordering is bit-exact. With
+ * TT_BITS 7 (the other ~1.5 KB) the build fits and MAX_PLY rises to 8 -> d7 ~2013.
+ * (A bigger TT needs the Ultimate REU / Nova XRAM -- separate follow-on.) */
+#  define CREF_TT_BITS       7    /* 128-entry TT (RAM reclaimed for d7 + eager) */
+#  define CREF_MAX_PLY       8    /* supports search depth <= 7 (d7 ~2013) */
+#  define CREF_MAX_PATH     64
+#  define CREF_HISTORY_DIM   1
+#  define CREF_POOL_SIZE   768
+#  define CREF_LAZY_SELECT   0    /* eager in-place ordering (bit-exact, frees RAM) */
+
 #elif defined(CREF_PROFILE_NOVA)
 /* Mirrors C64 for now -- see the XRAM caveat above. The larger values these will
  * take once XRAM placement exists are left commented as the target:
@@ -76,5 +91,14 @@
 /* ---- knobs that are the same on every profile ---------------------------- */
 #define CREF_MAX_MOVES         256   /* worst-case legal move count is ~218 */
 #define CREF_MAX_QUIESCE_DEPTH   6
+
+/* Lazy move selection (negamax): keep per-node ordering scores in a pool parallel
+ * to g_pool so the next-best move is picked on demand and the tail is never sorted
+ * after a beta cutoff. A speed win that costs ~POOL_SIZE*2 bytes of RAM. Profiles
+ * that can't spare it (or don't need it -- fast clocks) set CREF_LAZY_SELECT 0 to
+ * fall back to eager in-place ordering (bit-exact, just sorts the whole list). */
+#ifndef CREF_LAZY_SELECT
+#  define CREF_LAZY_SELECT 1
+#endif
 
 #endif /* CREF_MEMCFG_H */
