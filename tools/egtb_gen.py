@@ -369,8 +369,36 @@ def validate(combo, labels, samples=400):
     print(f"   validate {combo}: parity {parity_ok}/{checked}, "
           f"wins-forced-mate {mate_ok} OK ({len(bad)} bad)")
 
+MATE_SCORE = 30000
+def expected_score(kind, dist):     # at ply 0, matches src/egtb.c decode
+    if kind == "W": return MATE_SCORE - dist
+    if kind == "L": return -(MATE_SCORE - dist)
+    return 0
+
+def parity_dump(samples=4000):
+    """Emit 'FEN<TAB>expected_score' lines for a random sample across combos, for the
+    C harness (test/egtb_parity) to reproduce. Regenerates labels in-process."""
+    import random, sys
+    labels = {}
+    for combo in ("KQK", "KRK", "KPK"):
+        reps, succ = gen_graph(combo, labels)
+        labels[combo] = retro_bfs(reps, succ)
+    rng = random.Random(7)
+    for combo in ("KQK", "KRK", "KPK"):
+        rep = {}
+        for key, b in legal_nodes(combo):
+            rep.setdefault(node_idx(combo, *key), b)
+        idxs = list(labels[combo].keys()); rng.shuffle(idxs)
+        for i in idxs[:samples]:
+            b = rep.get(i)
+            if b is None: continue
+            kind, dist = labels[combo][i]
+            sys.stdout.write(f"{b.fen()}\t{expected_score(kind, dist)}\n")
+
 if __name__ == "__main__":
-    import os
+    import os, sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--parity-dump":
+        parity_dump(); sys.exit(0)
     print("EGTB gen (Phase 1: KQK KRK KPK)")
     labels = {}
     order = ("KQK", "KRK", "KPK")
