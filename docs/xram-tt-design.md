@@ -143,7 +143,7 @@ Measured (12-FEN endgame/tactical corpus, REU TT14 server vs flat-shim TT14 orac
 |---|---|---|---|
 | d4 | move 1, node 11 | **0 / 0** | **0 / 0** |
 | d5 | — | move 0, node 5  *(oracle artifact)* | **0 / 0 (move+node bit-exact)** |
-| d6 | — | move 1, node 10 *(oracle artifact)* | flat-shim mos-sim **0 / 0**; VICE d6 confirming |
+| d6 | — | move 1, node 10 *(oracle artifact)* | **0 / 0** (VICE -reu, move+node bit-exact) |
 
 The d5/d6 "residual" was **not** an engine divergence — it was the misbuilt host
 oracle (memcfg guard bug, finding #2). After fixing the guard so the oracle compiles
