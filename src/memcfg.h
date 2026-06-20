@@ -32,7 +32,8 @@
 #define CREF_MEMCFG_H
 
 #if !defined(CREF_PROFILE_NOVA) && !defined(CREF_PROFILE_C64) && \
-    !defined(CREF_PROFILE_HOST)
+    !defined(CREF_PROFILE_HOST) && !defined(CREF_PROFILE_ULTIMATE) && \
+    !defined(CREF_PROFILE_REU)
 #  if defined(__mos__) || defined(__CC65__)
 #    define CREF_PROFILE_C64 1
 #  else
@@ -92,8 +93,12 @@
 #  define CREF_POOL_SIZE  1024
 
 #else  /* CREF_PROFILE_C64 (and the default for any bare 6502 target) */
-#  define CREF_TT_BITS       8    /* 256-entry TT (cc65 int is 16-bit; 1<<16 wraps) */
-#  define CREF_MAX_PLY       7    /* supports search depth <= 6 */
+#  ifndef CREF_TT_BITS
+#    define CREF_TT_BITS     8    /* 256-entry TT (cc65 int is 16-bit; 1<<16 wraps) */
+#  endif
+#  ifndef CREF_MAX_PLY          /* overridable for bug-2 bisection */
+#    define CREF_MAX_PLY     7    /* supports search depth <= 6 */
+#  endif
 #  define CREF_MAX_PATH     64    /* search-path-only repetition stack */
 #  define CREF_HISTORY_DIM   1    /* 16 KB butterfly table does not fit -> stub off */
 /* Shared move pool: replaces the old [MAX_PLY][256] negamax banks + [Q+1][256]

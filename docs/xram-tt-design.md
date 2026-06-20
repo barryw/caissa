@@ -16,17 +16,24 @@ Nova backing still pending. Foundation on branch `xram-tt`.
 >    diffs before the fix). The prior "validated on emulated hardware" only covered
 >    the isolated `reu_dma_test` micro-test (write-all-then-read-all), which never
 >    tripped the IRQ window — only a full search did. Classic "structural checks lie."
-> 2. **SEPARATE pre-existing bug surfaced: MAX_PLY-8 6502↔host divergence.** At
->    MAX_PLY 8 (REU *and* the shipped Ultimate profile) the 6502 search diverges from
->    the 32-bit host in node counts from d4 (TT-size-dependent), growing with depth,
->    and flips one knife-edge endgame move at d6. It is **NOT REU** (proven: the
->    flat-shim mos-sim — no REU, no IRQ — and the flat-TT Ultimate server both diverge
->    identically; a search-wide SEI does not fix it) and **NOT 16-bit score overflow**
->    (SEARCH_INF 32000 / mate ±30013 fit int16). MAX_PLY 7 is bit-exact. Trigger:
->    killers becoming active at ply 7 lead the search down a path that surfaces a
->    latent 6502↔host difference. Root cause not yet localised — **own follow-up.**
->    The mos-sim gate gave a false "30/30" because it checks moves only; `validate.c`
->    now also checks node counts.
+> 2. **"MAX_PLY-8 6502↔host divergence" — ROOT-CAUSED + FIXED. It was a HARNESS
+>    build-config bug, NOT an engine bug. The shipped Ultimate 6502 is fine.** The
+>    `memcfg.h` profile auto-default guard listed only NOVA/C64/HOST, so a **host**
+>    build with `-DCREF_PROFILE_ULTIMATE`/`-DCREF_PROFILE_REU` fell through to
+>    `CREF_PROFILE_HOST` (the `#if defined(CREF_PROFILE_HOST)` branch shadows the later
+>    `#elif ULTIMATE/REU`). The **oracle** therefore silently compiled as HOST
+>    (TT16/MP48/POOL8192) instead of the intended profile (TT7-14/MP8/POOL768). At d4
+>    the configs agree (shallow → TT/pool/ply irrelevant) so it looked clean; at d5+
+>    the TT-size mismatch showed up as fake "node divergence" and a knife-edge d6 move
+>    flip. The 6502 builds were ALWAYS correct (on `__mos__` the guard defaults C64 but
+>    the `#elif` chain still selects ULTIMATE/REU). **Fix:** add ULTIMATE+REU to the
+>    guard exclusion list. With a correctly-built oracle: Ultimate mos-sim **0
+>    node-mismatch @d5**; flat-shim REU **0 @d5 AND d6**; REU server in `x64sc -reu`
+>    **0 @d5** (move+node). Bisection that found it: every individual knob (TT7/MP8/
+>    LAZY0) AND all combos were 0-mismatch on the C64 base, but `cc -E -dM
+>    -DCREF_PROFILE_ULTIMATE` revealed the host config was HOST, not Ultimate. Lesson:
+>    the node-count check added to `validate.c` is what exposed this — a move-only gate
+>    hid it (incl. the prior "Ultimate 30/30").
 
 ## Why (measured, not assumed)
 A transposition table bigger than 64K can't live in the 6502's 16-bit address
@@ -132,16 +139,17 @@ Tooling built this session (all committed):
   accessor. Only fits at small TT (shadow in low RAM).
 
 Measured (12-FEN endgame/tactical corpus, REU TT14 server vs flat-shim TT14 oracle):
-| depth | before IRQ fix | after `sei`/`cli` fix |
-|---|---|---|
-| d4 | move-mismatch=1, node-mismatch=11 | **0 / 0 (bit-exact)** |
-| d5 | — | move 0, **node 5** (the MAX_PLY-8 bug, not REU) |
-| d6 | — | move 1 (knife-edge KP endgame), node 10 (MAX_PLY-8 bug) |
+| depth | before IRQ fix | after `sei`/`cli` fix (vs MISBUILT oracle) | after BOTH fixes (correct oracle) |
+|---|---|---|---|
+| d4 | move 1, node 11 | **0 / 0** | **0 / 0** |
+| d5 | — | move 0, node 5  *(oracle artifact)* | **0 / 0 (move+node bit-exact)** |
+| d6 | — | move 1, node 10 *(oracle artifact)* | flat-shim mos-sim **0 / 0**; VICE d6 confirming |
 
-The d5/d6 residual is the MAX_PLY-8 6502↔host divergence (see the top note), present
-identically in the no-REU mos-sim and the flat-TT Ultimate — independent of REU.
-By the project's move-exactness bar (how Ultimate shipped) the REU profile is
-move-exact at d4/d5; the lone d6 flip is the MAX_PLY-8 issue, not the REU TT.
+The d5/d6 "residual" was **not** an engine divergence — it was the misbuilt host
+oracle (memcfg guard bug, finding #2). After fixing the guard so the oracle compiles
+as the real REU/Ultimate profile, the REU server is **move+node bit-exact at d5**
+(VICE -reu) and the flat-shim REU is bit-exact at d5 AND d6 (mos-sim). REU is fully
+validated; the previously-feared shipped-Ultimate engine bug does not exist.
 
 ## Open
 - TTEntry 12→16 padding touches the gate golden (size change is bit-exact in VALUE
