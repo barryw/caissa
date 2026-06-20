@@ -32,7 +32,8 @@
 #define CREF_MEMCFG_H
 
 #if !defined(CREF_PROFILE_NOVA) && !defined(CREF_PROFILE_C64) && \
-    !defined(CREF_PROFILE_HOST)
+    !defined(CREF_PROFILE_HOST) && !defined(CREF_PROFILE_ULTIMATE) && \
+    !defined(CREF_PROFILE_REU)
 #  if defined(__mos__) || defined(__CC65__)
 #    define CREF_PROFILE_C64 1
 #  else
@@ -63,6 +64,24 @@
 #  define CREF_POOL_SIZE   768
 #  define CREF_LAZY_SELECT   0    /* eager in-place ordering (bit-exact, frees RAM) */
 
+#elif defined(CREF_PROFILE_REU)
+/* C64 + RAM Expansion Unit (1764/1750/1700+). The transposition table lives in the
+ * REU via $DF00 DMA (CREF_TT_XRAM + CREF_TT_REU), so the big TT costs ZERO low RAM
+ * -> the stock 64K build fits with lazy ordering kept, and TT_BITS rises to 14 (16K
+ * entries = 192 KB REU). Measured: ~-25% nodes at d6, access penalty ~0.15% of
+ * cyc/move -> net ~-25% cyc/move (grows with depth). MAX_PLY 8 -> d7. */
+#  define CREF_TT_XRAM       1
+#  ifndef CREF_TT_REU            /* host oracle forces 0 -> flat shim, no $DF00 DMA */
+#    define CREF_TT_REU      1
+#  endif
+#  ifndef CREF_TT_BITS          /* overridable for bisection (default TT14 = 192 KB) */
+#    define CREF_TT_BITS    14    /* 16K-entry TT in the REU (192 KB) */
+#  endif
+#  define CREF_MAX_PLY       8    /* d7 ~2013 */
+#  define CREF_MAX_PATH     64
+#  define CREF_HISTORY_DIM   1
+#  define CREF_POOL_SIZE   768
+
 #elif defined(CREF_PROFILE_NOVA)
 /* Mirrors C64 for now -- see the XRAM caveat above. The larger values these will
  * take once XRAM placement exists are left commented as the target:
@@ -74,8 +93,12 @@
 #  define CREF_POOL_SIZE  1024
 
 #else  /* CREF_PROFILE_C64 (and the default for any bare 6502 target) */
-#  define CREF_TT_BITS       8    /* 256-entry TT (cc65 int is 16-bit; 1<<16 wraps) */
-#  define CREF_MAX_PLY       7    /* supports search depth <= 6 */
+#  ifndef CREF_TT_BITS
+#    define CREF_TT_BITS     8    /* 256-entry TT (cc65 int is 16-bit; 1<<16 wraps) */
+#  endif
+#  ifndef CREF_MAX_PLY          /* overridable for bug-2 bisection */
+#    define CREF_MAX_PLY     7    /* supports search depth <= 6 */
+#  endif
 #  define CREF_MAX_PATH     64    /* search-path-only repetition stack */
 #  define CREF_HISTORY_DIM   1    /* 16 KB butterfly table does not fit -> stub off */
 /* Shared move pool: replaces the old [MAX_PLY][256] negamax banks + [Q+1][256]
@@ -99,6 +122,16 @@
  * fall back to eager in-place ordering (bit-exact, just sorts the whole list). */
 #ifndef CREF_LAZY_SELECT
 #  define CREF_LAZY_SELECT 1
+#endif
+
+/* TT off-address-space backing (Nova XRAM / C64 REU). Default off: the TT is a flat
+ * in-RAM array. A profile sets CREF_TT_XRAM (copy entries in/out) and CREF_TT_REU
+ * (the $DF00 DMA accessor) to host a >64K TT. */
+#ifndef CREF_TT_XRAM
+#  define CREF_TT_XRAM 0
+#endif
+#ifndef CREF_TT_REU
+#  define CREF_TT_REU 0
 #endif
 
 #endif /* CREF_MEMCFG_H */

@@ -41,8 +41,101 @@ typedef struct {
 
 /* No _Thread_local: cc65 has no threads (6502), and host parallelism is fork()-
  * based (separate processes), so plain file-scope statics are correct -- each
- * process gets its own copy. One game runs per process; no locking needed. */
+ * process gets its own copy. One game runs per process; no locking needed.
+ *
+ * CREF_TT_XRAM: a >64K transposition table lives off the 6502's 16-bit address
+ * space (Nova 512K windowed XRAM / C64 REU DMA), accessed by copying one entry
+ * in/out of a scratch via the platform's tt_xram_load/store/clear. Measured win:
+ * a TT14 (16K entries) cuts ~25% of nodes at d6; the per-access window/DMA penalty
+ * (~30 cyc x ~48K accesses/move = ~1.4M cyc) is ~0.15% of cyc/move -- negligible
+ * vs the ~311M cyc the node cut saves. The DEFAULT (flat) path below keeps direct
+ * entry pointers: zero-copy, byte-identical to the original. The copy-through
+ * backing here is the VALIDATION shim (proves the in/out logic is bit-exact on the
+ * flat mos-sim core); the real REU/Nova accessors swap memcpy for DMA/window. */
+#if CREF_TT_XRAM
+#  if CREF_TT_REU
+/* C64 REU (1764/1750) DMA backing: the TT lives in the RAM Expansion Unit; each
+ * probe/store copies one entry between a C64 scratch and REU[idx*sizeof] via the
+ * $DF00 DMA controller (CPU halts ~sizeof cycles per transfer). $DF01 commands:
+ * $91 = fetch REU->C64, $90 = stash C64->REU (bit7 execute, bit4 immediate). */
+#define REU_REG ((volatile unsigned char *)0xDF00)
+/* The eight $DF02-$DF0A registers are programmed one at a time and only the final
+ * $DF01 write triggers the DMA, so the whole sequence MUST be atomic. The live
+ * 60 Hz KERNAL IRQ otherwise preempts it mid-setup and clobbers the zero-page temps
+ * holding the address/length parameters, sending the transfer to the wrong place --
+ * a real, search-only corruption (the isolated micro-tests never tripped it; only a
+ * full search did). SEI/CLI brackets the window: the engine always runs with IRQs
+ * enabled during search (KERNAL is banked in), and reu_xfer is only ever called from
+ * the search, so re-enabling unconditionally is correct here. (PHP/PLP to preserve
+ * the caller's flag was measured LESS reliable -- it left an off-by-one node count
+ * on one position -- so the simple, bit-exact SEI/CLI stays.) */
+static void reu_xfer(const void *c64, unsigned long reu, unsigned len, unsigned char cmd) {
+    unsigned a = (unsigned)c64;
+    /* "memory" clobber is load-bearing: without it the compiler may hoist/sink the
+     * volatile $DF02-$DF01 stores across the bare sei/cli, leaving part of the
+     * non-atomic setup exposed to the IRQ again (passed d4 but corrupted d5/d6). */
+    __asm__ volatile ("sei" ::: "memory");
+    REU_REG[0x02] = (unsigned char)a;          REU_REG[0x03] = (unsigned char)(a >> 8);
+    REU_REG[0x04] = (unsigned char)reu;        REU_REG[0x05] = (unsigned char)(reu >> 8);
+    REU_REG[0x06] = (unsigned char)(reu >> 16);
+    REU_REG[0x07] = (unsigned char)len;        REU_REG[0x08] = (unsigned char)(len >> 8);
+    REU_REG[0x0A] = 0;                          /* increment both C64 and REU addrs */
+    REU_REG[0x01] = cmd;                        /* execute (DMA runs before the next insn) */
+    __asm__ volatile ("cli" ::: "memory");
+}
+#ifdef CREF_TT_REU_DEBUG
+/* Dual REU+RAM-shadow self-check (small TT only): every store goes to BOTH the REU
+ * and a flat shadow; every load reads from REU and compares vs the shadow, latching
+ * the FIRST divergence (g_reu_err=count, g_reu_erridx/g_reu_errbyte/g_reu_got/_want
+ * = first bad cell). Peek these symbols after a real search to localise the bug. */
+volatile unsigned       g_reu_err     = 0;
+volatile unsigned       g_reu_erridx  = 0xFFFF;
+volatile unsigned char  g_reu_errbyte = 0xFF;
+volatile unsigned char  g_reu_got     = 0;
+volatile unsigned char  g_reu_want    = 0;
+static TTEntry tt_shadow[TT_SIZE];
+static inline void tt_xram_load(unsigned i, TTEntry *d) {
+    const unsigned char *want = (const unsigned char *)&tt_shadow[i];
+    unsigned char *got = (unsigned char *)d;
+    unsigned k;
+    reu_xfer(d, (unsigned long)i * sizeof(TTEntry), sizeof(TTEntry), 0x91);
+    for (k = 0; k < sizeof(TTEntry); k++)
+        if (got[k] != want[k]) {
+            if (!g_reu_err) { g_reu_erridx = i; g_reu_errbyte = (unsigned char)k;
+                              g_reu_got = got[k]; g_reu_want = want[k]; }
+            g_reu_err++; break;
+        }
+}
+static inline void tt_xram_store(unsigned i, const TTEntry *s) {
+    reu_xfer(s, (unsigned long)i * sizeof(TTEntry), sizeof(TTEntry), 0x90);
+    tt_shadow[i] = *s;
+}
+static void tt_xram_clear(void) {
+    static const TTEntry zero = {0, {0,0,0,0}, 0, 0, 0};
+    unsigned i;
+    g_reu_err = 0; g_reu_erridx = 0xFFFF;
+    for (i = 0; i < TT_SIZE; i++) tt_xram_store(i, &zero);
+}
+#else
+static inline void tt_xram_load(unsigned i, TTEntry *d)
+    { reu_xfer(d, (unsigned long)i * sizeof(TTEntry), sizeof(TTEntry), 0x91); }
+static inline void tt_xram_store(unsigned i, const TTEntry *s)
+    { reu_xfer(s, (unsigned long)i * sizeof(TTEntry), sizeof(TTEntry), 0x90); }
+static void tt_xram_clear(void) {                 /* zero all entries (REU has no fill) */
+    static const TTEntry zero = {0, {0,0,0,0}, 0, 0, 0};
+    unsigned i;
+    for (i = 0; i < TT_SIZE; i++) tt_xram_store(i, &zero);
+}
+#endif
+#  else
+static TTEntry tt_x[TT_SIZE];   /* validation backing (flat); real build = REU/XRAM */
+static inline void tt_xram_load(unsigned i, TTEntry *d)        { *d = tt_x[i]; }
+static inline void tt_xram_store(unsigned i, const TTEntry *s) { tt_x[i] = *s; }
+static inline void tt_xram_clear(void) { memset(tt_x, 0, sizeof(tt_x)); }
+#  endif
+#else
 static TTEntry tt[TT_SIZE];
+#endif
 
 /* repetition: game history copied in, search path pushed on top (MAX_PATH in search.h) */
 static hash_t rep[MAX_PATH];
@@ -348,7 +441,14 @@ static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
 
 static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
     int alpha_orig = alpha;
-    TTEntry *e = &tt[b->hash & TT_MASK];
+    unsigned tt_idx = (unsigned)(b->hash & TT_MASK);
+#if CREF_TT_XRAM
+    TTEntry te;                 /* this node's entry: copied in below, flushed at store */
+    TTEntry *e = &te;
+    tt_xram_load(tt_idx, e);
+#else
+    TTEntry *e = &tt[tt_idx];
+#endif
     Move tt_move = {0, 0, 0, 0};
     Move *list;                  /* allocated from the shared pool below */
     int *scores;                 /* parallel slice of g_score_pool (lazy order) */
@@ -493,6 +593,9 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
     e->depth = depth;
     e->flag = (best_val <= alpha_orig) ? TT_UPPER :
               (best_val >= beta)       ? TT_LOWER : TT_EXACT;
+#if CREF_TT_XRAM
+    tt_xram_store(tt_idx, e);   /* flush this node's entry back to XRAM */
+#endif
     return best_val;
 }
 
@@ -503,7 +606,11 @@ Move search_bestmove(const Board *b, int depth,
     int best_score = 0;
     int d;
 
+#if CREF_TT_XRAM
+    tt_xram_clear();
+#else
     memset(tt, 0, sizeof(tt));
+#endif
     memset(&g_info, 0, sizeof(g_info));
     g_info.depth = depth;
 
