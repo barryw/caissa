@@ -33,6 +33,7 @@
 static cpu6502_t cpu;
 
 /* ---- ABI symbol addresses, resolved from the .map ---- */
+static uint16_t A_g_nodes;
 static uint16_t A_g_fen, A_g_depth, A_g_from, A_g_to, A_g_promo, A_g_done,
                 A_g_status, A_g_go;
 
@@ -100,7 +101,8 @@ static const char promo_char[7] = {0,0,'n','b','r','q',0};
 /* Run the loaded image for one bestmove: handshake, inject, finish.
  * Returns 0 on success and fills uci[]; -1 on timeout/parse-fail. */
 static int run_bestmove(const char *fen, unsigned char depth, char *uci,
-                        unsigned long long *cycles_out, int *status_out) {
+                        unsigned long long *cycles_out, int *status_out,
+                        unsigned long *nodes_out) {
     uint16_t reset;
     unsigned long long c0;
 
@@ -143,6 +145,7 @@ static int run_bestmove(const char *fen, unsigned char depth, char *uci,
 
     /* (5) read result */
     *status_out = cpu.mem[A_g_status];
+    *nodes_out = (unsigned long)cpu.mem[A_g_nodes] | ((unsigned long)cpu.mem[(uint16_t)(A_g_nodes+1)]<<8) | ((unsigned long)cpu.mem[(uint16_t)(A_g_nodes+2)]<<16) | ((unsigned long)cpu.mem[(uint16_t)(A_g_nodes+3)]<<24);
     if (cpu.mem[A_g_done] != 1) { fprintf(stderr, "g_done not set\n"); return -1; }
     if (*status_out != 0) { strcpy(uci, "0000"); return 0; }   /* FEN parse error */
     {
@@ -158,7 +161,7 @@ static int run_bestmove(const char *fen, unsigned char depth, char *uci,
 }
 
 /* call the host oracle: `<oracle> bestmove "FEN" DEPTH` -> first uci token */
-static int oracle_bestmove(const char *oracle, const char *fen, int depth, char *uci) {
+static int oracle_bestmove(const char *oracle, const char *fen, int depth, char *uci, unsigned long *nodes) {
     char cmd[1024], line[256];
     FILE *p;
     snprintf(cmd, sizeof cmd, "%s bestmove \"%s\" %d", oracle, fen, depth);
@@ -168,6 +171,7 @@ static int oracle_bestmove(const char *oracle, const char *fen, int depth, char 
     pclose(p);
     /* "bestmove <uci> score ..." */
     if (sscanf(line, "bestmove %5s", uci) != 1) return -1;
+    { char *p2 = strstr(line, "nodes "); *nodes = p2 ? strtoul(p2+6, 0, 10) : 0; }
     return 0;
 }
 
@@ -176,7 +180,7 @@ int main(int argc, char **argv) {
     int depth;
     FILE *ff;
     char line[300];
-    int total = 0, ok = 0, fails = 0;
+    int total = 0, ok = 0, fails = 0, node_fails = 0;
     unsigned long long cyc_sum = 0, cyc_max = 0;
 
     if (argc < 5) {
@@ -195,7 +199,8 @@ int main(int argc, char **argv) {
         map_addr(mapf, "g_promo", &A_g_promo) ||
         map_addr(mapf, "g_done",  &A_g_done)  ||
         map_addr(mapf, "g_status",&A_g_status)||
-        map_addr(mapf, "g_go",    &A_g_go)) return 2;
+        map_addr(mapf, "g_go",    &A_g_go)  ||
+        map_addr(mapf, "g_nodes", &A_g_nodes)) return 2;
 
     fprintf(stderr,
       "ABI: g_fen=0x%04X g_depth=0x%04X g_from=0x%04X g_to=0x%04X g_promo=0x%04X "
@@ -209,7 +214,7 @@ int main(int argc, char **argv) {
 
     while (fgets(line, sizeof line, ff)) {
         char fen[200], uci6502[8], ucihost[8];
-        unsigned long long cyc; int st;
+        unsigned long long cyc; int st; unsigned long n6502=0, nhost=0; int ndiff=0;
         char *nl;
         /* a fenlist line is a bare FEN (possibly TSV: FEN<TAB>...) */
         char *tab = strchr(line, '\t'); if (tab) *tab = 0;
@@ -219,27 +224,31 @@ int main(int argc, char **argv) {
 
         /* reload image fresh each move (clears all engine state). */
         load_image(image);
-        if (run_bestmove(fen, (unsigned char)depth, uci6502, &cyc, &st) != 0) {
+        if (run_bestmove(fen, (unsigned char)depth, uci6502, &cyc, &st, &n6502) != 0) {
             printf("[ERR ] 6502 run failed: %s\n", fen);
             fails++; total++; continue;
         }
-        if (oracle_bestmove(oracle, fen, depth, ucihost) != 0) {
+        if (oracle_bestmove(oracle, fen, depth, ucihost, &nhost) != 0) {
             printf("[ERR ] oracle failed: %s\n", fen);
             fails++; total++; continue;
         }
         total++;
         cyc_sum += cyc; if (cyc > cyc_max) cyc_max = cyc;
+        ndiff = (n6502 != nhost);
+        if (ndiff) node_fails++;
         if (strcmp(uci6502, ucihost) == 0) {
             ok++;
-            printf("[ OK ] %-6s  cyc=%-10llu  %s\n", uci6502, cyc, fen);
+            printf("[ %s] %-6s  cyc=%-10llu  n6502=%lu nhost=%lu  %s\n",
+                   ndiff ? "ND " : "OK ", uci6502, cyc, n6502, nhost, fen);
         } else {
-            printf("[DIFF] 6502=%-6s host=%-6s  %s\n", uci6502, ucihost, fen);
+            printf("[DIFF] 6502=%-6s host=%-6s  n6502=%lu nhost=%lu  %s\n",
+                   uci6502, ucihost, n6502, nhost, fen);
         }
     }
     fclose(ff);
 
     printf("\n=== VALIDATION: %d/%d identical to oracle '%s' at depth %d"
-           " (%d run-errors) ===\n", ok, total, oracle, depth, fails);
+           " (%d run-errors, %d node-mismatch) ===\n", ok, total, oracle, depth, fails, node_fails);
     if (total)
         printf("cycles/move: avg=%llu  max=%llu  -> @1MHz avg=%.2fs max=%.2fs\n",
                cyc_sum / total, cyc_max,

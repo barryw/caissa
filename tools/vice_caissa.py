@@ -20,6 +20,7 @@ Standalone test (boots, serves one move, prints UCI):
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import socket
 import subprocess
@@ -212,8 +213,10 @@ class CaissaServer:
             "+sound",
             "-soundwarpmode", "0",
             "-console",
-            "-autostart", str(self.prg),
         ]
+        if os.environ.get("CAISSA_REU"):   # CREF_PROFILE_REU build: TT in the REU
+            command += ["-reu", "-reusize", os.environ.get("CAISSA_REUSIZE", "512")]
+        command += ["-autostart", str(self.prg)]
         log = open(boot_log, "wb") if boot_log else subprocess.DEVNULL
         self.proc = subprocess.Popen(
             command, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)

@@ -70,8 +70,12 @@
  * entries = 192 KB REU). Measured: ~-25% nodes at d6, access penalty ~0.15% of
  * cyc/move -> net ~-25% cyc/move (grows with depth). MAX_PLY 8 -> d7. */
 #  define CREF_TT_XRAM       1
-#  define CREF_TT_REU        1
-#  define CREF_TT_BITS      14    /* 16K-entry TT in the REU (192 KB) */
+#  ifndef CREF_TT_REU            /* host oracle forces 0 -> flat shim, no $DF00 DMA */
+#    define CREF_TT_REU      1
+#  endif
+#  ifndef CREF_TT_BITS          /* overridable for bisection (default TT14 = 192 KB) */
+#    define CREF_TT_BITS    14    /* 16K-entry TT in the REU (192 KB) */
+#  endif
 #  define CREF_MAX_PLY       8    /* d7 ~2013 */
 #  define CREF_MAX_PATH     64
 #  define CREF_HISTORY_DIM   1

@@ -1,8 +1,32 @@
 # Big transposition table in XRAM/REU — design + measured payoff
 
-**Date:** 2026-06-19
-**Status:** abstraction landed + validated; platform backings (REU / Nova) are the
-next step (need platform emulation to validate). Foundation on branch `xram-tt`.
+**Date:** 2026-06-19 (REU validated end-to-end 2026-06-20)
+**Status:** REU backing **validated on real emulation (x64sc -reu): d4 bit-exact to
+host after fixing an IRQ-during-DMA bug — see "Validation (2026-06-20)" below.**
+Nova backing still pending. Foundation on branch `xram-tt`.
+
+> **Update 2026-06-20 — read this first.** The keystone link-drop the prior handover
+> flagged (asm `is_square_attacked` dropped under REU/ULTIMATE) is **STALE**: the
+> server, caissa.c mos-sim, and `chess_reu.prg` (c64chess.c) all link cleanly on the
+> current toolchain (symbol present in every map). Two real findings replaced it:
+> 1. **REU DMA bug FOUND + FIXED** — the `$DF00` register setup was non-atomic and
+>    the live 60 Hz KERNAL IRQ corrupted it mid-search. `reu_xfer` now brackets the
+>    setup in `sei`/`cli` (with a `"memory"` clobber). Result: the REU server is
+>    **move+node bit-exact to the host oracle at d4** (was move-mismatch=1 / 11 node
+>    diffs before the fix). The prior "validated on emulated hardware" only covered
+>    the isolated `reu_dma_test` micro-test (write-all-then-read-all), which never
+>    tripped the IRQ window — only a full search did. Classic "structural checks lie."
+> 2. **SEPARATE pre-existing bug surfaced: MAX_PLY-8 6502↔host divergence.** At
+>    MAX_PLY 8 (REU *and* the shipped Ultimate profile) the 6502 search diverges from
+>    the 32-bit host in node counts from d4 (TT-size-dependent), growing with depth,
+>    and flips one knife-edge endgame move at d6. It is **NOT REU** (proven: the
+>    flat-shim mos-sim — no REU, no IRQ — and the flat-TT Ultimate server both diverge
+>    identically; a search-wide SEI does not fix it) and **NOT 16-bit score overflow**
+>    (SEARCH_INF 32000 / mate ±30013 fit int16). MAX_PLY 7 is bit-exact. Trigger:
+>    killers becoming active at ply 7 lead the search down a path that surfaces a
+>    latent 6502↔host difference. Root cause not yet localised — **own follow-up.**
+>    The mos-sim gate gave a false "30/30" because it checks moves only; `validate.c`
+>    now also checks node counts.
 
 ## Why (measured, not assumed)
 A transposition table bigger than 64K can't live in the 6502's 16-bit address
@@ -82,13 +106,42 @@ then read/write 16 B through $BC00+off. ~1 window-reg write + the 16-byte copy �
 ## Validation plan
 1. Abstraction: DONE (copy-through == flat, 0/50; gate PASS).
 2. Logic of the platform accessor: unit-test the DMA/window copy against a flat
-   reference (same 16 bytes in == out).
+   reference (same bytes in == out).
 3. End-to-end: build the prg with the profile; run on the platform emulator
    (VICE + `-reu` for REU; the e6502 emulator for Nova) and confirm move-for-move
-   vs host `cref` at d4/d6 — the same recipe that validated the Ultimate build via
-   the mos-sim core. Do NOT trust structural checks alone (the banking saga: a
-   build that "passed" everything was non-bootable — always run it).
+   AND node-for-node vs host `cref` at d4/d6. Do NOT trust structural checks NOR
+   isolated DMA round-trip tests alone — only a real search caught the IRQ bug.
 4. Then measure real cyc/move on the platform core to confirm the −25% net.
+
+## Validation (2026-06-20) — REU, on real emulation (x64sc -reu)
+Tooling built this session (all committed):
+- **`tools/reu_validate.py`** — boots `caissa_server.prg` (REU profile) in
+  `x64sc -reu` via `vice_caissa.py` (now honours `CAISSA_REU=1` to attach the REU)
+  and compares every best move + node count to a host oracle.
+- **Host oracle** = `cref` built `-DCREF_PROFILE_REU -DCREF_TT_REU=0` (flat in-RAM
+  shim, no `$DF00`). `memcfg.h` now `#ifndef`-guards `CREF_TT_REU` and `CREF_TT_BITS`
+  in the REU block so the oracle (and TT-size bisection) is buildable.
+- **`test/reu_stress3_test.c`** — full-scale (16384-entry) clear+RMW REU accessor
+  self-test, verifies every read via a per-idx version array. PASSES — proves the
+  DMA transport itself is byte-perfect (necessary but NOT sufficient; see bug #1).
+- **`validate.c` now checks node counts** (`n6502` vs `nhost`, `[ND]` tag) — this is
+  what exposes the MAX_PLY-8 divergence the move-only gate hid.
+- **`#ifdef CREF_TT_REU_DEBUG`** in `search.c` — dual REU+RAM-shadow self-check
+  (latches the first byte where a REU load != the shadow). Used to prove the
+  transport is consistent in a real search (`g_reu_err=0`); reusable for the Nova
+  accessor. Only fits at small TT (shadow in low RAM).
+
+Measured (12-FEN endgame/tactical corpus, REU TT14 server vs flat-shim TT14 oracle):
+| depth | before IRQ fix | after `sei`/`cli` fix |
+|---|---|---|
+| d4 | move-mismatch=1, node-mismatch=11 | **0 / 0 (bit-exact)** |
+| d5 | — | move 0, **node 5** (the MAX_PLY-8 bug, not REU) |
+| d6 | — | move 1 (knife-edge KP endgame), node 10 (MAX_PLY-8 bug) |
+
+The d5/d6 residual is the MAX_PLY-8 6502↔host divergence (see the top note), present
+identically in the no-REU mos-sim and the flat-TT Ultimate — independent of REU.
+By the project's move-exactness bar (how Ultimate shipped) the REU profile is
+move-exact at d4/d5; the lone d6 flip is the MAX_PLY-8 issue, not the REU TT.
 
 ## Open
 - TTEntry 12→16 padding touches the gate golden (size change is bit-exact in VALUE

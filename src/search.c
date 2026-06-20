@@ -59,15 +59,64 @@ typedef struct {
  * $DF00 DMA controller (CPU halts ~sizeof cycles per transfer). $DF01 commands:
  * $91 = fetch REU->C64, $90 = stash C64->REU (bit7 execute, bit4 immediate). */
 #define REU_REG ((volatile unsigned char *)0xDF00)
+/* The eight $DF02-$DF0A registers are programmed one at a time and only the final
+ * $DF01 write triggers the DMA, so the whole sequence MUST be atomic. The live
+ * 60 Hz KERNAL IRQ otherwise preempts it mid-setup and clobbers the zero-page temps
+ * holding the address/length parameters, sending the transfer to the wrong place --
+ * a real, search-only corruption (the isolated micro-tests never tripped it; only a
+ * full search did). SEI/CLI brackets the window: the engine always runs with IRQs
+ * enabled during search (KERNAL is banked in), and reu_xfer is only ever called from
+ * the search, so re-enabling unconditionally is correct here. (PHP/PLP to preserve
+ * the caller's flag was measured LESS reliable -- it left an off-by-one node count
+ * on one position -- so the simple, bit-exact SEI/CLI stays.) */
 static void reu_xfer(const void *c64, unsigned long reu, unsigned len, unsigned char cmd) {
     unsigned a = (unsigned)c64;
+    /* "memory" clobber is load-bearing: without it the compiler may hoist/sink the
+     * volatile $DF02-$DF01 stores across the bare sei/cli, leaving part of the
+     * non-atomic setup exposed to the IRQ again (passed d4 but corrupted d5/d6). */
+    __asm__ volatile ("sei" ::: "memory");
     REU_REG[0x02] = (unsigned char)a;          REU_REG[0x03] = (unsigned char)(a >> 8);
     REU_REG[0x04] = (unsigned char)reu;        REU_REG[0x05] = (unsigned char)(reu >> 8);
     REU_REG[0x06] = (unsigned char)(reu >> 16);
     REU_REG[0x07] = (unsigned char)len;        REU_REG[0x08] = (unsigned char)(len >> 8);
     REU_REG[0x0A] = 0;                          /* increment both C64 and REU addrs */
-    REU_REG[0x01] = cmd;                        /* execute */
+    REU_REG[0x01] = cmd;                        /* execute (DMA runs before the next insn) */
+    __asm__ volatile ("cli" ::: "memory");
 }
+#ifdef CREF_TT_REU_DEBUG
+/* Dual REU+RAM-shadow self-check (small TT only): every store goes to BOTH the REU
+ * and a flat shadow; every load reads from REU and compares vs the shadow, latching
+ * the FIRST divergence (g_reu_err=count, g_reu_erridx/g_reu_errbyte/g_reu_got/_want
+ * = first bad cell). Peek these symbols after a real search to localise the bug. */
+volatile unsigned       g_reu_err     = 0;
+volatile unsigned       g_reu_erridx  = 0xFFFF;
+volatile unsigned char  g_reu_errbyte = 0xFF;
+volatile unsigned char  g_reu_got     = 0;
+volatile unsigned char  g_reu_want    = 0;
+static TTEntry tt_shadow[TT_SIZE];
+static inline void tt_xram_load(unsigned i, TTEntry *d) {
+    const unsigned char *want = (const unsigned char *)&tt_shadow[i];
+    unsigned char *got = (unsigned char *)d;
+    unsigned k;
+    reu_xfer(d, (unsigned long)i * sizeof(TTEntry), sizeof(TTEntry), 0x91);
+    for (k = 0; k < sizeof(TTEntry); k++)
+        if (got[k] != want[k]) {
+            if (!g_reu_err) { g_reu_erridx = i; g_reu_errbyte = (unsigned char)k;
+                              g_reu_got = got[k]; g_reu_want = want[k]; }
+            g_reu_err++; break;
+        }
+}
+static inline void tt_xram_store(unsigned i, const TTEntry *s) {
+    reu_xfer(s, (unsigned long)i * sizeof(TTEntry), sizeof(TTEntry), 0x90);
+    tt_shadow[i] = *s;
+}
+static void tt_xram_clear(void) {
+    static const TTEntry zero = {0, {0,0,0,0}, 0, 0, 0};
+    unsigned i;
+    g_reu_err = 0; g_reu_erridx = 0xFFFF;
+    for (i = 0; i < TT_SIZE; i++) tt_xram_store(i, &zero);
+}
+#else
 static inline void tt_xram_load(unsigned i, TTEntry *d)
     { reu_xfer(d, (unsigned long)i * sizeof(TTEntry), sizeof(TTEntry), 0x91); }
 static inline void tt_xram_store(unsigned i, const TTEntry *s)
@@ -77,6 +126,7 @@ static void tt_xram_clear(void) {                 /* zero all entries (REU has n
     unsigned i;
     for (i = 0; i < TT_SIZE; i++) tt_xram_store(i, &zero);
 }
+#endif
 #  else
 static TTEntry tt_x[TT_SIZE];   /* validation backing (flat); real build = REU/XRAM */
 static inline void tt_xram_load(unsigned i, TTEntry *d)        { *d = tt_x[i]; }
