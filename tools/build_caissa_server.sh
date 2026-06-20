@@ -40,7 +40,10 @@ if [ "${EGTB:-0}" = "1" ]; then
 fi
 # SEARCH=fullwidth (default) | selective -- which search plugin TU to link (both
 # #include search_core.inc). SEARCH=selective builds the Colossus-style stock-C64 search.
+# A selective build must define CREF_SEARCH_SELECTIVE for EVERY engine TU (shared
+# SearchConfig ABI in src/search.h), so it comes from -D, not a #define in one .c.
 SEARCH_SRC="$N/search_${SEARCH:-fullwidth}.c"
+[ "${SEARCH:-fullwidth}" = "selective" ] && DEFS="$DEFS -DCREF_SEARCH_SELECTIVE=1"
 
 # shellcheck disable=SC2086
 "$LM/mos-c64-clang" -Os -I "$N" $ASM $DEFS \

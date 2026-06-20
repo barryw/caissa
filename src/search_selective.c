@@ -15,5 +15,9 @@
  * search tree. The width schedule / forcing extensions land in Phase 2 inside
  * search_core.inc, guarded by CREF_SEARCH_SELECTIVE.
  */
-#define CREF_SEARCH_SELECTIVE 1
+/* CREF_SEARCH_SELECTIVE is defined build-wide via -DCREF_SEARCH_SELECTIVE=1 (set by
+ * the Makefile / build scripts when SEARCH=selective), NOT with a #define here: a
+ * later task adds fields to SearchConfig (src/search.h), and EVERY TU in a selective
+ * build must see the same struct for ABI consistency. Full-width builds leave it
+ * undefined -> SearchConfig unchanged -> byte-identical reference preserved. */
 #include "search_core.inc"

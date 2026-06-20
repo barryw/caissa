@@ -20,6 +20,15 @@ BUILD   := build
 # Search plugin: fullwidth (default) or selective (Colossus-style, stock C64). One TU
 # is linked; both #include src/search_core.inc. `make SEARCH=selective ...`.
 SEARCH  ?= fullwidth
+# A selective build must define CREF_SEARCH_SELECTIVE for EVERY TU that links the
+# search engine (search_core.inc) so the shared SearchConfig struct (src/search.h)
+# is ABI-consistent across TUs. It comes from -D (not a #define inside one .c) for
+# that reason. Full-width builds leave it undefined -> SearchConfig unchanged ->
+# byte-identical reference preserved.
+SELDEF  :=
+ifeq ($(SEARCH),selective)
+SELDEF  := -DCREF_SEARCH_SELECTIVE=1
+endif
 ENGINE  := $(SRC)/board.c $(SRC)/movegen.c $(SRC)/eval.c $(SRC)/search_$(SEARCH).c $(SRC)/egtb.c
 HDRS    := $(wildcard $(SRC)/*.h)
 INC     := -I$(SRC)
@@ -30,12 +39,12 @@ all: cli
 cli: $(BUILD)/cref
 
 $(BUILD)/cref: $(ENGINE) apps/cli/cref.c $(HDRS) | $(BUILD)
-	$(CC) $(CFLAGS) $(INC) $(ENGINE) apps/cli/cref.c -o $@ -lm
+	$(CC) $(CFLAGS) $(SELDEF) $(INC) $(ENGINE) apps/cli/cref.c -o $@ -lm
 
 # matched-config oracle (TT8 / MAX_PLY=7 / no history) for 6502 move-fidelity
 cref_mos: $(BUILD)/cref_mos
 $(BUILD)/cref_mos: $(ENGINE) apps/cli/cref.c $(HDRS) | $(BUILD)
-	$(CC) -O3 -w -D__mos__ $(INC) $(ENGINE) apps/cli/cref.c -o $@ -lm
+	$(CC) -O3 -w -D__mos__ $(SELDEF) $(INC) $(ENGINE) apps/cli/cref.c -o $@ -lm
 
 $(BUILD)/test_perft: $(SRC)/board.c $(SRC)/movegen.c $(SRC)/eval.c test/test_perft.c $(HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) $(INC) $(SRC)/board.c $(SRC)/movegen.c $(SRC)/eval.c test/test_perft.c -o $@
@@ -48,7 +57,7 @@ $(BUILD)/test_see: $(SRC)/board.c $(SRC)/movegen.c $(SRC)/eval.c test/test_see.c
 
 # public engine<->UI API (src/caissa.c) + its test
 $(BUILD)/test_api: $(ENGINE) $(SRC)/caissa.c test/test_api.c $(HDRS) | $(BUILD)
-	$(CC) $(CFLAGS) $(INC) $(ENGINE) $(SRC)/caissa.c test/test_api.c -o $@ -lm
+	$(CC) $(CFLAGS) $(SELDEF) $(INC) $(ENGINE) $(SRC)/caissa.c test/test_api.c -o $@ -lm
 
 verify test: $(BUILD)/test_perft $(BUILD)/test_eval $(BUILD)/test_api $(BUILD)/test_king_danger $(BUILD)/test_see
 	$(PYTHON) test/native_perft_check.py

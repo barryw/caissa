@@ -35,8 +35,12 @@ ASM="-DCREF_ASM_IS_SQUARE_ATTACKED $N/is_square_attacked_6502.s \
 # 1 MHz C64 is the selective search's eventual home (SEARCH=selective), once Phase 2
 # lands; both plugin TUs #include search_core.inc.
 SEARCH_SRC="$N/search_${SEARCH:-fullwidth}.c"
+# A selective build must define CREF_SEARCH_SELECTIVE for EVERY engine TU (shared
+# SearchConfig ABI in src/search.h), so it comes from -D, not a #define in one .c.
+DEFS=""
+[ "${SEARCH:-fullwidth}" = "selective" ] && DEFS="$DEFS -DCREF_SEARCH_SELECTIVE=1"
 # shellcheck disable=SC2086
-"$LM/mos-c64-clang" -Os -I "$N" -DCREF_LAZY_SELECT=0 $ASM \
+"$LM/mos-c64-clang" -Os -I "$N" -DCREF_LAZY_SELECT=0 $DEFS $ASM \
     "$N/board.c" "$N/movegen.c" "$N/eval.c" "$SEARCH_SRC" "$UI/c64chess.c" \
     -o "$OUT" -Wl,-Map="${OUT%.prg}.map"
 
