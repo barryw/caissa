@@ -134,4 +134,17 @@
 #  define CREF_TT_REU 0
 #endif
 
+/* Endgame tablebases (Phase 1: 3-man KQK/KRK/KPK, ~308 KB). Needs host RAM or the
+ * REU (tables sit above the TT). On by default for HOST + REU builds; off on the
+ * flat C64/Ultimate/Nova (no room). Inert until the .bin is loaded (egtb_set_data /
+ * REU preload), so a build with it on but no table behaves exactly as before. */
+#ifndef CREF_EGTB
+#  if defined(CREF_PROFILE_HOST)
+#    define CREF_EGTB 1            /* host: integrated + validated (KPK perfect) */
+#  else
+#    define CREF_EGTB 0            /* REU/Nova on-chip table-load = next step; until
+                                     then keep off so those builds don't need egtb.c */
+#  endif
+#endif
+
 #endif /* CREF_MEMCFG_H */

@@ -14,6 +14,7 @@
 #include "search.h"
 #include "movegen.h"
 #include "eval.h"
+#include "egtb.h"
 #include <string.h>
 
 #define LAZY_EVAL_MARGIN 240   /* matches src/ai/search.s LAZY_EVAL_MARGIN */
@@ -359,6 +360,12 @@ static int quiesce(Board *b, int alpha, int beta, int ply, int qd) {
 
     g_info.qnodes++;
     if (b->halfmove >= 100) return 0;          /* 50-move draw reachable via quiescence */
+#if CREF_EGTB
+    if (b->acc_phase <= 4) {                    /* exact TB value for covered 3-man */
+        int eg_sc;
+        if (egtb_probe(b, ply, &eg_sc)) return eg_sc;
+    }
+#endif
     check = in_check(b);
     if (!check) {
         /* Lazy stand-pat with margin, mirroring the 6502 EvaluateLazy: the full
@@ -463,6 +470,16 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
 
     if (ply > 0 && (is_repetition(b->hash) || b->halfmove >= 100))
         return 0;
+
+#if CREF_EGTB
+    /* Endgame tablebase: exact value for covered 3-man positions. acc_phase<=4 is the
+     * cheap gate (covered combos: Q=4,R=2,P=0); the root (ply 0) is searched normally
+     * so it returns a move -- its children's TB scores guide the choice. */
+    if (ply > 0 && b->acc_phase <= 4) {
+        int eg_sc;
+        if (egtb_probe(b, ply, &eg_sc)) return eg_sc;
+    }
+#endif
 
     if (e->key == b->hash) {
         tt_move = e->best;

@@ -14,6 +14,7 @@
 #include "movegen.h"
 #include "eval.h"
 #include "search.h"
+#include "egtb.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -414,11 +415,27 @@ static int cmd_mse(const char *tsv, const char *wspec) {
     return 0;
 }
 
+static void load_egtb(void) {
+    /* Load the 3-man EGTB blob so the search can probe it (inert if absent). Path from
+     * $CAISSA_EGTB or build/egtb_tables.bin. Leaked intentionally (lives for the run). */
+    const char *path = getenv("CAISSA_EGTB");
+    if (!path) path = "build/egtb_tables.bin";
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    if (n > 0) {
+        unsigned char *blob = malloc(n);
+        if (blob && fread(blob, 1, n, f) == (size_t)n) egtb_set_data(blob);
+    }
+    fclose(f);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s eval FEN | bestmove FEN [depth] | selfplay [opts] | mse TSV [weights]\n", argv[0]);
         return 2;
     }
+    load_egtb();
     if (!strcmp(argv[1], "mse") && argc >= 3)
         return cmd_mse(argv[2], argc >= 4 ? argv[3] : NULL);
     if (!strcmp(argv[1], "eval") && argc >= 3)
