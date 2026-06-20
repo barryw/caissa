@@ -31,9 +31,13 @@ ASM="-DCREF_ASM_IS_SQUARE_ATTACKED $N/is_square_attacked_6502.s \
 # game does not need. This + board_any_legal_move() reclaiming the UI's 256-move
 # buffer is what keeps the full interactive game inside the stock c64's 64K. (The
 # Ultimate profile already sets this for the same reason.)
+# SEARCH=fullwidth (default) | selective -- which search plugin to link. The stock
+# 1 MHz C64 is the selective search's eventual home (SEARCH=selective), once Phase 2
+# lands; both plugin TUs #include search_core.inc.
+SEARCH_SRC="$N/search_${SEARCH:-fullwidth}.c"
 # shellcheck disable=SC2086
 "$LM/mos-c64-clang" -Os -I "$N" -DCREF_LAZY_SELECT=0 $ASM \
-    "$N/board.c" "$N/movegen.c" "$N/eval.c" "$N/search_fullwidth.c" "$UI/c64chess.c" \
+    "$N/board.c" "$N/movegen.c" "$N/eval.c" "$SEARCH_SRC" "$UI/c64chess.c" \
     -o "$OUT" -Wl,-Map="${OUT%.prg}.map"
 
 size=$(wc -c < "$OUT")

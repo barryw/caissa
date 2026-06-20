@@ -38,10 +38,13 @@ if [ "${EGTB:-0}" = "1" ]; then
     DEFS="$DEFS -DCREF_EGTB=1"
     EGTB_SRC="$N/egtb.c"
 fi
+# SEARCH=fullwidth (default) | selective -- which search plugin TU to link (both
+# #include search_core.inc). SEARCH=selective builds the Colossus-style stock-C64 search.
+SEARCH_SRC="$N/search_${SEARCH:-fullwidth}.c"
 
 # shellcheck disable=SC2086
 "$LM/mos-c64-clang" -Os -I "$N" $ASM $DEFS \
-    "$N/board.c" "$N/movegen.c" "$N/eval.c" "$N/search_fullwidth.c" $EGTB_SRC "$UI/caissa_server.c" \
+    "$N/board.c" "$N/movegen.c" "$N/eval.c" "$SEARCH_SRC" $EGTB_SRC "$UI/caissa_server.c" \
     -o "$OUT" -Wl,-Map="${OUT%.prg}.map"
 
 size=$(wc -c < "$OUT")

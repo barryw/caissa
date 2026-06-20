@@ -17,7 +17,10 @@ PYTHON  ?= python3
 
 SRC     := src
 BUILD   := build
-ENGINE  := $(SRC)/board.c $(SRC)/movegen.c $(SRC)/eval.c $(SRC)/search_fullwidth.c $(SRC)/egtb.c
+# Search plugin: fullwidth (default) or selective (Colossus-style, stock C64). One TU
+# is linked; both #include src/search_core.inc. `make SEARCH=selective ...`.
+SEARCH  ?= fullwidth
+ENGINE  := $(SRC)/board.c $(SRC)/movegen.c $(SRC)/eval.c $(SRC)/search_$(SEARCH).c $(SRC)/egtb.c
 HDRS    := $(wildcard $(SRC)/*.h)
 INC     := -I$(SRC)
 
