@@ -81,7 +81,12 @@ static int  g_score[MAX_MOVES];           /* order_moves scratch (quiescence, tr
  * (same offset as a node's move list), so scores persist across the node's move
  * loop even though children recurse. Lets negamax pick the next-best move on
  * demand and skip sorting the tail it never searches (beta cutoff). */
+#if CREF_LAZY_SELECT
 static int  g_score_pool[CREF_POOL_SIZE];
+#else
+static int  g_score_pool[1];   /* eager ordering sorts list[] in place -- no parallel
+                                * score array needed; stub keeps the slice math valid. */
+#endif
 #define POOL_ROOM (CREF_POOL_SIZE - g_pool_top >= MAX_MOVES)
 
 /* Search-feature config + node budget (the A/B knobs). */
@@ -407,10 +412,19 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
     /* Pool full -> static-eval leaf rather than overflow. Vanishingly rare. */
     if (!POOL_ROOM) return eval_stm(b);
     list = g_pool + g_pool_top;
-    scores = g_score_pool + g_pool_top;        /* parallel slice, same base as list */
     n = gen_legal(b, list);
     if (n == 0) return in_check(b) ? -MATE_SCORE + ply : 0;   /* nothing reserved */
+#if CREF_LAZY_SELECT
+    scores = g_score_pool + g_pool_top;        /* parallel slice, same base as list */
     score_moves(b, list, scores, n, tt_move, ply, g_sc.see_order);   /* score only; sort lazily below */
+#else
+    /* Eager: sort the whole list in place now (uses the transient g_score scratch).
+     * Bit-exact with lazy selection -- same first-on-ties selection order -- it just
+     * does all the picks up front instead of on demand, trading a little speed for
+     * the ~POOL_SIZE*2 bytes the parallel score pool would cost. */
+    scores = g_score_pool;
+    order_moves(b, list, n, tt_move, ply, g_sc.see_order);
+#endif
 
     best_val = -SEARCH_INF;
     best_move = list[0];
@@ -422,8 +436,11 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
         Undo u;
         int val, nd, gives_check, is_quiet;
         /* Lazy selection: bring the next-best move to position i on demand. A
-         * node that beta-cuts early never sorts the moves it won't search. */
+         * node that beta-cuts early never sorts the moves it won't search.
+         * (Eager profiles already fully sorted list[] above -- skip per-move pick.) */
+#if CREF_LAZY_SELECT
         pick_best(list, scores, n, i);
+#endif
         if (i == 0) best_move = list[0];   /* match eager sort's default best */
         make_move(b, list[i], &u);
         gives_check = in_check(b);
