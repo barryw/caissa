@@ -256,8 +256,17 @@ void search_reset_config(void) {
     g_sc.see = 1;            /* quiescence SEE pruning: on (Elo-neutral @800g d4). */
     g_sc.see_order = 1;      /* main-search SEE move ordering: on (Elo-neutral @800g d4). */
 #if defined(CREF_SEARCH_SELECTIVE)
-    { int k; for (k = 0; k < CREF_SEL_WIDTH_N; k++) g_sc.sel_width[k] = 9999; }
-    g_sc.sel_min_depth = 0;
+    /* Default plausibility schedule. sel_width[d] is the max QUIET moves searched at
+     * REMAINING depth d (captures/promos/checks always searched). Because the engine
+     * plays at a fixed depth D, a node's remaining-depth d ~= D - ply, so to get the
+     * design's "wide near the root, narrow deep" the schedule INCREASES with d: deep
+     * nodes (small remaining depth) are narrow; near-root nodes (large remaining depth)
+     * are wide. d<=sel_min_depth is never pruned (the plies just above quiescence stay
+     * full, where a single quiet move can be the only escape and the savings are tiny).
+     * Conservative starting values -- Task 6's SPRT + Task 8 tune these. */
+    { static const int W[CREF_SEL_WIDTH_N] = {9999, 9999, 4, 6, 8, 12, 18, 9999}; int k;
+      for (k = 0; k < CREF_SEL_WIDTH_N; k++) g_sc.sel_width[k] = W[k]; }
+    g_sc.sel_min_depth = 1;
 #endif
 }
 
