@@ -40,6 +40,13 @@ typedef struct {
     int8_t flag;
 } TTEntry;
 
+#if defined(CREF_TT_REU) && CREF_TT_REU
+/* egtb.c places the EGTB table at REU offset (1<<CREF_TT_BITS)*12, i.e. it hard-codes
+ * sizeof(TTEntry)==12 as the TT stride. If this struct ever grows, that base would
+ * land INSIDE the TT and corrupt every probe -- catch it at compile time here. */
+typedef char tt_entry_is_exactly_12_bytes[sizeof(TTEntry) == 12 ? 1 : -1];
+#endif
+
 /* No _Thread_local: cc65 has no threads (6502), and host parallelism is fork()-
  * based (separate processes), so plain file-scope statics are correct -- each
  * process gets its own copy. One game runs per process; no locking needed.

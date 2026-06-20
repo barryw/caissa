@@ -216,6 +216,13 @@ class CaissaServer:
         ]
         if os.environ.get("CAISSA_REU"):   # CREF_PROFILE_REU build: TT in the REU
             command += ["-reu", "-reusize", os.environ.get("CAISSA_REUSIZE", "512")]
+            # CAISSA_REUIMAGE: preload REU RAM from an image (tools/build_reu_image.py)
+            # so the EGTB tables are present at boot for the on-chip EGTB build.
+            # +reuimagerw keeps the file read-only; emulated REU RAM stays writable
+            # (the TT region of the image is zero and the search owns it).
+            img = os.environ.get("CAISSA_REUIMAGE")
+            if img:
+                command += ["-reuimage", img, "+reuimagerw"]
         command += ["-autostart", str(self.prg)]
         log = open(boot_log, "wb") if boot_log else subprocess.DEVNULL
         self.proc = subprocess.Popen(

@@ -11,6 +11,55 @@
 
 #if CREF_EGTB
 
+/* ---- table read (host flat / C64 REU DMA) ---- */
+#if defined(CREF_TT_REU) && CREF_TT_REU
+/* EGTB lives in the REU just ABOVE the TT. The TT occupies TT_SIZE*sizeof(TTEntry)
+ * bytes from REU offset 0 (see search.c); the EGTB region follows at
+ * CREF_EGTB_REU_BASE. Layout in that region:
+ *     [ 3-man DTM tables: EGTB_TOTAL_BYTES | kk_idx[4096] : little-endian u16 ]
+ * kk_idx is kept in the REU too (not a RAM-resident 8 KB const) so it doesn't blow
+ * the stock 64K low-RAM budget -- the REU absorbs the table data; low RAM stays for
+ * the search. (With KK_IDX = a DMA read, the generated egtb_kk_idx[] C array is
+ * unreferenced in this build and dropped by -Os.) tools/build_reu_image.py writes
+ * this exact layout into the REU image. */
+#ifndef CREF_EGTB_REU_BASE
+#define CREF_EGTB_REU_BASE ((unsigned long)(1UL << CREF_TT_BITS) * 12UL)  /* TTEntry=12B */
+#endif
+#define CREF_EGTB_KKIDX_REU_OFF ((unsigned long)EGTB_TOTAL_BYTES)  /* kk_idx after tables */
+#define EGTB_REU_REG ((volatile unsigned char *)0xDF00)
+/* Atomic $DF00 fetch of `len` bytes REU->C64. sei/cli: a live KERNAL IRQ mid-setup
+ * clobbers the ZP temps holding the address/length params and sends the transfer to
+ * the wrong place -- the exact hazard fixed in search.c reu_xfer. `off` is relative
+ * to the EGTB region base. */
+static void egtb_dma(unsigned long off, void *dst, unsigned len) {
+    unsigned a = (unsigned)dst;
+    unsigned long reu = CREF_EGTB_REU_BASE + off;
+    __asm__ volatile ("sei" ::: "memory");
+    EGTB_REU_REG[0x02] = (unsigned char)a;        EGTB_REU_REG[0x03] = (unsigned char)(a >> 8);
+    EGTB_REU_REG[0x04] = (unsigned char)reu;      EGTB_REU_REG[0x05] = (unsigned char)(reu >> 8);
+    EGTB_REU_REG[0x06] = (unsigned char)(reu >> 16);
+    EGTB_REU_REG[0x07] = (unsigned char)len;      EGTB_REU_REG[0x08] = (unsigned char)(len >> 8);
+    EGTB_REU_REG[0x0A] = 0;
+    EGTB_REU_REG[0x01] = 0x91;                     /* fetch REU->C64 */
+    __asm__ volatile ("cli" ::: "memory");
+}
+static unsigned char egtb_read(unsigned long off) { unsigned char v; egtb_dma(off, &v, 1); return v; }
+static unsigned egtb_kk_read(unsigned i) {
+    unsigned char b[2];
+    egtb_dma(CREF_EGTB_KKIDX_REU_OFF + (unsigned long)i * 2, b, 2);
+    return (unsigned)b[0] | ((unsigned)b[1] << 8);
+}
+#define KK_IDX(i) egtb_kk_read(i)
+void egtb_set_data(const unsigned char *blob) { (void)blob; }   /* REU build: tables preloaded */
+#define egtb_ready() 1
+#else
+static const unsigned char *g_egtb = 0;            /* host flat copy of egtb_tables.bin */
+void egtb_set_data(const unsigned char *blob) { g_egtb = blob; }
+static unsigned char egtb_read(unsigned long off) { return g_egtb[off]; }
+#define KK_IDX(i) ((unsigned)egtb_kk_idx[(i)])
+#define egtb_ready() (g_egtb != 0)                 /* inert until the .bin is loaded */
+#endif
+
 /* ---- canonical index (mirror of egtb_gen.py) ---- */
 /* squares are 0..63, a1=0 (== idx64_from_0x88). */
 static unsigned char d4(int op, unsigned char s) {
@@ -37,7 +86,7 @@ static unsigned long idx_nop(unsigned char wk, unsigned char bk, unsigned char s
     int op = fold_op(wk);
     wk = d4(op, wk); bk = d4(op, bk); sp = d4(op, sp);
     {
-        unsigned k = egtb_kk_idx[(unsigned)wk * 64 + bk];
+        unsigned k = KK_IDX((unsigned)wk * 64 + bk);
         return ((unsigned long)k * 64 + sp) * 2 + stm;
     }
 }
@@ -48,37 +97,6 @@ static unsigned long idx_kpk(unsigned char wk, unsigned char bk, unsigned char p
         return (((unsigned long)pidx * 64 + wk) * 64 + bk) * 2 + stm;
     }
 }
-
-/* ---- table byte read (host flat / C64 REU DMA) ---- */
-#if defined(CREF_TT_REU) && CREF_TT_REU
-/* EGTB lives in the REU just above the TT. Read ONE byte via $DF00 DMA. The TT
- * occupies TT_SIZE*sizeof(TTEntry) bytes from REU offset 0 (see search.c). */
-#ifndef CREF_EGTB_REU_BASE
-#define CREF_EGTB_REU_BASE ((unsigned long)(1UL << CREF_TT_BITS) * 12UL)  /* TTEntry=12B */
-#endif
-#define EGTB_REU_REG ((volatile unsigned char *)0xDF00)
-static unsigned char egtb_read(unsigned long off) {
-    unsigned char val;
-    unsigned long reu = CREF_EGTB_REU_BASE + off;
-    unsigned a = (unsigned)&val;
-    __asm__ volatile ("sei" ::: "memory");
-    EGTB_REU_REG[0x02] = (unsigned char)a;        EGTB_REU_REG[0x03] = (unsigned char)(a >> 8);
-    EGTB_REU_REG[0x04] = (unsigned char)reu;      EGTB_REU_REG[0x05] = (unsigned char)(reu >> 8);
-    EGTB_REU_REG[0x06] = (unsigned char)(reu >> 16);
-    EGTB_REU_REG[0x07] = 1;                        EGTB_REU_REG[0x08] = 0;   /* len = 1 */
-    EGTB_REU_REG[0x0A] = 0;
-    EGTB_REU_REG[0x01] = 0x91;                     /* fetch REU->C64 */
-    __asm__ volatile ("cli" ::: "memory");
-    return val;
-}
-void egtb_set_data(const unsigned char *blob) { (void)blob; }   /* REU build: tables preloaded */
-#define egtb_ready() 1
-#else
-static const unsigned char *g_egtb = 0;            /* host flat copy of egtb_tables.bin */
-void egtb_set_data(const unsigned char *blob) { g_egtb = blob; }
-static unsigned char egtb_read(unsigned long off) { return g_egtb[off]; }
-#define egtb_ready() (g_egtb != 0)                 /* inert until the .bin is loaded */
-#endif
 
 /* ---- probe ---- */
 int egtb_probe(const Board *b, int ply, int *score) {

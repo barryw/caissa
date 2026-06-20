@@ -75,7 +75,15 @@
 #    define CREF_TT_REU      1
 #  endif
 #  ifndef CREF_TT_BITS          /* overridable for bisection (default TT14 = 192 KB) */
-#    define CREF_TT_BITS    14    /* 16K-entry TT in the REU (192 KB) */
+#    if defined(CREF_EGTB) && CREF_EGTB
+/* EGTB build (-DCREF_EGTB=1): the 333 KB table sits in the REU just ABOVE the TT
+ * (egtb.c base = (1<<TT_BITS)*12). TT14 (192 KB) + EGTB (333 KB) = 525 KB overflows
+ * a 512 KB REU, so drop to TT13 (96 KB): 96 + 333 = 429 KB fits. Needs a >=512 KB
+ * REU (1750 / Ultimate); the stock 256 KB 1764 can't hold 3-man + a TT at all. */
+#      define CREF_TT_BITS  13    /* 8K-entry TT (96 KB), leaves REU room for EGTB */
+#    else
+#      define CREF_TT_BITS  14    /* 16K-entry TT in the REU (192 KB), 1764-safe */
+#    endif
 #  endif
 #  define CREF_MAX_PLY       8    /* d7 ~2013 */
 #  define CREF_MAX_PATH     64
@@ -134,16 +142,19 @@
 #  define CREF_TT_REU 0
 #endif
 
-/* Endgame tablebases (Phase 1: 3-man KQK/KRK/KPK, ~308 KB). Needs host RAM or the
- * REU (tables sit above the TT). On by default for HOST + REU builds; off on the
- * flat C64/Ultimate/Nova (no room). Inert until the .bin is loaded (egtb_set_data /
- * REU preload), so a build with it on but no table behaves exactly as before. */
+/* Endgame tablebases (Phase 1: 3-man KQK/KRK/KPK, 333 KB). Needs host RAM or the
+ * REU (tables sit above the TT). DEFAULT-ON for HOST; OPT-IN (-DCREF_EGTB=1) on REU
+ * because it requires a >=512 KB REU and forces TT13 (see the REU profile block) --
+ * leaving it off keeps the shipped REU build 1764-safe (256 KB, TT14, no EGTB). OFF
+ * on the flat C64/Ultimate/Nova (no room). Inert until the .bin is loaded
+ * (egtb_set_data on host / REU preload on chip), so a build with it on but no table
+ * behaves exactly as before. */
 #ifndef CREF_EGTB
 #  if defined(CREF_PROFILE_HOST)
 #    define CREF_EGTB 1            /* host: integrated + validated (KPK perfect) */
 #  else
-#    define CREF_EGTB 0            /* REU/Nova on-chip table-load = next step; until
-                                     then keep off so those builds don't need egtb.c */
+#    define CREF_EGTB 0            /* REU = opt-in (-DCREF_EGTB=1, needs 512 KB REU);
+                                     C64/Ultimate/Nova have no room for the table */
 #  endif
 #endif
 

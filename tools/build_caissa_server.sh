@@ -26,9 +26,22 @@ ASM="-DCREF_ASM_IS_SQUARE_ATTACKED $N/is_square_attacked_6502.s \
      -DCREF_ASM_GEN_PSEUDO         $N/gen_pseudo_6502.s \
      -DCREF_ASM_GEN_LEGAL          $N/gen_legal_6502.s"
 
+# Optional memory-profile + endgame-tablebase knobs (env-selected so one script
+# builds every server variant). PROFILE=REU -> REU-backed TT ($DF00 DMA). EGTB=1 ->
+# wire in the 3-man endgame tablebase probe (src/egtb.c) reading the table from the
+# REU above the TT; needs PROFILE=REU + a >=512 KB REU (forces TT13, see memcfg.h).
+#   PROFILE=REU EGTB=1 ./tools/build_caissa_server.sh build/caissa_server_reu_egtb.prg
+DEFS=""
+EGTB_SRC=""
+[ -n "${PROFILE:-}" ] && DEFS="$DEFS -DCREF_PROFILE_${PROFILE}"
+if [ "${EGTB:-0}" = "1" ]; then
+    DEFS="$DEFS -DCREF_EGTB=1"
+    EGTB_SRC="$N/egtb.c"
+fi
+
 # shellcheck disable=SC2086
-"$LM/mos-c64-clang" -Os -I "$N" $ASM \
-    "$N/board.c" "$N/movegen.c" "$N/eval.c" "$N/search.c" "$UI/caissa_server.c" \
+"$LM/mos-c64-clang" -Os -I "$N" $ASM $DEFS \
+    "$N/board.c" "$N/movegen.c" "$N/eval.c" "$N/search.c" $EGTB_SRC "$UI/caissa_server.c" \
     -o "$OUT" -Wl,-Map="${OUT%.prg}.map"
 
 size=$(wc -c < "$OUT")
